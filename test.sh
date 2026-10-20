@@ -328,8 +328,11 @@ else
       local mode=$1; shift
       local pidfile="$SCRATCH/qemu-$mode.pid" serial="$SCRATCH/serial-$mode.log"
       rm -f "$pidfile"
+      # ISO attached as virtio-blk (vda), not -cdrom: emulated ATAPI random
+      # reads make ldconfig/squashfs boot take 5+ min in QEMU. The isohybrid
+      # image boots identically from disk (SeaBIOS/OVMF both handle it).
       "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" \
-        -cdrom "$ISO" -boot d \
+        -drive file="$ISO",format=raw,if=virtio,media=disk,readonly=on \
         -device virtio-net-pci,netdev=net0 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$PORT-:22 \
         -drive file="$SCRATCH/witness.img",format=raw,if=virtio \
         -display none -monitor none -serial "file:$serial" \
@@ -403,7 +406,7 @@ else
       v=$(guest 'swapon --show --noheadings 2>/dev/null')
       [ -z "$v" ] && record pass "$mode: no swap in use" || record fail "$mode: swap active ($v)"
 
-      v=$(guest 'lsblk -nrpo MOUNTPOINTS /dev/vda 2>/dev/null | grep -c . || true')
+      v=$(guest 'lsblk -nrpo MOUNTPOINTS /dev/vdb 2>/dev/null | grep -c . || true')
       [ "$v" = "0" ] && record pass "$mode: witness disk not mounted" || record fail "$mode: witness disk mounted"
 
       if [ -n "${BAKED_FP:-}" ]; then
@@ -519,7 +522,7 @@ else
           "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" \
             -kernel "$SCRATCH/vmlinuz" -initrd "$SCRATCH/initrd" \
             -append "boot=live username=kali hostname=kali systemd.swap=no noautomount" \
-            -cdrom "$ISO" \
+            -drive file="$ISO",format=raw,if=virtio,media=disk,readonly=on \
             -device virtio-net-pci,netdev=net0 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$PORT-:22 \
             -drive file="$SCRATCH/witness.img",format=raw,if=virtio \
             -display none -monitor none -serial "file:$SCRATCH/serial-forensic.log" \
