@@ -471,7 +471,7 @@ else
           "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" \
             -kernel "$SCRATCH/vmlinuz" -initrd "$SCRATCH/initrd" \
             -append "boot=live username=kali hostname=kali console=ttyS0,115200" \
-            -cdrom "$ISO" \
+            -drive file="$ISO",format=raw,if=virtio,media=disk,readonly=on \
             -device virtio-net-pci,netdev=net0 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$PORT-:22 \
             -drive file="$SCRATCH/cfg.img",format=raw,if=virtio \
             -display none -monitor none -serial "file:$SCRATCH/serial-override.log" \
