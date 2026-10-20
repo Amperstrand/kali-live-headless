@@ -1,0 +1,12 @@
+[Unit]
+Description=kali-live-headless: show IPv4 address and SSH fingerprints on the console
+Wants=network-online.target
+After=network-online.target ssh.service kali-live-headless-provision.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/kali-live-console-banner
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

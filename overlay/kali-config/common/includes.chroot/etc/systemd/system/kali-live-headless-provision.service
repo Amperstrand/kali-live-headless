@@ -1,0 +1,15 @@
+[Unit]
+Description=kali-live-headless: provision hostname, live user SSH key, sshd hardening
+# Runs after Kali's live-config has created the live user (kali), and before
+# the network stack and sshd need any of it.
+After=live-config.service
+Before=NetworkManager.service ssh.service avahi-daemon.service
+ConditionPathExists=/etc/kali-live-headless
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/kali-live-headless-provision
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

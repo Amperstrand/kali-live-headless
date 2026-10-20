@@ -1,0 +1,12 @@
+## Extra packages for the headless Kali Live image.
+## Required by the project specification:
+openssh-server
+network-manager
+wireless-regdb
+iw
+iproute2
+avahi-daemon
+curl
+git
+tmux
+tcpdump

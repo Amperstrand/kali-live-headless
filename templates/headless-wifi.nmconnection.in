@@ -1,0 +1,37 @@
+## NetworkManager keyfile profile for the headless Wi-Fi connection.
+##
+## This is a TEMPLATE — build.sh generates the real file (with SSID/PSK
+## substituted) directly into the build tree; the generated file contains
+## the Wi-Fi passphrase in recoverable plaintext and never enters git.
+##
+## Notes:
+## - No `interface-name` is set on purpose: the profile binds to ANY
+##   Wi-Fi device (wlan0, wlp3s0, dynamic names — all fine).
+## - autoconnect-retries=0 means retry forever.
+## - autoconnect-priority=100 beats other autoconnect profiles.
+## - powersave=2 disables Wi-Fi power saving (more stable headless box).
+## - key-mgmt: wpa-psk (WPA2-Personal / WPA2-WPA3 transition) or
+##             sae     (WPA3-Personal; needs AP + driver support).
+[connection]
+id=HEADLESS-WIFI
+type=wifi
+autoconnect=true
+autoconnect-retries=0
+autoconnect-priority=100
+permissions=
+
+[wifi]
+mode=infrastructure
+ssid=@SSID@
+hidden=@HIDDEN@
+powersave=2
+
+[wifi-security]
+key-mgmt=@KEYMGMT@
+psk=@PSK@
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto

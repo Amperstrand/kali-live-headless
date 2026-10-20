@@ -1,0 +1,116 @@
+#!/bin/sh
+# kali-live-headless one-shot provisioner.
+#
+# Runs on every live boot (idempotent). Guarantees that the headless
+# configuration survives Kali's live initialization (live-config), no
+# matter which boot menu entry (Live / forensic / persistence) was used:
+#
+#   1. hostname (overrides the hard-coded hostname=kali of the syslinux
+#      forensic entry and any kernel cmdline default)
+#   2. live user 'kali' exists (live-config normally creates it from
+#      /etc/skel; fallback for exotic boots)
+#   3. /home/kali/.ssh/authorized_keys installed with correct ownership
+#   4. sshd hardening drop-in present
+#   5. SSH host keys present (baked at build time; regenerated if lost)
+#   6. Wi-Fi regulatory domain applied before NetworkManager starts
+#   7. avahi re-registered under the new hostname
+#
+# Logs to the journal AND the console.
+
+set -u
+
+CFG_DIR=/etc/kali-live-headless
+TAG=kali-live-headless
+
+log() {
+    logger -t "$TAG" -- "$*" 2>/dev/null || true
+    printf '[%s] %s\n' "$TAG" "$*" > /dev/console 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------- hostname
+HN="kali-live"
+if [ -r "$CFG_DIR/hostname" ]; then
+    HN=$(head -n1 "$CFG_DIR/hostname" 2>/dev/null || echo kali-live)
+fi
+
+if [ "$(hostname)" != "$HN" ]; then
+    hostnamectl set-hostname "$HN" 2>/dev/null || hostname "$HN" 2>/dev/null || true
+fi
+echo "$HN" > /etc/hostname 2>/dev/null || true
+
+# keep /etc/hosts consistent (avoids "unable to resolve host" noise)
+if grep -q '^127\.0\.1\.1[[:space:]]' /etc/hosts 2>/dev/null; then
+    sed -i -e "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1\t$HN/" /etc/hosts
+else
+    printf '127.0.1.1\t%s\n' "$HN" >> /etc/hosts
+fi
+
+# --------------------------------------------------------------- live user
+USER=kali
+if ! getent passwd "$USER" > /dev/null 2>&1; then
+    log "user '$USER' missing (live-config has not run yet?) — creating"
+    useradd -m -c "Kali Live user" -s /bin/bash -G sudo,adm,netdev "$USER" 2>/dev/null || \
+    useradd -m -c "Kali Live user" -s /bin/bash "$USER"
+fi
+USER_GID=$(id -g "$USER" 2>/dev/null || echo 1000)
+USER_UID=$(id -u "$USER" 2>/dev/null || echo 1000)
+
+# --------------------------------------------------------- authorized_keys
+if [ -s "$CFG_DIR/authorized_keys" ]; then
+    # Primary path: live-config creates $USER from /etc/skel on every boot,
+    # so the staged /etc/skel/.ssh/authorized_keys normally lands here on
+    # its own. This makes it certain, with StrictModes-clean ownership.
+    install -d -m 0700 -o "$USER" -g "$USER_GID" "/home/$USER/.ssh"
+    install -m 0600 -o "$USER" -g "$USER_GID" \
+        "$CFG_DIR/authorized_keys" "/home/$USER/.ssh/authorized_keys"
+    chown "$USER:$USER_GID" "/home/$USER" 2>/dev/null || true
+
+    # Keep skel current too (covers the fallback user-creation path).
+    install -d -m 0700 /etc/skel/.ssh
+    install -m 0600 "$CFG_DIR/authorized_keys" /etc/skel/.ssh/authorized_keys
+    NKEYS=$(grep -c -v '^[[:space:]]*\(#\|$\)' "$CFG_DIR/authorized_keys" 2>/dev/null || echo 0)
+    log "authorized_keys installed for '$USER' ($NKEYS key(s))"
+else
+    log "WARNING: $CFG_DIR/authorized_keys is missing or empty"
+fi
+
+# ----------------------------------------------------------- sshd hardening
+if [ -e /etc/ssh/sshd_config ] && [ ! -f /etc/ssh/sshd_config.d/0000-kali-live-headless.conf ]; then
+    if [ -r "$CFG_DIR/sshd_config.d/0000-kali-live-headless.conf" ]; then
+        install -D -m 0644 \
+            "$CFG_DIR/sshd_config.d/0000-kali-live-headless.conf" \
+            /etc/ssh/sshd_config.d/0000-kali-live-headless.conf
+        log "restored sshd hardening drop-in"
+    else
+        log "WARNING: sshd hardening drop-in missing"
+    fi
+fi
+
+# --------------------------------------------------------------- host keys
+# Host keys are baked per-build at ISO build time (openssh-server postinst).
+# Regenerate only if they somehow vanished, otherwise the fingerprint of
+# every boot would change and clients would complain.
+if [ ! -s /etc/ssh/ssh_host_ed25519_key ]; then
+    log "SSH host keys missing — generating fresh ones"
+    ssh-keygen -A > /dev/null 2>&1 || true
+fi
+
+# ------------------------------------------------------- regulatory domain
+if [ -r /etc/default/kali-live-headless ]; then
+    # shellcheck disable=SC1091
+    . /etc/default/kali-live-headless
+    if [ -n "${WIFI_REGDOM:-}" ] && command -v iw > /dev/null 2>&1; then
+        iw reg set "$WIFI_REGDOM" 2>/dev/null || true
+        log "Wi-Fi regulatory domain set to $WIFI_REGDOM"
+    fi
+fi
+
+# ------------------------------------------------------------------ avahi
+if command -v systemctl > /dev/null 2>&1; then
+    if systemctl is-active --quiet avahi-daemon 2>/dev/null; then
+        systemctl try-restart avahi-daemon 2>/dev/null || true
+    fi
+fi
+
+log "provisioning complete (hostname=$(hostname), user=$USER)"
+exit 0
