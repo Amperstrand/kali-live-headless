@@ -313,9 +313,23 @@ elif [ -z "$ISO" ] || [ ! -f "$ISO" ]; then
 elif [ "$RUN_QEMU" != true ]; then
   record skip "qemu" "disabled via --skip-qemu"
 else
-  if [ -w /dev/kvm ]; then ACCEL=kvm; CPU=(-cpu host); BOOT_TIMEOUT=480; CD_BOOT_TIMEOUT=1500; else ACCEL=tcg; CPU=(); BOOT_TIMEOUT=1800; CD_BOOT_TIMEOUT=2700; klh_warn "no /dev/kvm — using TCG emulation (slow)"; fi
+  if [ -w /dev/kvm ]; then ACCEL=kvm; CPU=(-cpu host); BOOT_TIMEOUT=480; CD_BOOT_TIMEOUT=2400; else ACCEL=tcg; CPU=(); BOOT_TIMEOUT=1800; CD_BOOT_TIMEOUT=4800; klh_warn "no /dev/kvm — using TCG emulation (slow)"; fi
   record pass "qemu accel" "$ACCEL"
-  klh_info "CD-ROM boots get ${CD_BOOT_TIMEOUT}s: the ISO's ~226MB initrd loads slowly over emulated ATAPI (direct-kernel boots get ${BOOT_TIMEOUT}s)"
+  klh_info "CD-ROM boots (BIOS/UEFI) allow ${CD_BOOT_TIMEOUT}s: the ISO's ~226MB initrd crawls over emulated ATAPI; direct-kernel boots (override/forensic) get ${BOOT_TIMEOUT}s"
+
+  # extract kernel+initrd once for the direct-kernel boots (override + forensic)
+  KERN_OK=false
+  EX_MNT="$SCRATCH/iso-extract"; mkdir -p "$EX_MNT"
+  if sudo mount -o ro,loop "$ISO" "$EX_MNT" 2>/dev/null; then
+    KERN=$(ls "$EX_MNT"/live/vmlinuz* 2>/dev/null | head -1)
+    INITRD=$(ls "$EX_MNT"/live/initrd.img* 2>/dev/null | head -1)
+    sudo cp "$KERN" "$SCRATCH/vmlinuz" 2>/dev/null || true
+    sudo cp "$INITRD" "$SCRATCH/initrd" 2>/dev/null || true
+    sudo chmod 644 "$SCRATCH/vmlinuz" "$SCRATCH/initrd" 2>/dev/null || true
+    sudo umount "$EX_MNT"
+    [ -s "$SCRATCH/vmlinuz" ] && [ -s "$SCRATCH/initrd" ] && KERN_OK=true
+  fi
+  [ "$KERN_OK" = true ] || record skip "kernel/initrd extraction" "override+forensic boots need them"
 
   PORT=2222
   if [ -n "$SSH_KEY" ]; then
@@ -450,23 +464,38 @@ else
         printf 'HOSTNAME=klh-override\nWIFI_SSID=OverrideNet\nWIFI_PSK=OverridePassphrase123\nWIFI_KEYMGMT=wpa-psk\nWIFI_HIDDEN=false\nWIFI_REGDOM=DE\n' \
           | sudo tee "$CFG_MNT/headless-wifi.conf" >/dev/null
         sudo umount "$CFG_MNT"
-        QPID=$(boot_qemu override -drive file="$SCRATCH/cfg.img",format=raw,if=virtio)
-        if [ -n "$QPID" ] && wait_ssh $CD_BOOT_TIMEOUT; then
-          record pass "override: booted to SSH"
-          v=$(guest hostname)
-          [ "$v" = "klh-override" ] && record pass "override: hostname applied" || record fail "override: hostname (got '$v')"
-          v=$(guest_sudo 'nmcli -g 802-11-wireless.ssid connection show HEADLESS-WIFI' 2>/dev/null)
-          [ "$v" = "OverrideNet" ] && record pass "override: NM profile ssid applied" || record fail "override: NM profile ssid (got '$v')"
-          v=$(guest_sudo 'nmcli -s -g 802-11-wireless-security.psk connection show HEADLESS-WIFI' 2>/dev/null)
-          [ "$v" = "OverridePassphrase123" ] && record pass "override: NM profile psk applied (value not printed)" || record fail "override: NM profile psk"
-          v=$(guest 'cat /run/kali-live-headless-config/headless-wifi.conf 2>/dev/null || true')
-          [ -z "$v" ] && record pass "override: config partition unmounted after provisioning" || record fail "override: config partition left mounted"
-          guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu override
-          for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
-          kill -9 "$QPID" 2>/dev/null || true
+        # direct-kernel boot (fast): this stage tests the override logic,
+        # not the bootloader — the BIOS/UEFI stages cover that.
+        if [ "$KERN_OK" = true ]; then
+          pidfile="$SCRATCH/qemu-override.pid"; rm -f "$pidfile"
+          "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" \
+            -kernel "$SCRATCH/vmlinuz" -initrd "$SCRATCH/initrd" \
+            -append "boot=live username=kali hostname=kali console=ttyS0,115200" \
+            -cdrom "$ISO" \
+            -device virtio-net-pci,netdev=net0 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$PORT-:22 \
+            -drive file="$SCRATCH/cfg.img",format=raw,if=virtio \
+            -display none -monitor none -serial "file:$SCRATCH/serial-override.log" \
+            -daemonize -pidfile "$pidfile" >/dev/null 2>&1
+          QPID=$(cat "$pidfile" 2>/dev/null || true)
+          if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
+            record pass "override: booted to SSH"
+            v=$(guest hostname)
+            [ "$v" = "klh-override" ] && record pass "override: hostname applied" || record fail "override: hostname (got '$v')"
+            v=$(guest_sudo 'nmcli -g 802-11-wireless.ssid connection show HEADLESS-WIFI' 2>/dev/null)
+            [ "$v" = "OverrideNet" ] && record pass "override: NM profile ssid applied" || record fail "override: NM profile ssid (got '$v')"
+            v=$(guest_sudo 'nmcli -s -g 802-11-wireless-security.psk connection show HEADLESS-WIFI' 2>/dev/null)
+            [ "$v" = "OverridePassphrase123" ] && record pass "override: NM profile psk applied (value not printed)" || record fail "override: NM profile psk"
+            v=$(guest 'cat /run/kali-live-headless-config/headless-wifi.conf 2>/dev/null || true')
+            [ -z "$v" ] && record pass "override: config partition unmounted after provisioning" || record fail "override: config partition left mounted"
+            guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu override
+            for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
+            kill -9 "$QPID" 2>/dev/null || true
+          else
+            record fail "override: booted to SSH" "see $SCRATCH/serial-override.log"
+            kill_qemu override
+          fi
         else
-          record fail "override: booted to SSH" "see $SCRATCH/serial-override.log"
-          kill_qemu override
+          record skip "config override" "kernel/initrd not extracted"
         fi
       else
         record skip "config override" "could not loop-mount cfg.img"
@@ -507,21 +536,13 @@ else
     fi
 
     # ---- E: forensic boot entry (direct kernel boot with the syslinux entry's cmdline)
-    if [ "$RUN_FORENSIC" = true ]; then
-      ISO_MNT="$SCRATCH/iso-forensic"; mkdir -p "$ISO_MNT"
-      if sudo mount -o ro,loop "$ISO" "$ISO_MNT" 2>/dev/null; then
-        KERN=$(ls "$ISO_MNT"/live/vmlinuz* 2>/dev/null | head -1)
-        INITRD=$(ls "$ISO_MNT"/live/initrd.img* 2>/dev/null | head -1)
-        sudo cp "$KERN" "$SCRATCH/vmlinuz" 2>/dev/null; sudo cp "$INITRD" "$SCRATCH/initrd" 2>/dev/null
-        sudo chmod 644 "$SCRATCH/vmlinuz" "$SCRATCH/initrd"
-        sudo umount "$ISO_MNT"
-        if [ -s "$SCRATCH/vmlinuz" ] && [ -s "$SCRATCH/initrd" ]; then
+    if [ "$RUN_FORENSIC" = true ] && [ "$KERN_OK" = true ]; then
           truncate -s 64M "$SCRATCH/witness.img"
           WITNESS_MD5=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
           pidfile="$SCRATCH/qemu-forensic.pid"; rm -f "$pidfile"
           "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" \
             -kernel "$SCRATCH/vmlinuz" -initrd "$SCRATCH/initrd" \
-            -append "boot=live username=kali hostname=kali systemd.swap=no noautomount" \
+            -append "boot=live username=kali hostname=kali console=ttyS0,115200 systemd.swap=no noautomount" \
             -drive file="$ISO",format=raw,if=virtio,media=disk,readonly=on \
             -device virtio-net-pci,netdev=net0 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$PORT-:22 \
             -drive file="$SCRATCH/witness.img",format=raw,if=virtio \
@@ -541,12 +562,6 @@ else
             record fail "forensic: booted to SSH" "see $SCRATCH/serial-forensic.log"
             kill_qemu forensic
           fi
-        else
-          record skip "forensic" "could not extract kernel/initrd"
-        fi
-      else
-        record skip "forensic" "could not mount ISO"
-      fi
     fi
   else
     record skip "qemu" "no SSH private key available for the baked public key"
