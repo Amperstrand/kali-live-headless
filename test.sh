@@ -408,7 +408,7 @@ else
     truncate -s 64M "$SCRATCH/witness.img"
     WITNESS_MD5=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
     QPID=$(boot_qemu bios)
-    if wait_ssh $BOOT_TIMEOUT; then
+    if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
       record pass "bios: booted to SSH (accel=$ACCEL)"
       common_guest_checks bios
       guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu bios
@@ -477,7 +477,7 @@ else
       QPID=$(boot_qemu uefi \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$SCRATCH/ovmf-vars.fd")
-      if wait_ssh $BOOT_TIMEOUT; then
+      if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
         record pass "uefi: booted to SSH"
         common_guest_checks uefi
         guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu uefi
