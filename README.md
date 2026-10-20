@@ -121,6 +121,22 @@ $ WIFI_PSK='...' ./configure.sh --hostname kali-live --ssid MyNet \
       --keymgmt wpa-psk --regdom US --pubkey ~/.ssh/id_ed25519.pub --assume-yes
 ```
 
+Or configure for **the Wi-Fi network this machine is currently on** — the
+passphrase is read straight from NetworkManager's store, so it is never
+typed, hardcoded, or committed (see `scripts/psk-from-nm.sh`):
+
+```console
+$ WIFI_PSK="$(./scripts/psk-from-nm.sh)" ./configure.sh \
+      --ssid "$(./scripts/psk-from-nm.sh --ssid)" \
+      --pubkey ~/.ssh/id_ed25519.pub --assume-yes
+```
+
+(`./config` still keeps a recoverable copy for the duration of the build —
+that is inherent to unattended Wi-Fi, see the threat model. After the ISO
+is built you can `shred -u config` and re-fetch it from NetworkManager on
+the next build.)
+
+
 ---
 
 ## Configuration reference (`config`, from `config.example`)
