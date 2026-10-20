@@ -126,6 +126,17 @@ mkdir -p "$KLH_COMMON"
 klh_info "overlaying repo customizations into kali-config/common/"
 cp -a "$OVERLAY_DIR/." "$KLH_COMMON/"
 
+# Scrub staged secrets on ANY exit from here on. The trap must be armed
+# BEFORE the secrets are staged (review M2: staging first, trapping later
+# left the PSK profile on disk when an early command failed).
+scrub_secrets() {
+  if [ -n "${NM_PROFILE:-}" ]; then rm -f "$NM_PROFILE"; fi
+  # authorized_keys/hostname/regdom are not secret, but remove for cleanliness
+  if [ -n "${STAGE_ETC:-}" ]; then rm -rf "$STAGE_ETC"; fi
+  rm -rf "$KLH_COMMON/includes.chroot/etc/default/kali-live-headless"
+}
+[ "$KEEP_SECRETS" = true ] || trap scrub_secrets EXIT
+
 # 1) NetworkManager profile (contains the PSK — mode 0600, never in git).
 #    Rendered by the shared generator (also used at boot for the KLHCONFIG
 #    override) so build-time and boot-time substitution stay identical.
@@ -168,13 +179,6 @@ install -D -m 0644 \
   "$STAGE_ETC/sshd_config.d/0000-kali-live-headless.conf"
 
 klh_ok "staged overlay + profile + keys into $UPSTREAM_DIR"
-
-scrub_secrets() {
-  rm -f "$NM_PROFILE"
-  # authorized_keys/hostname/regdom are not secret, but remove for cleanliness
-  rm -rf "$STAGE_ETC" "$KLH_COMMON/includes.chroot/etc/default/kali-live-headless"
-}
-[ "$KEEP_SECRETS" = true ] || trap scrub_secrets EXIT
 
 # -------------------------------------------------------------- manifest
 MANIFEST="$OUT_DIR/build-manifest-$(date -u '+%Y%m%dT%H%M%SZ').txt"
