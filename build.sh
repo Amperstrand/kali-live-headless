@@ -126,18 +126,18 @@ mkdir -p "$KLH_COMMON"
 klh_info "overlaying repo customizations into kali-config/common/"
 cp -a "$OVERLAY_DIR/." "$KLH_COMMON/"
 
-# 1) NetworkManager profile (contains the PSK — mode 0600, never in git)
+# 1) NetworkManager profile (contains the PSK — mode 0600, never in git).
+#    Rendered by the shared generator (also used at boot for the KLHCONFIG
+#    override) so build-time and boot-time substitution stay identical.
+GEN="$OVERLAY_DIR/includes.chroot/usr/local/sbin/kali-live-headless-wifi-gen"
+[ -x "$GEN" ] || klh_die "profile generator missing: $GEN"
 NM_DIR="$KLH_COMMON/includes.chroot/etc/NetworkManager/system-connections"
 mkdir -p "$NM_DIR"
 klh_info "generating NetworkManager profile (secret — not printed)"
 NM_PROFILE="$NM_DIR/headless-wifi.nmconnection"
-while IFS= read -r line; do
-  line=${line//@SSID@/$WIFI_SSID}
-  line=${line//@PSK@/$WIFI_PSK}
-  line=${line//@KEYMGMT@/$WIFI_KEYMGMT}
-  line=${line//@HIDDEN@/$WIFI_HIDDEN}
-  printf '%s\n' "$line"
-done < "$REPO_DIR/templates/headless-wifi.nmconnection.in" > "$NM_PROFILE"
+KLH_SSID="$WIFI_SSID" KLH_PSK="$WIFI_PSK" KLH_KEYMGMT="$WIFI_KEYMGMT" \
+  KLH_HIDDEN="$WIFI_HIDDEN" KLH_TEMPLATE="$REPO_DIR/templates/headless-wifi.nmconnection.in" \
+  "$GEN" > "$NM_PROFILE"
 chmod 0600 "$NM_PROFILE"
 
 # 2) authorized_keys (public data, but keep tight perms anyway)
@@ -156,6 +156,9 @@ chmod 0600 "$STAGE_ETC/authorized_keys"
 # 3) runtime config consumed by /usr/local/sbin/kali-live-headless-provision
 printf '%s\n' "$HOSTNAME" > "$STAGE_ETC/hostname"
 chmod 0644 "$STAGE_ETC/hostname"
+# template for boot-time regeneration (KLHCONFIG credential override)
+install -m 0644 "$REPO_DIR/templates/headless-wifi.nmconnection.in" \
+  "$STAGE_ETC/headless-wifi.nmconnection.in"
 cat > "$KLH_COMMON/includes.chroot/etc/default/kali-live-headless" <<EOF
 # Runtime defaults for kali-live-headless (no secrets here).
 WIFI_REGDOM="$WIFI_REGDOM"

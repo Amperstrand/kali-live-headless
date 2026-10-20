@@ -14,23 +14,81 @@
 #   5. SSH host keys present (baked at build time; regenerated if lost)
 #   6. Wi-Fi regulatory domain applied before NetworkManager starts
 #   7. avahi re-registered under the new hostname
+#   8. Wi-Fi credential OVERRIDE from a boot-medium config partition:
+#      a partition labeled KLHCONFIG may carry headless-wifi.conf
+#      (HOSTNAME/WIFI_SSID/WIFI_PSK/WIFI_KEYMGMT/WIFI_HIDDEN/WIFI_REGDOM,
+#      plain KEY=value lines). When present and valid, the NetworkManager
+#      profile is REGENERATED from the template at boot — so changing the
+#      Wi-Fi password is a file edit on the stick, NOT a rebuild.
+#      Precedence: KLHCONFIG headless-wifi.conf > values baked into the
+#      ISO at build time. An invalid file is rejected (logged, no values)
+#      and the baked profile is kept.
 #
-# Logs to the journal AND the console.
+# Logs to the journal AND the console. Never logs credential values.
 
 set -u
 
 CFG_DIR=/etc/kali-live-headless
 TAG=kali-live-headless
+GEN=/usr/local/sbin/kali-live-headless-wifi-gen
+TEMPLATE=$CFG_DIR/headless-wifi.nmconnection.in
+NM_PROFILE=/etc/NetworkManager/system-connections/headless-wifi.nmconnection
+OVERRIDE_MNT=/run/kali-live-headless-config
 
 log() {
     logger -t "$TAG" -- "$*" 2>/dev/null || true
     printf '[%s] %s\n' "$TAG" "$*" > /dev/console 2>/dev/null || true
 }
 
+conf_value() { # $1=file $2=KEY -> first plain KEY=value value
+    [ -r "$1" ] || return 1
+    sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n 1
+}
+
+valid_hostname() {
+    [ -n "$1" ] || return 1
+    case "$1" in -*|*-|*'*'*|*'?'*|*'['*) return 1 ;; esac
+    printf '%s' "$1" | grep -Eq '^[A-Za-z0-9-]{1,63}$'
+}
+
+valid_regdom() {
+    printf '%s' "$1" | grep -Eq '^[A-Z]{2}$'
+}
+
+# ------------------------------------------------ boot-medium config override
+O_HOST=""; O_SSID=""; O_PSK=""; O_KEYMGMT=""; O_HIDDEN=""; O_REGDOM=""
+O_DEV=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2 == "KLHCONFIG" { print "/dev/" $1; exit }')
+if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
+   && mkdir -p "$OVERRIDE_MNT" 2>/dev/null \
+   && mount -o ro "$O_DEV" "$OVERRIDE_MNT" 2>/dev/null; then
+    if [ -r "$OVERRIDE_MNT/headless-wifi.conf" ]; then
+        O_HOST=$(conf_value "$OVERRIDE_MNT/headless-wifi.conf" HOSTNAME)
+        O_SSID=$(conf_value "$OVERRIDE_MNT/headless-wifi.conf" WIFI_SSID)
+        O_PSK=$(conf_value "$OVERRIDE_MNT/headless-wifi.conf" WIFI_PSK)
+        O_KEYMGMT=$(conf_value "$OVERRIDE_MNT/headless-wifi.conf" WIFI_KEYMGMT)
+        O_HIDDEN=$(conf_value "$OVERRIDE_MNT/headless-wifi.conf" WIFI_HIDDEN)
+        O_REGDOM=$(conf_value "$OVERRIDE_MNT/headless-wifi.conf" WIFI_REGDOM)
+        [ -n "$O_KEYMGMT" ] || O_KEYMGMT=wpa-psk
+        [ -n "$O_HIDDEN" ] || O_HIDDEN=false
+        log "boot-medium config found (KLHCONFIG) — applying overrides (values not logged)"
+    else
+        log "KLHCONFIG partition has no headless-wifi.conf — using baked credentials"
+    fi
+    umount "$OVERRIDE_MNT" 2>/dev/null || true
+    rmdir "$OVERRIDE_MNT" 2>/dev/null || true
+fi
+
 # ---------------------------------------------------------------- hostname
 HN="kali-live"
 if [ -r "$CFG_DIR/hostname" ]; then
     HN=$(head -n1 "$CFG_DIR/hostname" 2>/dev/null || echo kali-live)
+fi
+if [ -n "$O_HOST" ]; then
+    if valid_hostname "$O_HOST"; then
+        HN="$O_HOST"
+    else
+        log "WARNING: invalid HOSTNAME in boot-medium config ignored"
+    fi
 fi
 
 if [ "$(hostname)" != "$HN" ]; then
@@ -68,7 +126,7 @@ if [ -s "$CFG_DIR/authorized_keys" ]; then
     # Keep skel current too (covers the fallback user-creation path).
     install -d -m 0700 /etc/skel/.ssh
     install -m 0600 "$CFG_DIR/authorized_keys" /etc/skel/.ssh/authorized_keys
-    NKEYS=$(grep -c -v '^[[:space:]]*\(#\|$\)' "$CFG_DIR/authorized_keys" 2>/dev/null || echo 0)
+    NKEYS=$(grep -c -v '^[[:space:]]*\(#\|$\)' "$CFG_DIR/authorized_keys" 2>/dev/null || true)
     log "authorized_keys installed for '$USER' ($NKEYS key(s))"
 else
     log "WARNING: $CFG_DIR/authorized_keys is missing or empty"
@@ -95,13 +153,41 @@ if [ ! -s /etc/ssh/ssh_host_ed25519_key ]; then
     ssh-keygen -A > /dev/null 2>&1 || true
 fi
 
+# ------------------------------------------------- Wi-Fi profile override
+# Applied only when the boot-medium config carries a complete credential
+# set. The generator validates and escapes; on any failure the baked
+# profile is kept (all-or-nothing, predictable).
+if [ -n "$O_SSID" ] && [ -n "$O_PSK" ] && [ -x "$GEN" ] && [ -r "$TEMPLATE" ]; then
+    if KLH_SSID="$O_SSID" KLH_PSK="$O_PSK" KLH_KEYMGMT="$O_KEYMGMT" \
+       KLH_HIDDEN="$O_HIDDEN" KLH_TEMPLATE="$TEMPLATE" \
+       "$GEN" > "$NM_PROFILE.new" 2>/dev/null; then
+        chown root:root "$NM_PROFILE.new" 2>/dev/null || true
+        chmod 0600 "$NM_PROFILE.new"
+        mv -f "$NM_PROFILE.new" "$NM_PROFILE"
+        log "Wi-Fi profile regenerated from boot-medium config (no rebuild needed)"
+        # no-op this early (we run Before=NetworkManager); covers late re-runs
+        command -v nmcli > /dev/null 2>&1 && nmcli connection reload 2>/dev/null || true
+    else
+        rm -f "$NM_PROFILE.new" 2>/dev/null || true
+        log "WARNING: boot-medium headless-wifi.conf rejected (invalid values) — baked credentials kept"
+    fi
+elif [ -n "$O_SSID" ] || [ -n "$O_PSK" ]; then
+    log "WARNING: boot-medium config has incomplete Wi-Fi values — baked credentials kept"
+fi
+
 # ------------------------------------------------------- regulatory domain
-if [ -r /etc/default/kali-live-headless ]; then
+REGDOM="$O_REGDOM"
+if [ -z "$REGDOM" ] && [ -r /etc/default/kali-live-headless ]; then
     # shellcheck disable=SC1091
     . /etc/default/kali-live-headless
-    if [ -n "${WIFI_REGDOM:-}" ] && command -v iw > /dev/null 2>&1; then
-        iw reg set "$WIFI_REGDOM" 2>/dev/null || true
-        log "Wi-Fi regulatory domain set to $WIFI_REGDOM"
+    REGDOM=${WIFI_REGDOM:-}
+fi
+if [ -n "$REGDOM" ] && command -v iw > /dev/null 2>&1; then
+    if valid_regdom "$REGDOM"; then
+        iw reg set "$REGDOM" 2>/dev/null || true
+        log "Wi-Fi regulatory domain set to $REGDOM"
+    else
+        log "WARNING: invalid WIFI_REGDOM '$REGDOM' ignored"
     fi
 fi
 

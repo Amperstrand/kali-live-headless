@@ -66,6 +66,9 @@ otherwise:
 * `./config` (chmod 600, git-ignored) holds the passphrase on the build host.
 * The generated NetworkManager profile — with the passphrase — is baked into
   the ISO's squashfs, and lands on every stick you flash from it.
+* A flashed stick also carries the passphrase in plaintext on its
+  `KLHCONFIG` partition (`headless-wifi.conf`) so it can be changed without
+  a rebuild — same exposure, one more copy.
 * Anyone with physical access to the stick, or a copy of the ISO, can
   extract the passphrase and the (public) authorized keys.
 * Mitigations applied: minimal copies (staged only during the build, then
@@ -182,6 +185,53 @@ the next build.)
 
 ---
 
+## Changing Wi-Fi credentials — no rebuild needed
+
+A stick flashed with `./flash.sh` carries a small **second partition
+labeled `KLHCONFIG`** (FAT32, ~64 MB) holding `headless-wifi.conf`:
+
+```console
+HOSTNAME=kali-live
+WIFI_SSID=MyHomeNetwork
+WIFI_PSK=new-passphrase-here
+WIFI_KEYMGMT=wpa-psk
+WIFI_HIDDEN=false
+WIFI_REGDOM=US
+```
+
+On every boot, `kali-live-headless-provision` mounts that partition,
+validates the file, and **regenerates the NetworkManager profile from the
+shipped template** before NetworkManager starts. So changing the Wi-Fi
+password (or SSID/hostname/regdom) is:
+
+1. Plug the stick into any computer (the partition is FAT32 — Linux,
+   macOS and Windows can all edit it).
+2. Edit `headless-wifi.conf`, save, eject.
+3. Boot the stick. Done — no rebuild, no reflash.
+
+Rules and precedence:
+
+* Plain `KEY=value` lines — no quotes, no escaping, no leading/trailing
+  spaces. `WIFI_PSK` 8–63 chars; `WIFI_KEYMGMT` `wpa-psk` or `sae`;
+  `WIFI_HIDDEN`/`WIFI_REGDOM` optional.
+* **KLHCONFIG `headless-wifi.conf` wins over the values baked into the
+  ISO** at build time.
+* An absent, incomplete or invalid file is rejected with a logged warning
+  (`journalctl -t kali-live-headless -b`) and the baked credentials are
+  used — the stick keeps booting either way.
+* Values are never written to logs or the console.
+* `flash.sh` seeds the file from `./config` at flash time
+  (`scripts/stick-conf.sh` generates it; `--from-nm` pulls the current
+  network's credentials from NetworkManager). If the partition could not
+  be created (tiny stick, missing `sfdisk`/`mkfs`), the stick still works
+  — but credential changes then require a rebuild.
+
+The passphrase on that partition is plaintext — exactly like the one in
+the ISO (see the threat model: anyone with physical access to the stick
+can read it; rotate on loss).
+
+---
+
 ## Live vs forensic boot mode
 
 Kali's boot menu (BIOS and UEFI) is preserved untouched, including the
@@ -227,6 +277,9 @@ The suite covers (see `test.sh` for the authoritative list):
   NM profile loaded; ethernet auto-connected; avahi active; provision
   success; hostname; no swap
 * QEMU **UEFI** boot (OVMF): core assertions repeated
+* QEMU **credential override** boot: a `KLHCONFIG` disk with different
+  credentials — asserts the provisioner regenerates the NM profile and
+  hostname at boot (the "password change without rebuild" path)
 * QEMU **forensic** boot (the syslinux forensic entry's exact cmdline):
   headless features work, no swap, witness disk untouched
 * **Witness disk**: a blank raw disk is attached to the VM and compared
@@ -270,6 +323,8 @@ flash.sh                  safe USB flasher (list → confirm → write → verif
 test.sh                   staged validation suite (static/ISO/QEMU)
 config.example            documented configuration template
 lib/common.sh             shared validation helpers
+scripts/psk-from-nm.sh    fetch SSID/PSK from NetworkManager (no hardcoding)
+scripts/stick-conf.sh     emit headless-wifi.conf for the KLHCONFIG partition
 templates/headless-wifi.nmconnection.in   NetworkManager profile template
 overlay/kali-config/common/               ← everything below is copied into
   package-lists/headless.list.chroot         the upstream kali-config tree
@@ -279,6 +334,7 @@ overlay/kali-config/common/               ← everything below is copied into
   includes.chroot/etc/systemd/system/kali-live-console-banner.service
   includes.chroot/etc/systemd/system/kali-live-wifi-watchdog.service
   includes.chroot/usr/local/sbin/kali-live-headless-provision
+  includes.chroot/usr/local/sbin/kali-live-headless-wifi-gen
   includes.chroot/usr/local/sbin/kali-live-console-banner
   includes.chroot/usr/local/sbin/kali-live-wifi-watchdog
 ```

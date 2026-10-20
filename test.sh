@@ -127,15 +127,14 @@ if [ -r "$REPO_DIR/config" ]; then
   fi
 fi
 
-# generate + structurally validate an NM profile from the template
-if [ -r "$REPO_DIR/config" ] && command -v python3 >/dev/null; then
+# generate + structurally validate an NM profile via the shared generator
+GEN="$REPO_DIR/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-headless-wifi-gen"
+if [ -r "$REPO_DIR/config" ] && command -v python3 >/dev/null && [ -x "$GEN" ]; then
   # shellcheck disable=SC1091
   ( source "$REPO_DIR/lib/common.sh"; klh_load_config "$REPO_DIR/config"
-    while IFS= read -r line; do
-      line=${line//@SSID@/$WIFI_SSID}; line=${line//@PSK@/$WIFI_PSK}
-      line=${line//@KEYMGMT@/$WIFI_KEYMGMT}; line=${line//@HIDDEN@/$WIFI_HIDDEN}
-      printf '%s\n' "$line"
-    done < "$REPO_DIR/templates/headless-wifi.nmconnection.in" > "$SCRATCH/profile.nmconnection" )
+    KLH_SSID="$WIFI_SSID" KLH_PSK="$WIFI_PSK" KLH_KEYMGMT="$WIFI_KEYMGMT" \
+    KLH_HIDDEN="$WIFI_HIDDEN" KLH_TEMPLATE="$REPO_DIR/templates/headless-wifi.nmconnection.in" \
+    "$GEN" > "$SCRATCH/profile.nmconnection" )
   chmod 600 "$SCRATCH/profile.nmconnection"
   python3 - "$SCRATCH/profile.nmconnection" "$WIFI_SSID_EXPECTED" <<'PYEOF' && record pass "NM profile structure" || record fail "NM profile structure"
 import sys, configparser
@@ -151,9 +150,24 @@ assert p["wifi-security"]["key-mgmt"] in ("wpa-psk", "sae")
 assert 8 <= len(p["wifi-security"]["psk"]) <= 63
 assert "interface-name" not in p["connection"], "must not pin interface-name"
 PYEOF
+  # keyfile escaping: passphrase with backslash/&/space must round-trip exactly
+  KLH_SSID='Esc Net' KLH_PSK='p\ss k&$x9' KLH_KEYMGMT=wpa-psk KLH_HIDDEN=false \
+  KLH_TEMPLATE="$REPO_DIR/templates/headless-wifi.nmconnection.in" \
+    "$GEN" > "$SCRATCH/profile-esc.nmconnection"
+  python3 - "$SCRATCH/profile-esc.nmconnection" <<'PYEOF' && record pass "NM keyfile escaping" || record fail "NM keyfile escaping"
+import sys, configparser
+raw = open(sys.argv[1]).read()
+p = configparser.RawConfigParser()
+assert p.read(sys.argv[1]), "ini unreadable"
+assert p["wifi"]["ssid"] == "Esc Net", repr(p["wifi"]["ssid"])
+# configparser does not emulate GLib unescaping: assert the RAW bytes carry
+# the keyfile-escaped form (backslash doubled) that NM/GKeyFile reads back
+# as the original single-backslash passphrase.
+assert "\npsk=p\\\\ss k&$x9\n" in raw, "psk not escaped for the keyfile format"
+PYEOF
   [ "$(stat -c %a "$SCRATCH/profile.nmconnection")" = "600" ] && record pass "NM profile mode 0600" || record fail "NM profile mode 0600"
 else
-  record skip "NM profile" "no config or no python3"
+  record skip "NM profile" "no config, python3 or generator"
 fi
 
 # systemd unit sanity
@@ -233,9 +247,10 @@ else
     for u in ssh NetworkManager avahi-daemon "${UNITS[@]}"; do
       sudo test -L "$SQ_MNT/etc/systemd/system/multi-user.target.wants/$u.service" && record pass "enabled: $u" || record fail "enabled: $u"
     done
-    for s in kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog; do
+    for s in kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-headless-wifi-gen; do
       sudo test -x "$SQ_MNT/usr/local/sbin/$s" && record pass "script executable: $s" || record fail "script executable: $s"
     done
+    sudo test -f "$SQ_MNT/etc/kali-live-headless/headless-wifi.nmconnection.in" && record pass "wifi profile template shipped (runtime override support)" || record fail "wifi profile template shipped"
 
     # host keys baked per-build
     if sudo test -f "$SQ_MNT/etc/ssh/ssh_host_ed25519_key"; then
@@ -404,6 +419,47 @@ else
     else
       record fail "bios: booted to SSH" "timeout after ${BOOT_TIMEOUT}s — see $SCRATCH/serial-bios.log"
       kill_qemu bios
+    fi
+
+    # ---- C2: credential override from a KLHCONFIG partition (no rebuild)
+    # Boots with a second disk labeled KLHCONFIG carrying headless-wifi.conf
+    # with DIFFERENT credentials; asserts the provisioner regenerated the
+    # NM profile from it (this is the "password change without rebuild" path).
+    if command -v mkfs.vfat >/dev/null 2>&1 || command -v mke2fs >/dev/null 2>&1; then
+      truncate -s 32M "$SCRATCH/cfg.img"
+      if command -v mkfs.vfat >/dev/null 2>&1; then
+        mkfs.vfat -n KLHCONFIG "$SCRATCH/cfg.img" >/dev/null 2>&1
+      else
+        mke2fs -F -L KLHCONFIG "$SCRATCH/cfg.img" >/dev/null 2>&1
+      fi
+      CFG_MNT="$SCRATCH/cfgmnt"; mkdir -p "$CFG_MNT"
+      if sudo mount -o loop "$SCRATCH/cfg.img" "$CFG_MNT" 2>/dev/null; then
+        printf 'HOSTNAME=klh-override\nWIFI_SSID=OverrideNet\nWIFI_PSK=OverridePassphrase123\nWIFI_KEYMGMT=wpa-psk\nWIFI_HIDDEN=false\nWIFI_REGDOM=DE\n' \
+          | sudo tee "$CFG_MNT/headless-wifi.conf" >/dev/null
+        sudo umount "$CFG_MNT"
+        QPID=$(boot_qemu override -drive file="$SCRATCH/cfg.img",format=raw,if=virtio)
+        if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
+          record pass "override: booted to SSH"
+          v=$(guest hostname)
+          [ "$v" = "klh-override" ] && record pass "override: hostname applied" || record fail "override: hostname (got '$v')"
+          v=$(guest_sudo 'nmcli -g 802-11-wireless.ssid connection show HEADLESS-WIFI' 2>/dev/null)
+          [ "$v" = "OverrideNet" ] && record pass "override: NM profile ssid applied" || record fail "override: NM profile ssid (got '$v')"
+          v=$(guest_sudo 'nmcli -s -g 802-11-wireless-security.psk connection show HEADLESS-WIFI' 2>/dev/null)
+          [ "$v" = "OverridePassphrase123" ] && record pass "override: NM profile psk applied (value not printed)" || record fail "override: NM profile psk"
+          v=$(guest 'cat /run/kali-live-headless-config/headless-wifi.conf 2>/dev/null || true')
+          [ -z "$v" ] && record pass "override: config partition unmounted after provisioning" || record fail "override: config partition left mounted"
+          guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu override
+          for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
+          kill -9 "$QPID" 2>/dev/null || true
+        else
+          record fail "override: booted to SSH" "see $SCRATCH/serial-override.log"
+          kill_qemu override
+        fi
+      else
+        record skip "config override" "could not loop-mount cfg.img"
+      fi
+    else
+      record skip "config override" "no mkfs.vfat/mke2fs on host"
     fi
 
     # ---- D: UEFI

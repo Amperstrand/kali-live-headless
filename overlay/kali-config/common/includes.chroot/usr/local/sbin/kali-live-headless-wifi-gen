@@ -1,0 +1,80 @@
+#!/bin/sh
+# kali-live-headless-wifi-gen — render the headless-wifi NM keyfile profile
+# from the template. Single source of truth, used at three times:
+#
+#   1. build time  — build.sh bakes the default profile into the ISO
+#   2. every boot  — kali-live-headless-provision re-renders it, honoring
+#                    an override from the KLHCONFIG partition (lets you
+#                    change the Wi-Fi password WITHOUT rebuilding)
+#   3. test time   — test.sh structural/escaping checks
+#
+# Input comes via the ENVIRONMENT (secrets never appear in argv / ps):
+#   KLH_SSID      SSID (1-32 bytes)
+#   KLH_PSK       passphrase (8-63 bytes)
+#   KLH_KEYMGMT   wpa-psk (default) | sae
+#   KLH_HIDDEN    false (default) | true
+#   KLH_TEMPLATE  template path
+#                 (default /etc/kali-live-headless/headless-wifi.nmconnection.in)
+#
+# Emits the keyfile on stdout. Values are escaped for the GLib keyfile
+# format (backslash is special there). Exits 1 with a reason on stderr.
+
+set -u
+
+die() { printf 'kali-live-headless-wifi-gen: %s\n' "$*" >&2; exit 1; }
+
+SSID=${KLH_SSID:-}
+PSK=${KLH_PSK:-}
+KEYMGMT=${KLH_KEYMGMT:-wpa-psk}
+HIDDEN=${KLH_HIDDEN:-false}
+TEMPLATE=${KLH_TEMPLATE:-/etc/kali-live-headless/headless-wifi.nmconnection.in}
+
+[ -n "$SSID" ] || die "KLH_SSID is empty"
+[ -n "$PSK" ]  || die "KLH_PSK is empty"
+case "$KEYMGMT" in wpa-psk|sae) ;; *) die "KLH_KEYMGMT must be wpa-psk or sae" ;; esac
+case "$HIDDEN" in true|false)   ;; *) die "KLH_HIDDEN must be true or false" ;; esac
+
+[ "$(printf '%s' "$SSID" | wc -c)" -le 32 ] || die "SSID longer than 32 bytes"
+PSKLEN=$(printf '%s' "$PSK" | wc -c)
+[ "$PSKLEN" -ge 8 ] && [ "$PSKLEN" -le 63 ] || die "PSK must be 8-63 bytes"
+# control chars or leading/trailing spaces would corrupt the keyfile value
+if printf '%s' "$SSID$PSK" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+    die "control characters are not allowed in SSID/PSK"
+fi
+case "$SSID$PSK" in
+    ' '*) die "leading space is not allowed" ;;
+    *' ') die "trailing space is not allowed" ;;
+esac
+
+[ -r "$TEMPLATE" ] || die "template not readable: $TEMPLATE"
+
+# awk is fed via ENVIRON (raw bytes — unlike `awk -v`, which would eat
+# backslash escapes) and does literal replacement: index/substr only, no
+# regex, no `&` substitution semantics, so any passphrase survives intact.
+# esc(): keyfile values treat \ as an escape character -> double it.
+exec awk '
+function esc(v) { gsub(/\\/, "\\\\", v); return v }
+function repl(s, pat, val,   out, i) {
+    out = ""
+    i = index(s, pat)
+    while (i > 0) {
+        out = out substr(s, 1, i - 1) val
+        s = substr(s, i + length(pat))
+        i = index(s, pat)
+    }
+    return out s
+}
+BEGIN {
+    ssid   = ENVIRON["KLH_SSID"]
+    psk    = ENVIRON["KLH_PSK"]
+    keymg  = ENVIRON["KLH_KEYMGMT"]
+    hidden = ENVIRON["KLH_HIDDEN"]
+}
+{
+    line = $0
+    line = repl(line, "@SSID@",   esc(ssid))
+    line = repl(line, "@PSK@",    esc(psk))
+    line = repl(line, "@KEYMGMT@", keymg)
+    line = repl(line, "@HIDDEN@",  hidden)
+    print line
+}' "$TEMPLATE"

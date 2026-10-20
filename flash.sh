@@ -23,6 +23,7 @@ klh_require_cmd dd
 ISO=""
 DEVICE=""
 ASSUME_YES=false
+ORIG_ARGS=("$@")   # preserved across the sudo re-exec below
 
 usage() {
   cat <<EOF
@@ -48,7 +49,7 @@ EOF
   esac
 done
 
-[ "$(id -u)" -eq 0 ] || exec sudo "$0" "$@"
+[ "$(id -u)" -eq 0 ] || exec sudo "$0" "${ORIG_ARGS[@]}"
 
 # ---------------------------------------------------------------- find ISO
 if [ -z "$ISO" ]; then
@@ -186,6 +187,62 @@ else
   klh_die "verification FAILED — $DEVPATH does not match the ISO. Try another port/stick or re-run."
 fi
 
+# ------------------------------------------------- KLHCONFIG config partition
+# Appends a small partition labeled KLHCONFIG holding headless-wifi.conf so
+# Wi-Fi credentials can be changed later WITHOUT rebuilding: edit the file
+# on the stick (FAT32 — editable from Linux/macOS/Windows) and reboot it.
+# Best effort: every failure path warns and leaves a bootable stick with
+# the credentials baked into the ISO.
+make_config_partition() {
+  local start_mb start_sector part stick_mb i mnt
+  if ! command -v sfdisk >/dev/null 2>&1; then
+    klh_warn "sfdisk not installed — skipping config partition (credential changes would need a rebuild)"
+    return 0
+  fi
+  stick_mb=$(( $(blockdev --getsize64 "$DEVPATH") / 1048576 ))
+  start_mb=$(( (ISO_SIZE + 1048575) / 1048576 + 1 ))   # 1 MiB-aligned, past the ISO
+  if [ "$stick_mb" -lt $((start_mb + 64)) ]; then
+    klh_warn "stick smaller than ISO + 64M — skipping config partition"
+    return 0
+  fi
+  start_sector=$(( start_mb * 2048 ))
+  if ! printf 'start=%s, type=0c\n' "$start_sector" | sfdisk --append "$DEVPATH" >/dev/null 2>&1; then
+    klh_warn "could not append a config partition — skipping (stick stays bootable)"
+    return 0
+  fi
+  blockdev --rereadpt "$DEVPATH" 2>/dev/null || true
+  case "$DEVPATH" in
+    *[0-9]) part="${DEVPATH}p2" ;;   # nvme0n1 -> nvme0n1p2, mmcblk0 -> mmcblk0p2
+    *)      part="${DEVPATH}2"  ;;   # sdb -> sdb2
+  esac
+  for i in 1 2 3 4 5; do [ -b "$part" ] && break; sleep 1; done
+  if [ ! -b "$part" ]; then
+    klh_warn "$part did not appear — skipping config partition"
+    return 0
+  fi
+  if command -v mkfs.vfat >/dev/null 2>&1; then
+    mkfs.vfat -n KLHCONFIG "$part" >/dev/null 2>&1 || { klh_warn "mkfs.vfat failed — skipping config partition"; return 0; }
+  elif command -v mke2fs >/dev/null 2>&1; then
+    klh_warn "mkfs.vfat missing — using ext4 (editable on Linux only)"
+    mke2fs -F -L KLHCONFIG "$part" >/dev/null 2>&1 || { klh_warn "mke2fs failed — skipping config partition"; return 0; }
+  else
+    klh_warn "no mkfs tool found — skipping config partition"
+    return 0
+  fi
+  mnt=$(mktemp -d)
+  if mount "$part" "$mnt" 2>/dev/null; then
+    "$REPO_DIR/scripts/stick-conf.sh" > "$mnt/headless-wifi.conf" 2>/dev/null \
+      || klh_warn "could not generate headless-wifi.conf — fill it in on the stick (see README)"
+    umount "$mnt" || true
+    klh_ok "config partition $part (label KLHCONFIG, headless-wifi.conf written)"
+  else
+    klh_warn "could not mount $part to write headless-wifi.conf"
+  fi
+  rmdir "$mnt" 2>/dev/null || true
+  return 0
+}
+make_config_partition
+
 cat <<EOF
 
 Done. Next steps:
@@ -195,4 +252,7 @@ Done. Next steps:
   3. Wait 1-3 minutes, then from another machine on the same network:
        ssh kali@${HOSTNAME_FROM_CONFIG:-kali-live}.local
      (or ssh kali@<IPv4 shown on the stick machine's console>)
+
+Wi-Fi password changed? NO rebuild needed: plug the stick into any
+computer, open the KLHCONFIG partition, edit headless-wifi.conf, eject.
 EOF
