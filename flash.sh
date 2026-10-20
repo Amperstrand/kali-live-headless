@@ -71,8 +71,8 @@ echo
 # ------------------------------------------------------- list USB devices
 # Removable = removable flag (RM=1) or USB transport. Whole disks only.
 mapfile -t CANDIDATES < <(
-  lsblk -rpn -o NAME,SIZE,MODEL,TRAN,RM,TYPE 2>/dev/null \
-    | awk -F' ' '$6 == "disk" && ($5 == "1" || tolower($4) == "usb") { print $1 "|" $2 "|" $3 }'
+  lsblk -rpn -o NAME,SIZE,TRAN,RM,TYPE,MODEL 2>/dev/null \
+    | awk -F' ' '$5 == "disk" && ($4 == "1" || tolower($3) == "usb") { m=$6; for (i=7; i<=NF; i++) m=m" "$i; print $1 "|" $2 "|" m }'
 )
 
 if [ "${#CANDIDATES[@]}" -eq 0 ]; then
@@ -127,7 +127,7 @@ validate_device() { # $1 = device path ; returns 0 if usable
   [ -z "$sysdisk" ] || [ "$(realpath "$dev")" != "$sysdisk" ] || { klh_warn "$dev IS THE RUNNING SYSTEM DISK — refusing"; return 1; }
   local mounted
   mounted=$(lsblk -rn -o MOUNTPOINTS "$dev" 2>/dev/null | grep -v '^$' || true)
-  [ -z "$mounted" ] || { klh_warn "$dev has mounted partitions:" $'\n'"$mounted" ; klh_warn "unmount first, e.g.: sudo umount ..."; return 1; }
+  [ -z "$mounted" ] || { klh_warn "$dev has mounted partitions:"$'\n'"$mounted"; klh_warn "unmount first, e.g.: sudo umount ..."; return 1; }
   return 0
 }
 
@@ -243,6 +243,7 @@ make_config_partition() {
 }
 make_config_partition
 
+STICK_HOSTNAME=$( ( source "$REPO_DIR/lib/common.sh"; klh_load_config "$REPO_DIR/config" 2>/dev/null && echo "$HOSTNAME" ) || echo kali-live )
 cat <<EOF
 
 Done. Next steps:
@@ -250,7 +251,7 @@ Done. Next steps:
   2. Pick "Live system" in the boot menu (or "forensic mode" to also
      block swap + automounting of internal disks).
   3. Wait 1-3 minutes, then from another machine on the same network:
-       ssh kali@${HOSTNAME_FROM_CONFIG:-kali-live}.local
+       ssh kali@${STICK_HOSTNAME}.local
      (or ssh kali@<IPv4 shown on the stick machine's console>)
 
 Wi-Fi password changed? NO rebuild needed: plug the stick into any

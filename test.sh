@@ -80,11 +80,19 @@ else
 fi
 if [ -n "$SC" ]; then
   if [ "$SC" = "shellcheck" ]; then
-    shellcheck -x "$REPO_DIR"/build.sh "$REPO_DIR"/configure.sh "$REPO_DIR"/flash.sh "$REPO_DIR"/lib/common.sh 2>"$SCRATCH/sc.out" \
+    shellcheck -x "$REPO_DIR"/build.sh "$REPO_DIR"/configure.sh "$REPO_DIR"/flash.sh "$REPO_DIR"/test.sh "$REPO_DIR"/lib/common.sh 2>"$SCRATCH/sc.out" \
+      && shellcheck -s sh "$REPO_DIR"/overlay/kali-config/common/hooks/live/*.hook.chroot \
+                    "$REPO_DIR"/overlay/kali-config/common/includes.chroot/usr/local/sbin/* >>"$SCRATCH/sc.out" 2>&1 \
       && record pass "shellcheck" || { [ -s "$SCRATCH/sc.out" ] && record fail "shellcheck" "$(grep -c '^' "$SCRATCH/sc.out") findings" || record pass "shellcheck"; }
   else
     $SC run --rm -v "$REPO_DIR:/src:ro" koalaman/shellcheck:stable \
-      /src/build.sh /src/configure.sh /src/flash.sh /src/lib/common.sh >"$SCRATCH/sc.out" 2>&1 \
+      /src/build.sh /src/configure.sh /src/flash.sh /src/test.sh /src/lib/common.sh >"$SCRATCH/sc.out" 2>&1 \
+      && $SC run --rm -v "$REPO_DIR:/src:ro" -i koalaman/shellcheck:stable -s sh \
+          /src/overlay/kali-config/common/hooks/live/zz-headless-configure.hook.chroot \
+          /src/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-headless-provision \
+          /src/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-console-banner \
+          /src/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-wifi-watchdog \
+          /src/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-wifi-gen >>"$SCRATCH/sc.out" 2>&1 \
       && record pass "shellcheck (container)" || { [ -s "$SCRATCH/sc.out" ] && record fail "shellcheck (container)" "$(grep -cE ':[0-9]+:[0-9]+:' "$SCRATCH/sc.out" || echo ?) findings" || record pass "shellcheck (container)"; }
   fi
   [ -s "$SCRATCH/sc.out" ] && sed -n '1,20p' "$SCRATCH/sc.out"
@@ -106,6 +114,7 @@ fi
 # load config values if available (non-fatal)
 HOSTNAME_EXPECTED="kali-live" WIFI_SSID_EXPECTED="" PUBKEY_FP_EXPECTED="" SSH_KEY=""
 if [ -r "$REPO_DIR/config" ]; then
+  rm -f "$SCRATCH/env" "$SCRATCH/pubkeypath"
   # shellcheck disable=SC1091
   ( set -a; source "$REPO_DIR/lib/common.sh"; klh_load_config "$REPO_DIR/config"; \
     printf '%s\n%s\n' "$HOSTNAME" "$WIFI_SSID" > "$SCRATCH/env"; \
@@ -508,7 +517,7 @@ else
           pidfile="$SCRATCH/qemu-forensic.pid"; rm -f "$pidfile"
           "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" \
             -kernel "$SCRATCH/vmlinuz" -initrd "$SCRATCH/initrd" \
-            -append "boot=live username=kali hostname=$HOSTNAME_EXPECTED systemd.swap=no noautomount" \
+            -append "boot=live username=kali hostname=kali systemd.swap=no noautomount" \
             -cdrom "$ISO" \
             -device virtio-net-pci,netdev=net0 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$PORT-:22 \
             -drive file="$SCRATCH/witness.img",format=raw,if=virtio \

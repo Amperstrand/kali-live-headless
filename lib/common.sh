@@ -79,6 +79,8 @@ klh_load_config() {
   source "$f"
 
   : "${HOSTNAME:=kali-live}"
+  : "${WIFI_SSID:=}"
+  : "${WIFI_PSK:=}"
   : "${WIFI_KEYMGMT:=wpa-psk}"
   : "${WIFI_HIDDEN:=false}"
   : "${WIFI_REGDOM:=}"
