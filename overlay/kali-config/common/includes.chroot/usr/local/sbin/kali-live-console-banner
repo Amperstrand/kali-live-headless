@@ -1,0 +1,66 @@
+#!/bin/sh
+# Print the current IPv4 addresses and the SSH host key fingerprints to the
+# local console (/dev/console + the login prompt via /etc/issue), so a
+# headless operator can see where to SSH without attaching a keyboard.
+
+set -u
+TAG=kali-live-banner
+ATTEMPTS=20
+SLEEP=5
+
+log() {
+    logger -t "$TAG" -- "$*" 2>/dev/null || true
+    printf '[%s] %s\n' "$TAG" "$*" > /dev/console 2>/dev/null || true
+}
+
+ipv4_addrs() {
+    # all global IPv4 addresses, any interface, no interface-name assumptions
+    ip -family inet -oneline address show scope global 2>/dev/null \
+        | awk '{print $2}' | cut -d/ -f1
+}
+
+# Wait (bounded) for an address — Wi-Fi association can lag behind
+# network-online.target.
+i=0
+while [ -z "$(ipv4_addrs)" ] && [ "$i" -lt "$ATTEMPTS" ]; do
+    i=$((i + 1))
+    sleep "$SLEEP"
+done
+
+ADDRS=$(ipv4_addrs | paste -sd' ' -)
+[ -n "$ADDRS" ] || ADDRS="(no IPv4 address yet — check: journalctl -u NetworkManager -b)"
+
+FP_ED=""
+FP_RSA=""
+for k in /etc/ssh/ssh_host_ed25519_key.pub /etc/ssh/ssh_host_rsa_key.pub; do
+    if [ -r "$k" ]; then
+        f=$(ssh-keygen -lf "$k" 2>/dev/null | sed 's/^ *[0-9]* //')
+        case "$k" in
+            *ed25519*) FP_ED="$f" ;;
+            *rsa*)     FP_RSA="$f" ;;
+        esac
+    fi
+done
+
+HN=$(hostname 2>/dev/null || echo kali-live)
+
+BANNER=$(printf '
+==============================================================
+ kali-live-headless  |  host: %s
+ IPv4: %s
+ SSH:  ssh kali@%s.local   (or ssh kali@<an-address-above>)
+       key auth only — passwords and root login are disabled
+ ED25519 host key: %s
+ RSA host key:     %s
+==============================================================
+' "$HN" "$ADDRS" "$HN" "$FP_ED" "$FP_RSA")
+
+# Show on the console...
+printf '%s\n' "$BANNER" > /dev/console 2>/dev/null || true
+# ...and on the getty login prompt (only if we have a real address).
+if [ -n "$(ipv4_addrs)" ]; then
+    printf '%s\n' "$BANNER" > /etc/issue.d/kali-live-headless.issue 2>/dev/null || true
+fi
+
+log "console banner shown (IPv4: ${ADDRS:-none})"
+exit 0

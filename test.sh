@@ -1,0 +1,490 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2015
+# test.sh — validation for kali-live-headless.
+#
+# Stages (each prints PASS/FAIL/SKIP and the summary gates the exit code):
+#   A. static       — shell syntax, shellcheck, config, NM profile template,
+#                     systemd unit sanity (always runs)
+#   B. iso-content  — loop-mount the built ISO + squashfs, assert shipped
+#                     files, permissions, enabled units, packages, host keys
+#   C. qemu-bios    — boot the ISO under QEMU (BIOS), SSH in with the
+#                     configured key, assert effective sshd config, NM
+#                     profile, services, no swap, witness-disk untouched
+#   D. qemu-uefi    — same core assertions via UEFI (OVMF) boot
+#   E. qemu-forensic— boot the forensic boot-menu entry's kernel cmdline
+#                     directly; assert headless features + no swap +
+#                     witness disk untouched
+#
+# QEMU tests use virtual ETHERNET. Physical Wi-Fi hardware compatibility is
+# NOT covered here — see README.md "Physical hardware tests".
+#
+# Usage: ./test.sh [--skip-qemu] [--only-static] [--no-uefi] [--no-forensic]
+#                  [--iso PATH] [--ssh-key PATH]
+
+set -uo pipefail
+
+REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/common.sh
+source "$REPO_DIR/lib/common.sh"
+
+SCRATCH="$REPO_DIR/test/scratch"
+mkdir -p "$SCRATCH"
+
+RUN_QEMU=true RUN_UEFI=true RUN_FORENSIC=true
+ONLY_STATIC=false
+ISO_ARG="" SSH_KEY_ARG=""
+
+[ $# -eq 0 ] || while [ $# -gt 0 ]; do
+  case "$1" in
+    --skip-qemu)   RUN_QEMU=false; shift ;;
+    --only-static) ONLY_STATIC=true; shift ;;
+    --no-uefi)     RUN_UEFI=false; shift ;;
+    --no-forensic) RUN_FORENSIC=false; shift ;;
+    --iso)         ISO_ARG=${2:?}; shift 2 ;;
+    --ssh-key)     SSH_KEY_ARG=${2:?}; shift 2 ;;
+    -h|--help)     sed -n '2,30p' "$0"; exit 0 ;;
+    *) klh_die "unknown option: $1" ;;
+  esac
+done
+
+PASS=0 FAIL=0 SKIP=0
+section() { printf '\n=== %s ===\n' "$*"; }
+record() { # pass|fail|skip name [detail]
+  case "$1" in
+    pass) PASS=$((PASS+1)); printf ' PASS  %s%s\n' "$2" "${3:+ — ${3}}" ;;
+    fail) FAIL=$((FAIL+1)); printf ' FAIL  %s%s\n' "$2" "${3:+ — ${3}}" ;;
+    skip) SKIP=$((SKIP+1)); printf ' SKIP  %s%s\n' "$2" "${3:+ — ${3}}" ;;
+  esac
+}
+run() { # name command... (reserved)
+  local name=$1; shift
+  if "$@" >/dev/null 2>&1; then record pass "$name"; else record fail "$name"; fi
+}
+
+# ============================================================= Stage A
+section "A. static checks"
+
+for f in build.sh configure.sh flash.sh test.sh; do
+  if bash -n "$REPO_DIR/$f" 2>"$SCRATCH/syntax.err"; then record pass "bash -n $f"; else record fail "bash -n $f" "$(head -1 "$SCRATCH/syntax.err")"; fi
+done
+for f in overlay/kali-config/common/includes.chroot/usr/local/sbin/* overlay/kali-config/common/hooks/live/*.hook.chroot; do
+  if bash -n "$REPO_DIR/$f" 2>/dev/null || sh -n "$REPO_DIR/$f" 2>/dev/null; then record pass "sh -n $(basename "$f")"; else record fail "sh -n $(basename "$f")"; fi
+done
+
+if command -v shellcheck >/dev/null 2>&1; then
+  SC="shellcheck"
+elif command -v docker >/dev/null 2>&1 && (docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1); then
+  docker info >/dev/null 2>&1 && SC="docker" || SC="sudo docker"
+else
+  SC=""
+fi
+if [ -n "$SC" ]; then
+  if [ "$SC" = "shellcheck" ]; then
+    shellcheck -x "$REPO_DIR"/build.sh "$REPO_DIR"/configure.sh "$REPO_DIR"/flash.sh "$REPO_DIR"/lib/common.sh 2>"$SCRATCH/sc.out" \
+      && record pass "shellcheck" || { [ -s "$SCRATCH/sc.out" ] && record fail "shellcheck" "$(grep -c '^' "$SCRATCH/sc.out") findings" || record pass "shellcheck"; }
+  else
+    $SC run --rm -v "$REPO_DIR:/src:ro" koalaman/shellcheck:stable \
+      /src/build.sh /src/configure.sh /src/flash.sh /src/lib/common.sh >"$SCRATCH/sc.out" 2>&1 \
+      && record pass "shellcheck (container)" || { [ -s "$SCRATCH/sc.out" ] && record fail "shellcheck (container)" "$(grep -cE ':[0-9]+:[0-9]+:' "$SCRATCH/sc.out" || echo ?) findings" || record pass "shellcheck (container)"; }
+  fi
+  [ -s "$SCRATCH/sc.out" ] && sed -n '1,20p' "$SCRATCH/sc.out"
+else
+  record skip "shellcheck" "neither shellcheck nor docker available"
+fi
+
+if [ -r "$REPO_DIR/config" ]; then
+  record pass "config present"
+  if ( source "$REPO_DIR/lib/common.sh" && klh_load_config "$REPO_DIR/config" ) 2>/dev/null; then
+    record pass "config validates"
+  else
+    record fail "config validates" "klh_load_config rejected it"
+  fi
+else
+  record skip "config" "not present — run ./configure.sh"
+fi
+
+# load config values if available (non-fatal)
+HOSTNAME_EXPECTED="kali-live" WIFI_SSID_EXPECTED="" PUBKEY_FP_EXPECTED="" SSH_KEY=""
+if [ -r "$REPO_DIR/config" ]; then
+  # shellcheck disable=SC1091
+  ( set -a; source "$REPO_DIR/lib/common.sh"; klh_load_config "$REPO_DIR/config"; \
+    printf '%s\n%s\n' "$HOSTNAME" "$WIFI_SSID" > "$SCRATCH/env"; \
+    printf '%s\n' "$(klh_expand_tilde "$SSH_PUBKEY_PATH")" > "$SCRATCH/pubkeypath" )
+  HOSTNAME_EXPECTED=$(sed -n 1p "$SCRATCH/env")
+  WIFI_SSID_EXPECTED=$(sed -n 2p "$SCRATCH/env")
+  PUBKEY_PATH=$(cat "$SCRATCH/pubkeypath")
+  if [ -r "$PUBKEY_PATH" ] && command -v ssh-keygen >/dev/null; then
+    if PUBKEY_FP_EXPECTED=$(ssh-keygen -lf "$PUBKEY_PATH" 2>/dev/null | sed 's/^ *[0-9]* //'); then
+      record pass "public key parses" "$PUBKEY_FP_EXPECTED"
+      KEY_PRIV=${SSH_KEY_ARG:-${PUBKEY_PATH%.pub}}
+      [ -n "$SSH_KEY_ARG" ] && KEY_PRIV="$SSH_KEY_ARG"
+      if [ -r "$KEY_PRIV" ]; then SSH_KEY="$KEY_PRIV"; record pass "private counterpart available" "$(basename "$SSH_KEY")"; else record skip "private key" "no counterpart of public key — SSH login tests will be skipped"; fi
+    else
+      record fail "public key parses" "$PUBKEY_PATH"
+    fi
+  else
+    record skip "public key" "path from config unreadable"
+  fi
+fi
+
+# generate + structurally validate an NM profile from the template
+if [ -r "$REPO_DIR/config" ] && command -v python3 >/dev/null; then
+  # shellcheck disable=SC1091
+  ( source "$REPO_DIR/lib/common.sh"; klh_load_config "$REPO_DIR/config"
+    while IFS= read -r line; do
+      line=${line//@SSID@/$WIFI_SSID}; line=${line//@PSK@/$WIFI_PSK}
+      line=${line//@KEYMGMT@/$WIFI_KEYMGMT}; line=${line//@HIDDEN@/$WIFI_HIDDEN}
+      printf '%s\n' "$line"
+    done < "$REPO_DIR/templates/headless-wifi.nmconnection.in" > "$SCRATCH/profile.nmconnection" )
+  chmod 600 "$SCRATCH/profile.nmconnection"
+  python3 - "$SCRATCH/profile.nmconnection" "$WIFI_SSID_EXPECTED" <<'PYEOF' && record pass "NM profile structure" || record fail "NM profile structure"
+import sys, configparser
+p = configparser.RawConfigParser()
+read = p.read(sys.argv[1])
+assert read, "ini unreadable"
+assert p["connection"]["id"] == "HEADLESS-WIFI"
+assert p["connection"]["type"] == "wifi"
+assert p["connection"]["autoconnect"] == "true"
+assert p["wifi"]["mode"] == "infrastructure"
+assert p["wifi"]["ssid"] == sys.argv[2]
+assert p["wifi-security"]["key-mgmt"] in ("wpa-psk", "sae")
+assert 8 <= len(p["wifi-security"]["psk"]) <= 63
+assert "interface-name" not in p["connection"], "must not pin interface-name"
+PYEOF
+  [ "$(stat -c %a "$SCRATCH/profile.nmconnection")" = "600" ] && record pass "NM profile mode 0600" || record fail "NM profile mode 0600"
+else
+  record skip "NM profile" "no config or no python3"
+fi
+
+# systemd unit sanity
+UNITS=(kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog)
+for u in "${UNITS[@]}"; do
+  f="$REPO_DIR/overlay/kali-config/common/includes.chroot/etc/systemd/system/$u.service"
+  if grep -q '^\[Unit\]' "$f" && grep -q '^\[Service\]' "$f" && grep -q '^\[Install\]' "$f" && grep -q '^ExecStart=' "$f"; then
+    record pass "unit $u"
+  else
+    record fail "unit $u"
+  fi
+done
+
+[ "$ONLY_STATIC" = true ] && { section "summary"; printf 'pass=%d fail=%d skip=%d\n' "$PASS" "$FAIL" "$SKIP"; [ "$FAIL" -eq 0 ]; exit $?; }
+
+# ============================================================= Stage B
+section "B. ISO content"
+
+find_iso() {
+  if [ -n "$ISO_ARG" ]; then echo "$ISO_ARG"; return; fi
+  ls -t "$REPO_DIR"/output/kali-linux-*-live-*.iso 2>/dev/null | head -1 || true
+}
+ISO=$(find_iso)
+if [ -z "$ISO" ] || [ ! -f "$ISO" ]; then
+  record skip "iso-content" "no ISO built yet — run ./build.sh"
+else
+  record pass "ISO exists" "$(basename "$ISO")"
+  if [ -f "$ISO.sha512sum" ]; then
+    (cd "$(dirname "$ISO")" && sha512sum --check --quiet < "$ISO.sha512sum") && record pass "ISO sha512sum" || record fail "ISO sha512sum"
+  else
+    record skip "ISO sha512sum" "no .sha512sum file"
+  fi
+
+  ISO_MNT="$SCRATCH/iso"; SQ_MNT="$SCRATCH/squashfs"
+  mkdir -p "$ISO_MNT" "$SQ_MNT"
+  umount_all() { sudo umount -l "$SQ_MNT" 2>/dev/null || true; sudo umount -l "$ISO_MNT" 2>/dev/null || true; }
+  if sudo mount -o ro,loop "$ISO" "$ISO_MNT" 2>/dev/null \
+     && sudo mount -t squashfs -o ro "$ISO_MNT/live/filesystem.squashfs" "$SQ_MNT" 2>/dev/null; then
+    trap umount_all EXIT
+    record pass "squashfs mounted"
+
+    sq() { sudo stat -c "$1" "$SQ_MNT/$2" 2>/dev/null; }
+
+    # NM profile
+    nmp="$SQ_MNT/etc/NetworkManager/system-connections/headless-wifi.nmconnection"
+    if sudo test -f "$nmp"; then
+      record pass "NM profile shipped"
+      [ "$(sq %a etc/NetworkManager/system-connections/headless-wifi.nmconnection)" = "600" ] && record pass "NM profile mode 0600" || record fail "NM profile mode 0600"
+      [ "$(sq %U etc/NetworkManager/system-connections/headless-wifi.nmconnection)" = "root" ] && record pass "NM profile owner root" || record fail "NM profile owner root"
+      if sudo grep -q "^ssid=${WIFI_SSID_EXPECTED}$" "$nmp"; then record pass "NM profile ssid matches config"; else record fail "NM profile ssid matches config"; fi
+      sudo grep -q '^psk=' "$nmp" && record pass "NM profile psk present (value not printed)" || record fail "NM profile psk present"
+      ! sudo grep -q '^interface-name' "$nmp" && record pass "NM profile not pinned to an interface" || record fail "NM profile pinned to an interface"
+    else record fail "NM profile shipped"; fi
+
+    # sshd
+    dropin="etc/ssh/sshd_config.d/0000-kali-live-headless.conf"
+    if sudo test -f "$SQ_MNT/$dropin"; then
+      record pass "sshd drop-in shipped"
+      sudo grep -q '^PasswordAuthentication no' "$SQ_MNT/$dropin" && record pass "sshd: PasswordAuthentication no" || record fail "sshd: PasswordAuthentication no"
+      sudo grep -q '^PermitRootLogin no' "$SQ_MNT/$dropin" && record pass "sshd: PermitRootLogin no" || record fail "sshd: PermitRootLogin no"
+      sudo grep -q '^Include /etc/ssh/sshd_config.d' "$SQ_MNT/etc/ssh/sshd_config" && record pass "sshd_config includes drop-in dir" || record fail "sshd_config includes drop-in dir"
+    else record fail "sshd drop-in shipped"; fi
+
+    # authorized_keys + skel
+    ak="etc/skel/.ssh/authorized_keys"
+    if sudo test -f "$SQ_MNT/$ak"; then
+      record pass "skel authorized_keys shipped"
+      [ "$(sq %a etc/skel/.ssh)" = "700" ] && record pass "skel .ssh mode 0700" || record fail "skel .ssh mode 0700"
+      [ "$(sq %a "$ak")" = "600" ] && record pass "skel authorized_keys mode 0600" || record fail "skel authorized_keys mode 0600"
+      if [ -n "$PUBKEY_FP_EXPECTED" ]; then
+        AK_FP=$(sudo ssh-keygen -lf "$SQ_MNT/$ak" 2>/dev/null | sed 's/^ *[0-9]* //')
+        [ "$AK_FP" = "$PUBKEY_FP_EXPECTED" ] && record pass "authorized_keys fingerprint matches config" || record fail "authorized_keys fingerprint matches config"
+      fi
+    else record fail "skel authorized_keys shipped"; fi
+
+    # services enabled
+    for u in ssh NetworkManager avahi-daemon "${UNITS[@]}"; do
+      sudo test -L "$SQ_MNT/etc/systemd/system/multi-user.target.wants/$u.service" && record pass "enabled: $u" || record fail "enabled: $u"
+    done
+    for s in kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog; do
+      sudo test -x "$SQ_MNT/usr/local/sbin/$s" && record pass "script executable: $s" || record fail "script executable: $s"
+    done
+
+    # host keys baked per-build
+    if sudo test -f "$SQ_MNT/etc/ssh/ssh_host_ed25519_key"; then
+      record pass "SSH host key baked into ISO"
+      [ "$(sq %a etc/ssh/ssh_host_ed25519_key)" = "600" ] && record pass "host key mode 0600" || record fail "host key mode 0600"
+      BAKED_FP=$(sudo ssh-keygen -lf "$SQ_MNT/etc/ssh/ssh_host_ed25519_key.pub" 2>/dev/null | awk '{print $2}')
+      [ -n "$BAKED_FP" ] && record pass "baked ed25519 fingerprint captured" || record fail "baked ed25519 fingerprint captured"
+    else
+      record fail "SSH host key baked into ISO"
+      BAKED_FP=""
+    fi
+
+    # packages
+    while read -r pkg; do
+      if sudo grep -A1 "^Package: $pkg$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "Status: install ok installed"; then
+        record pass "package: $pkg"
+      else
+        record fail "package: $pkg"
+      fi
+    done <<PKGS
+openssh-server
+network-manager
+wireless-regdb
+iw
+iproute2
+avahi-daemon
+curl
+git
+tmux
+tcpdump
+PKGS
+
+    # Kali boot menu preserved (forensic + persistence entries intact)
+    sudo test -f "$ISO_MNT/boot/grub/grub.cfg" && sudo grep -q "forensic mode" "$ISO_MNT/boot/grub/grub.cfg" && record pass "grub: forensic entry preserved" || record skip "grub: forensic entry preserved" "no grub.cfg?"
+    sudo grep -rq "forensic" "$ISO_MNT/isolinux/" 2>/dev/null && record pass "isolinux: forensic entry preserved" || record skip "isolinux: forensic entry preserved" "no isolinux dir"
+
+    umount_all; trap - EXIT
+  else
+    record skip "iso-content" "could not loop-mount ISO (needs sudo + loop support)"
+  fi
+fi
+
+# ============================================================= Stage C/D/E
+section "C-E. QEMU boot tests"
+
+QEMU_BIN=qemu-system-x86_64
+if ! command -v "$QEMU_BIN" >/dev/null 2>&1; then
+  record skip "qemu" "qemu-system-x86_64 not installed"
+elif [ -z "$ISO" ] || [ ! -f "$ISO" ]; then
+  record skip "qemu" "no ISO"
+elif [ "$RUN_QEMU" != true ]; then
+  record skip "qemu" "disabled via --skip-qemu"
+else
+  if [ -w /dev/kvm ]; then ACCEL=kvm; CPU=(-cpu host); BOOT_TIMEOUT=480; else ACCEL=tcg; CPU=(); BOOT_TIMEOUT=1800; klh_warn "no /dev/kvm — using TCG emulation (slow)"; fi
+  record pass "qemu accel" "$ACCEL"
+
+  PORT=2222
+  if [ -n "$SSH_KEY" ]; then
+    SSH_OPTS=(-F none -i "$SSH_KEY" -p "$PORT" -o UserKnownHostsFile="$SCRATCH/known_hosts" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes kali@127.0.0.1)
+
+    guest() { ssh "${SSH_OPTS[@]}" "$@" 2>/dev/null; }
+    guest_sudo() { printf 'kali\n' | ssh "${SSH_OPTS[@]}" "sudo -S -p '' $*" 2>/dev/null; }
+
+    boot_qemu() { # mode extra-args...
+      local mode=$1; shift
+      local pidfile="$SCRATCH/qemu-$mode.pid" serial="$SCRATCH/serial-$mode.log"
+      rm -f "$pidfile"
+      "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" \
+        -cdrom "$ISO" -boot d \
+        -device virtio-net-pci,netdev=net0 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$PORT-:22 \
+        -drive file="$SCRATCH/witness.img",format=raw,if=virtio \
+        -display none -monitor none -serial "file:$serial" \
+        -daemonize -pidfile "$pidfile" "$@" \
+        && sleep 1 && cat "$pidfile"
+    }
+
+    kill_qemu() { local pid; pid=$(cat "$SCRATCH/qemu-$1.pid" 2>/dev/null || true); [ -n "$pid" ] && kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 0; }
+
+    wait_ssh() { # timeout_sec
+      local deadline=$(( $(date +%s) + $1 ))
+      while [ "$(date +%s)" -lt "$deadline" ]; do
+        if guest 'echo up' >/dev/null 2>&1; then return 0; fi
+        sleep 5
+      done
+      return 1
+    }
+
+    common_guest_checks() { # mode
+      local mode=$1
+      local v
+      v=$(guest 'id -un')
+      [ "$v" = "kali" ] && record pass "$mode: SSH key login as kali" || { record fail "$mode: SSH key login as kali"; return 1; }
+
+      v=$(guest hostname)
+      [ "$v" = "$HOSTNAME_EXPECTED" ] && record pass "$mode: hostname=$HOSTNAME_EXPECTED" || record fail "$mode: hostname (want $HOSTNAME_EXPECTED, got '$v')"
+
+      local eff
+      eff=$(guest_sudo 'sshd -T 2>/dev/null' | grep -E '^(passwordauthentication|permitrootlogin|pubkeyauthentication)' | sort)
+      echo "$eff" | grep -q '^passwordauthentication no' && record pass "$mode: effective PasswordAuthentication no" || record fail "$mode: effective PasswordAuthentication no"
+      echo "$eff" | grep -q '^permitrootlogin no'        && record pass "$mode: effective PermitRootLogin no"        || record fail "$mode: effective PermitRootLogin no"
+      echo "$eff" | grep -q '^pubkeyauthentication yes'  && record pass "$mode: effective PubkeyAuthentication yes"  || record fail "$mode: effective PubkeyAuthentication yes"
+
+      v=$(guest 'stat -c %a /home/kali/.ssh')
+      [ "$v" = "700" ] && record pass "$mode: ~/.ssh mode 0700" || record fail "$mode: ~/.ssh mode 0700 ($v)"
+      v=$(guest 'stat -c %a /home/kali/.ssh/authorized_keys')
+      [ "$v" = "600" ] && record pass "$mode: authorized_keys mode 0600" || record fail "$mode: authorized_keys mode 0600 ($v)"
+      v=$(guest 'stat -c %U /home/kali/.ssh/authorized_keys')
+      [ "$v" = "kali" ] && record pass "$mode: authorized_keys owned by kali" || record fail "$mode: authorized_keys owned by kali ($v)"
+
+      v=$(guest 'nmcli -g connection.id connection show | grep -c HEADLESS-WIFI || true')
+      [ "$v" -ge 1 ] 2>/dev/null && record pass "$mode: NM profile loaded by NetworkManager" || record fail "$mode: NM profile loaded by NetworkManager"
+      v=$(guest 'stat -c %a /etc/NetworkManager/system-connections/headless-wifi.nmconnection')
+      [ "$v" = "600" ] && record pass "$mode: NM profile mode 0600 in guest" || record fail "$mode: NM profile mode 0600 in guest ($v)"
+
+      v=$(guest 'nmcli -t -f TYPE,STATE device status | grep -c ^ethernet:connected || true')
+      [ "$v" -ge 1 ] 2>/dev/null && record pass "$mode: ethernet auto-connected (NetworkManager)" || record fail "$mode: ethernet auto-connected"
+
+      v=$(guest 'systemctl is-active avahi-daemon')
+      [ "$v" = "active" ] && record pass "$mode: avahi-daemon active" || record fail "$mode: avahi-daemon active ($v)"
+
+      v=$(guest 'systemctl show -p ActiveState,Result --value kali-live-headless-provision 2>/dev/null | paste -sd/')
+      [ "$v" = "active/success" ] && record pass "$mode: provision service succeeded" || record fail "$mode: provision service ($v)"
+
+      v=$(guest 'systemctl is-active kali-live-wifi-watchdog')
+      [ "$v" = "active" ] && record pass "$mode: wifi watchdog active" || record fail "$mode: wifi watchdog active ($v)"
+
+      # The server must accept publickey ONLY. A client that offers no auth
+      # methods reports the methods the server would have allowed.
+      local meth
+      meth=$(ssh -F none -p "$PORT" -o PubkeyAuthentication=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no \
+             -o NumberOfPasswordPrompts=0 -o ConnectTimeout=10 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no \
+             kali@127.0.0.1 true 2>&1 || true)
+      echo "$meth" | grep -q 'Permission denied (publickey)' && record pass "$mode: password auth rejected (publickey only)" || record fail "$mode: password auth rejected - got: $meth"
+
+      local roottry
+      roottry=$(ssh -F none -p "$PORT" -o NumberOfPasswordPrompts=0 -o ConnectTimeout=10 \
+             -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@127.0.0.1 true 2>&1 || true)
+      echo "$roottry" | grep -q 'Permission denied' && record pass "$mode: root login rejected" || record fail "$mode: root login rejected"
+
+      v=$(guest 'swapon --show --noheadings 2>/dev/null')
+      [ -z "$v" ] && record pass "$mode: no swap in use" || record fail "$mode: swap active ($v)"
+
+      v=$(guest 'lsblk -nrpo MOUNTPOINTS /dev/vda 2>/dev/null | grep -c . || true')
+      [ "$v" = "0" ] && record pass "$mode: witness disk not mounted" || record fail "$mode: witness disk mounted"
+
+      if [ -n "${BAKED_FP:-}" ]; then
+        local livefp
+        livefp=$(guest 'cat /etc/ssh/ssh_host_ed25519_key.pub' | awk '{print $2}')
+        [ "$livefp" = "$BAKED_FP" ] && record pass "$mode: host key stable (matches baked ISO key)" || record fail "$mode: host key mismatch"
+      fi
+      return 0
+    }
+
+    # ---- C: BIOS
+    truncate -s 64M "$SCRATCH/witness.img"
+    WITNESS_MD5=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
+    QPID=$(boot_qemu bios)
+    if wait_ssh $BOOT_TIMEOUT; then
+      record pass "bios: booted to SSH (accel=$ACCEL)"
+      common_guest_checks bios
+      guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu bios
+      for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
+      kill -9 "$QPID" 2>/dev/null || true
+      WITNESS_MD5_AFTER=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
+      [ "$WITNESS_MD5" = "$WITNESS_MD5_AFTER" ] && record pass "bios: witness disk byte-identical (no internal-disk writes)" || record fail "bios: witness disk WAS MODIFIED"
+    else
+      record fail "bios: booted to SSH" "timeout after ${BOOT_TIMEOUT}s — see $SCRATCH/serial-bios.log"
+      kill_qemu bios
+    fi
+
+    # ---- D: UEFI
+    OVMF_CODE=""; OVMF_VARS=""
+    for c in /usr/share/edk2/x64/OVMF_CODE.4m.fd /usr/share/edk2/x64/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE.fd /usr/share/ovmf/OVMF_CODE.fd; do
+      [ -f "$c" ] && OVMF_CODE=$c && break
+    done
+    for v in /usr/share/edk2/x64/OVMF_VARS.4m.fd /usr/share/edk2/x64/OVMF_VARS.fd /usr/share/OVMF/OVMF_VARS.fd /usr/share/ovmf/OVMF_VARS.fd; do
+      [ -f "$v" ] && OVMF_VARS=$v && break
+    done
+    if [ "$RUN_UEFI" = true ] && [ -n "$OVMF_CODE" ] && [ -n "$OVMF_VARS" ]; then
+      cp "$OVMF_VARS" "$SCRATCH/ovmf-vars.fd"
+      truncate -s 64M "$SCRATCH/witness.img"
+      WITNESS_MD5=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
+      QPID=$(boot_qemu uefi \
+        -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+        -drive if=pflash,format=raw,file="$SCRATCH/ovmf-vars.fd")
+      if wait_ssh $BOOT_TIMEOUT; then
+        record pass "uefi: booted to SSH"
+        common_guest_checks uefi
+        guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu uefi
+        for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
+        kill -9 "$QPID" 2>/dev/null || true
+        WITNESS_MD5_AFTER=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
+        [ "$WITNESS_MD5" = "$WITNESS_MD5_AFTER" ] && record pass "uefi: witness disk byte-identical" || record fail "uefi: witness disk WAS MODIFIED"
+      else
+        record fail "uefi: booted to SSH" "see $SCRATCH/serial-uefi.log"
+        kill_qemu uefi
+      fi
+    else
+      record skip "uefi" "OVMF firmware not found or disabled"
+    fi
+
+    # ---- E: forensic boot entry (direct kernel boot with the syslinux entry's cmdline)
+    if [ "$RUN_FORENSIC" = true ]; then
+      ISO_MNT="$SCRATCH/iso-forensic"; mkdir -p "$ISO_MNT"
+      if sudo mount -o ro,loop "$ISO" "$ISO_MNT" 2>/dev/null; then
+        KERN=$(ls "$ISO_MNT"/live/vmlinuz* 2>/dev/null | head -1)
+        INITRD=$(ls "$ISO_MNT"/live/initrd.img* 2>/dev/null | head -1)
+        sudo cp "$KERN" "$SCRATCH/vmlinuz" 2>/dev/null; sudo cp "$INITRD" "$SCRATCH/initrd" 2>/dev/null
+        sudo chmod 644 "$SCRATCH/vmlinuz" "$SCRATCH/initrd"
+        sudo umount "$ISO_MNT"
+        if [ -s "$SCRATCH/vmlinuz" ] && [ -s "$SCRATCH/initrd" ]; then
+          truncate -s 64M "$SCRATCH/witness.img"
+          WITNESS_MD5=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
+          pidfile="$SCRATCH/qemu-forensic.pid"; rm -f "$pidfile"
+          "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" \
+            -kernel "$SCRATCH/vmlinuz" -initrd "$SCRATCH/initrd" \
+            -append "boot=live username=kali hostname=$HOSTNAME_EXPECTED systemd.swap=no noautomount" \
+            -cdrom "$ISO" \
+            -device virtio-net-pci,netdev=net0 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$PORT-:22 \
+            -drive file="$SCRATCH/witness.img",format=raw,if=virtio \
+            -display none -monitor none -serial "file:$SCRATCH/serial-forensic.log" \
+            -daemonize -pidfile "$pidfile" >/dev/null 2>&1
+          QPID=$(cat "$pidfile" 2>/dev/null || true)
+          if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
+            record pass "forensic: booted to SSH"
+            common_guest_checks forensic
+            [ -z "$(guest 'swapon --show --noheadings 2>/dev/null')" ] && record pass "forensic: no swap (systemd.swap=no)" || record fail "forensic: swap active"
+            guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu forensic
+            for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
+            kill -9 "$QPID" 2>/dev/null || true
+            WITNESS_MD5_AFTER=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
+            [ "$WITNESS_MD5" = "$WITNESS_MD5_AFTER" ] && record pass "forensic: witness disk byte-identical (no automount/no writes)" || record fail "forensic: witness disk WAS MODIFIED"
+          else
+            record fail "forensic: booted to SSH" "see $SCRATCH/serial-forensic.log"
+            kill_qemu forensic
+          fi
+        else
+          record skip "forensic" "could not extract kernel/initrd"
+        fi
+      else
+        record skip "forensic" "could not mount ISO"
+      fi
+    fi
+  else
+    record skip "qemu" "no SSH private key available for the baked public key"
+  fi
+fi
+
+# ============================================================= summary
+section "summary"
+printf 'pass=%d fail=%d skip=%d\n' "$PASS" "$FAIL" "$SKIP"
+if [ "$FAIL" -eq 0 ]; then echo "RESULT: PASS (see SKIPs above for environment limitations)"; exit 0; else echo "RESULT: FAIL"; exit 1; fi

@@ -1,0 +1,39 @@
+# kali-live-headless configuration
+#
+# Copy to ./config and edit, or simply run: ./configure.sh
+#
+# SECURITY: after you fill this in, ./config contains your Wi-Fi passphrase
+# in PLAINTEXT (unattended Wi-Fi requires a recoverable credential on the
+# boot medium — see README.md "Threat model"). ./config is git-ignored and
+# should be chmod 600. Do not commit it anywhere.
+
+# --- Identity ---------------------------------------------------------
+# Hostname of the live system (also the mDNS name: <hostname>.local)
+HOSTNAME=kali-live
+
+# --- Wi-Fi ------------------------------------------------------------
+WIFI_SSID=MyHomeNetwork
+WIFI_PSK=change-me-8-to-63-characters
+# wpa-psk = WPA2-Personal (also works on WPA2/WPA3 "transition" networks)
+# sae     = WPA3-Personal (AP, driver and wpa_supplicant must support SAE)
+WIFI_KEYMGMT=wpa-psk
+# Set to true if the SSID is hidden (not broadcast)
+WIFI_HIDDEN=false
+# ISO 3166-1 alpha-2 regulatory domain (e.g. US, DE, GB). Empty = skip.
+WIFI_REGDOM=US
+
+# --- SSH --------------------------------------------------------------
+# Path to your PUBLIC key (the private key never goes on the USB stick)
+SSH_PUBKEY_PATH=~/.ssh/id_ed25519.pub
+# Optional: extra public keys (space-separated) merged into authorized_keys
+# (useful for a dedicated test key)
+SSH_EXTRA_PUBKEYS=
+
+# --- Build ------------------------------------------------------------
+# Pinned upstream kali-live commit — reproducible builds.
+KALI_LIVE_REF=adb2e38941662f105b57134e0155ec468da294ad
+VARIANT=default
+ARCH=amd64
+BRANCH=kali-rolling
+#BUILD_MIRROR=http://http.kali.org/kali
+#OUT_DIR=output

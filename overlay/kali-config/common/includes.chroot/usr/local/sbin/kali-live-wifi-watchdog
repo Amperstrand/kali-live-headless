@@ -1,0 +1,64 @@
+#!/bin/sh
+# Wi-Fi retry + diagnostics loop for kali-live-headless.
+#
+# NetworkManager already retries autoconnect profiles with backoff; this
+# watchdog adds: explicit retries of the HEADLESS-WIFI profile, and useful
+# diagnostic logging in the journal (readable with
+# `journalctl -t kali-live-wifi-watchdog -b`) so a failed association can
+# be debugged remotely. Ethernet is left entirely to NetworkManager.
+
+set -u
+TAG=kali-live-wifi-watchdog
+INTERVAL=30
+QUIET_LOOPS=10   # log "no wifi device" only every Nth loop (5 min)
+
+log() { logger -t "$TAG" -- "$*" 2>/dev/null || true; }
+
+wifi_device() {
+    nmcli --terse --field DEVICE,TYPE device status 2>/dev/null \
+        | awk -F: '$2 == "wifi" { print $1; exit }'
+}
+
+profile_active() {
+    nmcli --terse --field NAME,TYPE connection show --active 2>/dev/null \
+        | awk -F: '$1 == "HEADLESS-WIFI" && $2 == "wifi" { found=1 } END { exit !found }'
+}
+
+diagnostics() {
+    local dev="$1"
+    log "--- diagnostics begin ---"
+    nmcli --terse --field DEVICE,TYPE,STATE device status 2>/dev/null | log_diag
+    [ -n "$dev" ] && nmcli device show "$dev" 2>/dev/null \
+        | grep -E 'GENERAL\.STATE|GENERAL\.CONNECTION|GENERAL\.DRIVER|WI-Fi\.PR|IP4\.ADDRESS' | log_diag
+    [ -n "$dev" ] && iw reg get 2>/dev/null | head -5 | log_diag
+    [ -n "$dev" ] && iw dev "$dev" link 2>/dev/null | log_diag
+    journalctl --no-pager -n 15 -u NetworkManager 2>/dev/null | log_diag
+    log "--- diagnostics end ---"
+}
+
+log_diag() { while IFS= read -r l; do log "$l"; done; }
+
+n=0
+log "watchdog started (interval ${INTERVAL}s)"
+while :; do
+    n=$((n + 1))
+    dev=$(wifi_device)
+
+    if profile_active; then
+        :   # connected (or connecting) — nothing to do
+    elif [ -z "$dev" ]; then
+        if [ $((n % QUIET_LOOPS)) -eq 1 ]; then
+            log "no Wi-Fi device present (loop $n) — ethernet/USB dock only? rfkill? driver?"
+        fi
+    else
+        log "Wi-Fi profile not active; attempting: nmcli connection up HEADLESS-WIFI (device $dev, loop $n)"
+        if nmcli connection up HEADLESS-WIFI >/dev/null 2>&1; then
+            log "HEADLESS-WIFI activated on $dev"
+        else
+            log "nmcli connection up HEADLESS-WIFI failed (loop $n)"
+            diagnostics "$dev"
+        fi
+    fi
+
+    sleep "$INTERVAL"
+done
