@@ -84,7 +84,7 @@ if [ -z "$HOSTNAME" ]; then prompt_default HOSTNAME "Hostname (mDNS name will be
 klh_validate_hostname "$HOSTNAME" || klh_die "invalid hostname '$HOSTNAME'"
 
 WIFI_SSID=${OPT_SSID:-}
-if [ -z "$WIFI_SSID" ]; then read -r -p "Wi-Fi SSID (network name): " WIFI_SSID; fi
+if [ -z "$WIFI_SSID" ]; then read -r -p "Wi-Fi SSID (network name): " WIFI_SSID || klh_die "stdin closed"; fi
 klh_validate_ssid "$WIFI_SSID" || klh_die "invalid SSID (1-32 chars, no control chars, no leading/trailing whitespace)"
 
 WIFI_PSK="${WIFI_PSK:-}"

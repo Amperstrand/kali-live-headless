@@ -29,7 +29,7 @@ diagnostics() {
     log "--- diagnostics begin ---"
     nmcli --terse --field DEVICE,TYPE,STATE device status 2>/dev/null | log_diag
     [ -n "$dev" ] && nmcli device show "$dev" 2>/dev/null \
-        | grep -E 'GENERAL\.STATE|GENERAL\.CONNECTION|GENERAL\.DRIVER|WI-Fi\.PR|IP4\.ADDRESS' | log_diag
+        | grep -E 'GENERAL\.STATE|GENERAL\.CONNECTION|GENERAL\.DRIVER|WIFI-PROPERTIES|IP4\.ADDRESS' | log_diag
     [ -n "$dev" ] && iw reg get 2>/dev/null | head -5 | log_diag
     [ -n "$dev" ] && iw dev "$dev" link 2>/dev/null | log_diag
     journalctl --no-pager -n 15 -u NetworkManager 2>/dev/null | log_diag
