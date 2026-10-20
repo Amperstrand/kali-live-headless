@@ -313,8 +313,9 @@ elif [ -z "$ISO" ] || [ ! -f "$ISO" ]; then
 elif [ "$RUN_QEMU" != true ]; then
   record skip "qemu" "disabled via --skip-qemu"
 else
-  if [ -w /dev/kvm ]; then ACCEL=kvm; CPU=(-cpu host); BOOT_TIMEOUT=480; else ACCEL=tcg; CPU=(); BOOT_TIMEOUT=1800; klh_warn "no /dev/kvm — using TCG emulation (slow)"; fi
+  if [ -w /dev/kvm ]; then ACCEL=kvm; CPU=(-cpu host); BOOT_TIMEOUT=480; CD_BOOT_TIMEOUT=1500; else ACCEL=tcg; CPU=(); BOOT_TIMEOUT=1800; CD_BOOT_TIMEOUT=2700; klh_warn "no /dev/kvm — using TCG emulation (slow)"; fi
   record pass "qemu accel" "$ACCEL"
+  klh_info "CD-ROM boots get ${CD_BOOT_TIMEOUT}s: the ISO's ~226MB initrd loads slowly over emulated ATAPI (direct-kernel boots get ${BOOT_TIMEOUT}s)"
 
   PORT=2222
   if [ -n "$SSH_KEY" ]; then
@@ -417,7 +418,7 @@ else
     truncate -s 64M "$SCRATCH/witness.img"
     WITNESS_MD5=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
     QPID=$(boot_qemu bios)
-    if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
+    if [ -n "$QPID" ] && wait_ssh $CD_BOOT_TIMEOUT; then
       record pass "bios: booted to SSH (accel=$ACCEL)"
       common_guest_checks bios
       guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu bios
@@ -447,7 +448,7 @@ else
           | sudo tee "$CFG_MNT/headless-wifi.conf" >/dev/null
         sudo umount "$CFG_MNT"
         QPID=$(boot_qemu override -drive file="$SCRATCH/cfg.img",format=raw,if=virtio)
-        if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
+        if [ -n "$QPID" ] && wait_ssh $CD_BOOT_TIMEOUT; then
           record pass "override: booted to SSH"
           v=$(guest hostname)
           [ "$v" = "klh-override" ] && record pass "override: hostname applied" || record fail "override: hostname (got '$v')"
@@ -486,7 +487,7 @@ else
       QPID=$(boot_qemu uefi \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$SCRATCH/ovmf-vars.fd")
-      if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
+      if [ -n "$QPID" ] && wait_ssh $CD_BOOT_TIMEOUT; then
         record pass "uefi: booted to SSH"
         common_guest_checks uefi
         guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu uefi
