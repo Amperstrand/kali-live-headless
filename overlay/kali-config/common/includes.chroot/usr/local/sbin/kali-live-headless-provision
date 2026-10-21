@@ -138,6 +138,8 @@ USER_GID=$(id -g "$USER" 2>/dev/null || echo 1000)
 # never logged, stored anywhere readable, or printed — with
 # passwordless sudo configured, the normal admin path is the SSH key.
 MODE=$(sed -n 's/^LIVE_PASSWORD_MODE=//p' /etc/default/kali-live-headless 2>/dev/null | head -n1)
+MODE=${MODE//\"/}   # the file is shell-sourced style: VALUE may carry quotes
+MODE=${MODE//\'/}
 [ -n "$MODE" ] || MODE=random
 if [ "$MODE" = random ]; then
     PW=$(head -c 32 /dev/urandom 2>/dev/null | base64 2>/dev/null | tr -d '/+=' | cut -c1-20)
