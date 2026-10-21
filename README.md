@@ -447,3 +447,10 @@ root-owned log after a killed sudo build), the pipe's 64 KB buffer fills
 and every process upstream — up to and including `apt-get` inside the
 build container — silently blocks on `write()` forever. This exact wedge
 wasted three builds on 2026-10-21 before `wchan` showed `anon_pipe_write`.
+
+**Never edit `build.sh`, `test.sh`, or `lib/` while a run is in flight.**
+Bash reads scripts incrementally: when the hours-long build call returns,
+the wrapper resumes at a byte offset in the *edited* file and can hit a
+variable that no longer exists — build #8 (2026-10-21) exited rc=1 after a
+*successful* 4-hour build this way. `build.sh` re-asserts its defaults
+after the build call as a guard, but the rule is older than the guard.

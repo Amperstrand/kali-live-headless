@@ -280,6 +280,15 @@ run_upstream() { # $@ = args (no exec: the EXIT trap must still scrub secrets)
 klh_info "starting upstream build (this takes 30-90+ min and ~20G of disk)"
 run_upstream "${BUILD_ARGS[@]}"
 
+# Re-assert defaults AFTER the long build call: bash reads scripts
+# incrementally, so if this file (or lib/common.sh) is edited while the
+# build runs, execution resumes at a byte offset in the NEW file with
+# variables the OLD sourced lib never set. Build #8 (2026-10-21) died on
+# exactly this AFTER a successful 4-hour build — rc must reflect the
+# build, not a wrapper edit. (Rule stands: don't edit scripts mid-run.)
+: "${BOOT_DEFAULT:=live}" "${LIVE_PASSWORD_MODE:=random}" \
+  "${WITH_KVM:=true}" "${HOSTNAME:=kali-live}" "${OUT_DIR:?}"
+
 if [ "$RC" -ne 0 ]; then
   klh_die "upstream build failed (rc=$RC) — see the log in $OUT_DIR; staged secrets were scrubbed, partial chroot copies may remain under build/kali-live until the next run cleans them"
 fi
