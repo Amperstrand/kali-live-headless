@@ -33,7 +33,12 @@ drift is absorbed by bumping the pin, nothing else.
 5. **Kali rolling churn**: NetworkManager/wpa_supplicant behavior (the
    watchdog's nmcli TYPE-string lesson: `connection show --active` says
    `802-11-wireless`, `device status` says `wifi`), firmware packages,
-   `kali-linux-default` metapackage contents (ISO size drift).
+   `kali-linux-default` metapackage contents (ISO size drift). Two more
+   proven cases (2026-10-21, first full BIOS run): OpenSSH ≥ 10 prints
+   `sshd -T` keys **CamelCase** (`PermitRootLogin`) where older prints
+   lowercase — normalize case before exact-match greps; and newer
+   NetworkManager dropped `connection.id` from `nmcli -g` fields — use
+   `-g NAME`. Guest assertions must tolerate both old and new output.
 6. **QEMU suite environment**: `-cdrom` vs virtio-blk boot quirks are
    firmware-dependent (SeaBIOS refuses virtio firmware-boot of this ISO);
    re-verify stage layout if QEMU/SeaBIOS/OVMF updates change behavior.
