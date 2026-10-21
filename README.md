@@ -235,7 +235,11 @@ can read it; rotate on loss).
 ## Live vs forensic boot mode
 
 Kali's boot menu (BIOS and UEFI) is preserved untouched, including the
-installer and the **forensic** entries:
+installer and the **forensic** entries — with one addition: the default
+entry **auto-boots after 5 seconds** (live-build's generated `isolinux.cfg`
+ships `timeout 0`, i.e. wait forever — that would break unattended boot, so
+the overlay replaces it with `timeout 50` and adds `set timeout=5` to the
+GRUB config; press any key within 5 s to keep the menu open):
 
 | Boot entry | What it adds | Wi-Fi + SSH headless features |
 |---|---|---|
@@ -270,7 +274,9 @@ The suite covers (see `test.sh` for the authoritative list):
 * ISO generation + sha512sum verification
 * Squashfs contents: packages installed, sshd drop-in, skel `authorized_keys`
   (fingerprint match), NM profile shipped with mode 0600, services enabled,
-  baked host keys, boot menu entries (forensic/persistence) preserved
+  baked host keys, boot menu entries (forensic/persistence) preserved,
+  **bootloader auto-boot timeout present** (isolinux + grub — live-build's
+  default `timeout 0` would hang unattended boots forever)
 * QEMU **BIOS** boot → SSH with your key; effective `sshd -T`
   (`passwordauthentication no`, `permitrootlogin no`, `pubkeyauthentication yes`);
   server offers publickey only; root login rejected; `~/.ssh` permissions;
@@ -280,12 +286,19 @@ The suite covers (see `test.sh` for the authoritative list):
 * QEMU **credential override** boot: a `KLHCONFIG` disk with different
   credentials — asserts the provisioner regenerates the NM profile and
   hostname at boot (the "password change without rebuild" path)
-* QEMU **forensic** boot (the syslinux forensic entry's exact cmdline):
-  headless features work, no swap, witness disk untouched
+* QEMU **forensic** boot (the syslinux forensic entry's exact cmdline,
+  including its hard-coded `hostname=kali` — proving the provisioner
+  overrides it): headless features work, no swap, witness disk untouched
 * **Witness disk**: a blank raw disk is attached to the VM and compared
   byte-for-byte (md5) after each boot session — proving the live system
   does not write to "internal" disks
 
+QEMU implementation notes (earned the hard way): firmware/menu boots must
+use `-cdrom` — SeaBIOS refuses to firmware-boot this ISO from virtio-blk,
+and emulated ATAPI is slow (the ~226 MB initrd plus `ldconfig` over
+squashfs), so those stages get generous timeouts; the forensic/override
+stages boot the kernel directly with the ISO attached as a virtio *data*
+disk (fast).
 **What QEMU cannot validate**: physical Wi-Fi radio/driver/firmware
 compatibility, real USB boot firmware quirks, and mDNS resolution on your
 LAN. The virtual NIC is ethernet. See the physical checklist below.
