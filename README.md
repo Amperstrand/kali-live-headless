@@ -381,6 +381,28 @@ LAN. The virtual NIC is ethernet. See the physical checklist below.
 
 ---
 
+## Related projects
+
+This repo is packaging of [the official Kali live-build process](https://www.kali.org/docs/development/live-build-a-custom-kali-iso/)
+— the differentiation is the unattended Wi-Fi + SSH-key flow, runtime
+credential override, forensic guarantees, and the QEMU test suite. Neighbors
+in the same genre (worth reading, mostly older):
+
+| Project | What it is | State / license |
+|---|---|---|
+| [Kali docs: custom ISO](https://www.kali.org/docs/development/live-build-a-custom-kali-iso/) + [dojo workshop](https://www.kali.org/docs/development/dojo-mastering-live-build/) | The canonical process this repo automates | maintained upstream |
+| [andrew-stclair/kali-live-build](https://github.com/andrew-stclair/kali-live-build) | Variant framework incl. a "headless" variant (SSH with **root login enabled** — this repo's opposite choice) | 2021 tree copy, no license |
+| [prateepb/kali-live-build](https://github.com/prateepb/kali-live-build) | Personal-variant config tree (42★ — the genre's most-seen example) | 2021 tree copy, no license |
+| [ProjectZeroDays/Kali-ISO-IMG](https://github.com/ProjectZeroDays/Kali-ISO-IMG) | Kitchen-sink ISO/IMG generator: encrypted-persistence automation, IMG-for-cloud export, Ventoy, upgrade gates | MIT |
+| [ILightThings/ISO-of-doom-2022](https://github.com/ILightThings/ISO-of-doom-2022) | Unattended *installer* ISO (simple-cdd preseed) + honest docs about live-build hook-path pitfalls | 2022, no license |
+| [J4YD13N/war-rig](https://github.com/J4YD13N/war-rig) | Headless Kali wardriving rig (Pi 5): boots as its own AP when Wi-Fi join fails — an interesting rescue-mode idea | active |
+
+The 2021-era entries are frozen copies of the pre-2020.1 monolithic
+`live-build-config`; they cannot build current images unmodified. This repo
+deliberately vendors none of that tree — it clones the official
+`build-scripts/kali-live` at a pinned ref and overlays, so upstream updates
+cost a one-variable bump (`KALI_LIVE_REF`).
+
 ## Repository layout
 
 ```

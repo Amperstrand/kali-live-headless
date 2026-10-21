@@ -1,0 +1,75 @@
+# AGENTS.md — kali-live-headless
+
+Operational truth for agents working this repo. The README covers what the
+project *is*; this file covers how to work on it safely and what to watch.
+
+## Architecture rule (the one that matters)
+
+This repo is a **thin overlay on the official upstream**
+(`gitlab.com/kalilinux/build-scripts/kali-live`, pinned `KALI_LIVE_REF` in
+`lib/common.sh`). Never vendor, copy, or commit upstream trees or personal
+live-build forks — every neighbor project that did (`prateepb`,
+`andrew-stclair`, `ISO-of-doom-2022`) is dead from exactly that. Upstream
+drift is absorbed by bumping the pin, nothing else.
+
+## Watch list (check when touching builds / bumping the pin)
+
+1. **`KALI_LIVE_REF` pin** — deliberate bumps only, on rebuild days. After a
+   bump the suite must re-prove: Stage B (ISO content, bootloader timeouts),
+   one BIOS menu boot to SSH, and the forensic + KLHCONFIG-override stages.
+2. **Kali live-config components** we interoperate with:
+   `1165-fix-openssh-server` (their password flip — our `0000-` drop-in must
+   keep sorting first) and `0031-kali-user-setup` (user creation from
+   `/etc/skel` — our authorized_keys path depends on it). If upstream renames
+   or rewrites these, the README's "why the drop-in survives" section and the
+   suite assertions need updating with fresh evidence.
+3. **Bootloader generation**: upstream's `isolinux.cfg`/grub config could
+   change shape; our overlay *replaces* the isolinux file and *appends to*
+   grub's `config.cfg`. Stage B asserts both — a change upstream shows up as
+   a Stage B failure, not a silent unattended-boot regression.
+4. **live-build hook conventions** (`.hook.chroot` suffix, `hooks/live/`
+   directory) — the genre's classic breakage (see ISO-of-doom's post-mortem
+   on hook paths). Verify after pin bumps.
+5. **Kali rolling churn**: NetworkManager/wpa_supplicant behavior (the
+   watchdog's nmcli TYPE-string lesson: `connection show --active` says
+   `802-11-wireless`, `device status` says `wifi`), firmware packages,
+   `kali-linux-default` metapackage contents (ISO size drift).
+6. **QEMU suite environment**: `-cdrom` vs virtio-blk boot quirks are
+   firmware-dependent (SeaBIOS refuses virtio firmware-boot of this ISO);
+   re-verify stage layout if QEMU/SeaBIOS/OVMF updates change behavior.
+
+## Build discipline (hard-won)
+
+- Builds run inside **tmux** with plain `> file 2>&1` redirect — never a
+  pane-level `| tee` (pipe backpressure wedged three builds; see README
+  "Rebuilding / long runs").
+- **Never edit `build.sh`, `test.sh`, or `lib/` while a run is in flight** —
+  bash reads incrementally; build #8 (2026-10-21) exited rc=1 *after a
+  successful 4h build* because the wrapper was edited mid-run.
+- A build needs ≥30G free under the repo; `output/` holds multi-GB ISOs —
+  preserve known-good ones under `output/iso-build<N>/` before a risky build.
+- Secrets: `./config` holds the Wi-Fi PSK in plaintext **by design** (see
+  README threat model). It is git-ignored; staged copies are scrubbed by the
+  EXIT trap unless `--keep-secrets`. Never print, log, or commit it.
+- Testing an **old ISO**: use the matching harness revision in a throwaway
+  `git worktree` (e.g. `git worktree add --detach <dir> <ref>` + copy
+  `./config` in, run `./test.sh --iso <path>`). HEAD's suite asserts HEAD's
+  features and will false-fail against older images.
+
+## Public-repo hygiene
+
+The repo is **public**. Nothing private may land here, ever: no PSKs, SSIDs,
+BSSIDs (geolocatable — one was scrubbed + history-rewritten 2026-10-21;
+pre-rewrite bundle: `~/backups/kali-live-headless-pre-rewrite-20261021.bundle`),
+LAN IPs, host keys, private SSH keys. Before any push that adds docs or
+diagnostics, grep the diff for MAC patterns
+(`([0-9a-f]{2}:){5}[0-9a-f]{2}`) and private IP ranges. History rewrites
+require a fresh bundle in `~/backups/` first and a force-push to origin.
+
+## Collaboration
+
+Collaborators with write: `c03rad0r`, `felixfelix-bot`. No license by choice
+(2026-10-21 decision — packaging of the official live-build process; genre
+norm; revisit if outside contributors appear). Cross-repo lane state lives in
+`~/src/ops/workspace-state.md` — keep the kali-live-headless section current
+when the lane changes state.
