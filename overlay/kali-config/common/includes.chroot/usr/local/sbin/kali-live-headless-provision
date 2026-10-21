@@ -78,6 +78,25 @@ if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
     rmdir "$OVERRIDE_MNT" 2>/dev/null || true
 fi
 
+# ---------------------------------------------------- host-role mesh identity
+# Persistent FIPS mesh identity (nsec/npub + name): generated on FIRST boot,
+# persisted to KLHCONFIG, reused on every later boot. The ISO ships NO
+# identity — nothing baked, nothing in git; the nsec lives only on the boot
+# medium (same threat model as the Wi-Fi PSK: physical access = rotate).
+if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
+   && mkdir -p "$OVERRIDE_MNT" 2>/dev/null \
+   && mount -o rw "$O_DEV" "$OVERRIDE_MNT" 2>/dev/null; then
+    if NPUB=$(/usr/local/lib/kali-live-headless/host_role_init.py "$OVERRIDE_MNT" 2>/dev/null) \
+       && [ -n "$NPUB" ]; then
+        echo "$NPUB" > /run/kali-live-headless-npub 2>/dev/null || true
+        log "host-role mesh identity ready: $NPUB"
+    else
+        log "host-role identity not provisioned (non-fatal — no generator or unwritable medium)"
+    fi
+    umount "$OVERRIDE_MNT" 2>/dev/null || true
+    rmdir "$OVERRIDE_MNT" 2>/dev/null || true
+fi
+
 # ---------------------------------------------------------------- hostname
 HN="kali-live"
 if [ -r "$CFG_DIR/hostname" ]; then

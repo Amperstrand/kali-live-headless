@@ -265,6 +265,29 @@ Notes:
   (tmpfs overlay) and vanish on power-off — nothing is written back to the
   USB stick or to internal disks.
 
+## Host-role mesh identity (FIPS)
+
+The stick can carry a **persistent mesh identity** for the FIPS overlay
+(`jmcorgan/fips`): a random secp256k1 keypair (Nostr `nsec`/`npub`) and a
+short name, **generated on first boot** and persisted to the stick's
+`KLHCONFIG` partition (`host-role.conf`). Later boots reuse it, so the
+stick keeps the same `npub` — its mesh address — across power cycles.
+
+* The ISO itself ships **no identity**: nothing baked, nothing in git.
+* The console banner prints the stick's `npub` (public — it's how peers
+  find the node).
+* The `nsec` is a **secret stored in plaintext** on the FAT32 config
+  partition — exactly the same threat model and mitigations as the Wi-Fi
+  passphrase (physical access to the stick is game over; rotate by
+  deleting `host-role.conf` and rebooting).
+* Generation uses only `openssl` + python3 (no extra packages), via
+  `usr/local/sbin/kali-live-host-role-init`.
+* Exposure is deliberately one-directional: the mesh may reach only the
+  explicitly configured gateway port-forwards (e.g. one SSH port into a
+  disposable VM) — never the LAN or host services. FIPS's default-deny
+  mesh firewall (`fips-firewall.service`) enforces the baseline; the
+  deployment side lives in the private overlay, not this repo.
+
 ## KVM
 
 `WITH_KVM=true` (default) turns the stick into a ready-to-use virtualization
