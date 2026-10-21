@@ -111,7 +111,29 @@ if ! getent passwd "$USER" > /dev/null 2>&1; then
     useradd -m -c "Kali Live user" -s /bin/bash "$USER"
 fi
 USER_GID=$(id -g "$USER" 2>/dev/null || echo 1000)
-USER_UID=$(id -u "$USER" 2>/dev/null || echo 1000)
+
+# ------------------------------------------- console password + user groups
+# SSH is public-key-only (sshd drop-in); the console password is
+# randomized at EVERY boot unless LIVE_PASSWORD_MODE=kali was baked
+# (the standard Kali live "kali/kali" console login). The random value is
+# never logged, stored anywhere readable, or printed — with
+# passwordless sudo configured, the normal admin path is the SSH key.
+MODE=$(sed -n 's/^LIVE_PASSWORD_MODE=//p' /etc/default/kali-live-headless 2>/dev/null | head -n1)
+[ -n "$MODE" ] || MODE=random
+if [ "$MODE" = random ]; then
+    PW=$(head -c 32 /dev/urandom 2>/dev/null | base64 2>/dev/null | tr -d '/+=' | cut -c1-20)
+    if [ -n "$PW" ]; then
+        printf '%s:%s\n' "$USER" "$PW" | chpasswd > /dev/null 2>&1 \
+            && log "console password for '$USER' randomized (SSH remains key-only; sudo is passwordless)"
+    fi
+fi
+
+# KVM/libvirt access for the live user (groups only exist on WITH_KVM builds)
+for grp in kvm libvirt libvirt-qemu; do
+    if getent group "$grp" > /dev/null 2>&1; then
+        usermod -aG "$grp" "$USER" 2>/dev/null || true
+    fi
+done
 
 # --------------------------------------------------------- authorized_keys
 if [ -s "$CFG_DIR/authorized_keys" ]; then

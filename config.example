@@ -29,11 +29,25 @@ SSH_PUBKEY_PATH=~/.ssh/id_ed25519.pub
 # (useful for a dedicated test key)
 SSH_EXTRA_PUBKEYS=
 
-# --- Build ------------------------------------------------------------
+# --- Boot behavior ------------------------------------------------------
+# Default boot-menu entry (auto-boots after 5s in any case):
+#   live     = standard Kali Live (default)
+#   forensic = forensic mode (no swap on, no automounting of internal disks)
+BOOT_DEFAULT=live
+# random = console password for user 'kali' is randomized EVERY boot
+#          (SSH is key-only anyway, sudo is passwordless — the password
+#          only matters for physical-console logins)
+# kali   = standard Kali live behavior (kali/kali on the console)
+LIVE_PASSWORD_MODE=random
+# Bake in the KVM/libvirt stack (libvirtd enabled, virt-manager +
+# virt-install, nested virt on, guests NAT-isolated from the host)
+WITH_KVM=true
+
+# --- Build --------------------------------------------------------------
 # Pinned upstream kali-live commit — reproducible builds.
 KALI_LIVE_REF=adb2e38941662f105b57134e0155ec468da294ad
 VARIANT=default
 ARCH=amd64
 BRANCH=kali-rolling
-#BUILD_MIRROR=http://http.kali.org/kali
+#BUILD_MIRROR=http://kali.download/kali
 #OUT_DIR=output

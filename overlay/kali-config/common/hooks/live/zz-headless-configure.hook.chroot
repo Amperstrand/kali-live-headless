@@ -19,6 +19,20 @@ systemctl enable kali-live-headless-provision.service 2>&1 || true
 systemctl enable kali-live-console-banner.service 2>&1 || true
 systemctl enable kali-live-wifi-watchdog.service 2>&1 || true
 
+# KVM/libvirt stack (packages present only on WITH_KVM builds)
+systemctl enable libvirtd.service 2>&1 || true
+systemctl enable virtlogd.socket 2>&1 || true
+systemctl enable kali-live-kvm-enable.service 2>&1 || true
+systemctl enable kali-live-kvm-firewall.service 2>&1 || true
+
+# Passwordless sudo for the live user must be 0440 and syntactically valid
+if [ -f /etc/sudoers.d/kali-live-headless ]; then
+    chown root:root /etc/sudoers.d/kali-live-headless
+    chmod 0440 /etc/sudoers.d/kali-live-headless
+    visudo -cf /etc/sudoers.d/kali-live-headless > /dev/null 2>&1 \
+        || { echo "E: zz-headless-configure: invalid sudoers file"; exit 1; }
+fi
+
 # NetworkManager profile must be root:root 0600 (NM refuses world/group readable)
 if [ -e /etc/NetworkManager/system-connections/headless-wifi.nmconnection ]; then
     chown root:root /etc/NetworkManager/system-connections/headless-wifi.nmconnection

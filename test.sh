@@ -113,14 +113,18 @@ fi
 
 # load config values if available (non-fatal)
 HOSTNAME_EXPECTED="kali-live" WIFI_SSID_EXPECTED="" PUBKEY_FP_EXPECTED="" SSH_KEY=""
+BOOT_DEFAULT_EXPECTED="live" LIVE_PASSWORD_MODE_EXPECTED="random" WITH_KVM_EXPECTED="true"
 if [ -r "$REPO_DIR/config" ]; then
   rm -f "$SCRATCH/env" "$SCRATCH/pubkeypath"
   # shellcheck disable=SC1091
   ( set -a; source "$REPO_DIR/lib/common.sh"; klh_load_config "$REPO_DIR/config"; \
-    printf '%s\n%s\n' "$HOSTNAME" "$WIFI_SSID" > "$SCRATCH/env"; \
+    printf '%s\n%s\n%s\n%s\n%s\n' "$HOSTNAME" "$WIFI_SSID" "$BOOT_DEFAULT" "$LIVE_PASSWORD_MODE" "$WITH_KVM" > "$SCRATCH/env"; \
     printf '%s\n' "$(klh_expand_tilde "$SSH_PUBKEY_PATH")" > "$SCRATCH/pubkeypath" )
   HOSTNAME_EXPECTED=$(sed -n 1p "$SCRATCH/env")
   WIFI_SSID_EXPECTED=$(sed -n 2p "$SCRATCH/env")
+  BOOT_DEFAULT_EXPECTED=$(sed -n 3p "$SCRATCH/env")
+  LIVE_PASSWORD_MODE_EXPECTED=$(sed -n 4p "$SCRATCH/env")
+  WITH_KVM_EXPECTED=$(sed -n 5p "$SCRATCH/env")
   PUBKEY_PATH=$(cat "$SCRATCH/pubkeypath")
   if [ -r "$PUBKEY_PATH" ] && command -v ssh-keygen >/dev/null; then
     if PUBKEY_FP_EXPECTED=$(ssh-keygen -lf "$PUBKEY_PATH" 2>/dev/null | sed 's/^ *[0-9]* //'); then
@@ -256,6 +260,11 @@ else
     for u in ssh NetworkManager avahi-daemon "${UNITS[@]}"; do
       sudo test -L "$SQ_MNT/etc/systemd/system/multi-user.target.wants/$u.service" && record pass "enabled: $u" || record fail "enabled: $u"
     done
+    if [ "$WITH_KVM_EXPECTED" = true ]; then
+      for u in libvirtd kali-live-kvm-enable kali-live-kvm-firewall; do
+        sudo test -e "$SQ_MNT/etc/systemd/system/multi-user.target.wants/$u.service" && record pass "enabled: $u" || record fail "enabled: $u"
+      done
+    fi
     for s in kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-headless-wifi-gen; do
       sudo test -x "$SQ_MNT/usr/local/sbin/$s" && record pass "script executable: $s" || record fail "script executable: $s"
     done
@@ -299,6 +308,40 @@ PKGS
     # Auto-boot timeouts (live-build's default timeout 0 would hang unattended boots)
     sudo grep -q '^timeout 50$' "$ISO_MNT/isolinux/isolinux.cfg" 2>/dev/null && record pass "isolinux: auto-boot timeout (5s)" || record fail "isolinux: auto-boot timeout (5s)"
     sudo grep -q '^set timeout=5' "$ISO_MNT/boot/grub/config.cfg" 2>/dev/null && record pass "grub: auto-boot timeout (5s)" || record fail "grub: auto-boot timeout (5s)"
+
+    # Default boot entry matches BOOT_DEFAULT
+    if [ "$BOOT_DEFAULT_EXPECTED" = forensic ]; then
+      sudo grep -A3 '^label live-forensic' "$ISO_MNT/isolinux/live.cfg" 2>/dev/null | grep -q 'menu default' \
+        && record pass "isolinux: forensic is default entry" || record fail "isolinux: forensic is default entry"
+      sudo grep -q '^set default=1' "$ISO_MNT/boot/grub/config.cfg" 2>/dev/null \
+        && record pass "grub: forensic is default entry" || record fail "grub: forensic is default entry"
+    else
+      sudo grep -A3 '^label live-' "$ISO_MNT/isolinux/live.cfg" 2>/dev/null | grep -q 'menu default' \
+        && record pass "isolinux: live is default entry" || record fail "isolinux: live is default entry"
+      sudo grep -q '^set default=0' "$ISO_MNT/boot/grub/config.cfg" 2>/dev/null \
+        && record pass "grub: live is default entry" || record fail "grub: live is default entry"
+    fi
+
+    # Passwordless sudo
+    if sudo test -f "$SQ_MNT/etc/sudoers.d/kali-live-headless"; then
+      record pass "sudoers drop-in shipped"
+      [ "$(sq %a etc/sudoers.d/kali-live-headless)" = "440" ] && record pass "sudoers mode 0440" || record fail "sudoers mode 0440"
+      sudo grep -q 'NOPASSWD: ALL' "$SQ_MNT/etc/sudoers.d/kali-live-headless" && record pass "sudoers: NOPASSWD for kali" || record fail "sudoers: NOPASSWD for kali"
+    else record fail "sudoers drop-in shipped"; fi
+
+    # KVM stack
+    if [ "$WITH_KVM_EXPECTED" = true ]; then
+      for pkg in qemu-system-x86 libvirt-daemon-system libvirt-clients; do
+        if sudo grep -A1 "^Package: $pkg$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "Status: install ok installed"; then
+          record pass "package: $pkg"
+        else
+          record fail "package: $pkg"
+        fi
+      done
+      sudo test -f "$SQ_MNT/etc/modprobe.d/klh-kvm-nested.conf" && record pass "kvm: nested-virt modprobe conf" || record fail "kvm: nested-virt modprobe conf"
+    else
+      sudo test ! -e "$SQ_MNT/usr/local/sbin/kali-live-kvm-firewall" && record pass "kvm: correctly omitted" || record fail "kvm: files shipped despite WITH_KVM=false"
+    fi
 
     umount_all; trap - EXIT
   else
@@ -404,6 +447,23 @@ else
 
       v=$(guest 'systemctl is-active kali-live-wifi-watchdog')
       [ "$v" = "active" ] && record pass "$mode: wifi watchdog active" || record fail "$mode: wifi watchdog active ($v)"
+
+      # passwordless sudo works over SSH (no password anywhere)
+      if guest 'sudo -n true' 2>/dev/null; then record pass "$mode: passwordless sudo"; else record fail "$mode: passwordless sudo"; fi
+
+      # console password randomized (shadow hash differs from Kali's stock 'kali' hash)
+      if [ "$LIVE_PASSWORD_MODE_EXPECTED" = random ]; then
+        v=$(guest_sudo "grep '^kali:' /etc/shadow | cut -d: -f2")
+        [ -n "$v" ] && [ "$v" != "AqLUsDitNnTsw" ] && record pass "$mode: console password randomized" || record fail "$mode: console password randomized"
+      fi
+
+      # KVM stack: libvirtd reachable by the live user, host shield installed
+      if [ "$WITH_KVM_EXPECTED" = true ]; then
+        v=$(guest 'for i in 1 2 3 4 5 6 7 8 9 10; do virsh -c qemu:///system list >/dev/null 2>&1 && echo ok && exit 0; sleep 3; done; echo no')
+        [ "$v" = "ok" ] && record pass "$mode: virsh usable as kali (libvirtd + group membership)" || record fail "$mode: virsh usable as kali ($v)"
+        v=$(guest 'systemctl is-active kali-live-kvm-firewall')
+        [ "$v" = "active" ] && record pass "$mode: kvm host-shield active" || record fail "$mode: kvm host-shield active ($v)"
+      fi
 
       # The server must accept publickey ONLY. A client that offers no auth
       # methods reports the methods the server would have allowed.

@@ -1,0 +1,13 @@
+[Unit]
+Description=kali-live-headless: shield the host from libvirt guests on virbr0
+After=libvirtd.service network.target
+Wants=libvirtd.service
+ConditionPathExists=/usr/local/sbin/kali-live-kvm-firewall
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/kali-live-kvm-firewall
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

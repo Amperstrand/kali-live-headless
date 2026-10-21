@@ -1,0 +1,11 @@
+# Passwordless sudo for the live user (kali).
+#
+# kali-live-headless is an SSH-key-only system: password authentication is
+# disabled for SSH, and the console password is randomized at every boot
+# (LIVE_PASSWORD_MODE=random). This sudoers entry keeps the account fully
+# usable over SSH for administration without any password.
+#
+# Note: on a live system anyone with physical access can already edit the
+# kernel command line; this file is about making the NORMAL path (SSH key
+# login) passwordless and convenient, not about defending the console.
+kali ALL=(ALL:ALL) NOPASSWD: ALL

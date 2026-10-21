@@ -66,6 +66,14 @@ klh_validate_regdom() {
   [[ "$1" =~ ^[A-Z]{2}$ ]]
 }
 
+klh_validate_boot_default() {
+  case "$1" in live|forensic) return 0 ;; *) return 1 ;; esac
+}
+
+klh_validate_password_mode() {
+  case "$1" in random|kali) return 0 ;; *) return 1 ;; esac
+}
+
 klh_validate_bool() {
   case "$1" in true|false) return 0 ;; *) return 1 ;; esac
 }
@@ -91,6 +99,9 @@ klh_load_config() {
   : "${BRANCH:=kali-rolling}"
   : "${BUILD_MIRROR:=}"
   : "${OUT_DIR:=}"
+  : "${BOOT_DEFAULT:=live}"
+  : "${LIVE_PASSWORD_MODE:=random}"
+  : "${WITH_KVM:=true}"
 
   klh_validate_hostname "$HOSTNAME"     || klh_die "invalid HOSTNAME '$HOSTNAME' in $f"
   klh_validate_ssid "$WIFI_SSID"        || klh_die "invalid WIFI_SSID in $f (1-32 chars, no control chars, no leading/trailing whitespace)"
@@ -98,6 +109,9 @@ klh_load_config() {
   klh_validate_keymgmt "$WIFI_KEYMGMT"  || klh_die "invalid WIFI_KEYMGMT '$WIFI_KEYMGMT' (must be wpa-psk or sae)"
   klh_validate_bool "$WIFI_HIDDEN"      || klh_die "invalid WIFI_HIDDEN '$WIFI_HIDDEN' (true|false)"
   klh_validate_regdom "$WIFI_REGDOM"    || klh_die "invalid WIFI_REGDOM '$WIFI_REGDOM' (empty or two uppercase letters, e.g. US)"
+  klh_validate_boot_default "$BOOT_DEFAULT" || klh_die "invalid BOOT_DEFAULT '$BOOT_DEFAULT' (live|forensic)"
+  klh_validate_password_mode "$LIVE_PASSWORD_MODE" || klh_die "invalid LIVE_PASSWORD_MODE '$LIVE_PASSWORD_MODE' (random|kali)"
+  klh_validate_bool "$WITH_KVM"         || klh_die "invalid WITH_KVM '$WITH_KVM' (true|false)"
   [ -n "${WIFI_PSK:-}" ] || klh_die "WIFI_PSK not set in $f"
 }
 
