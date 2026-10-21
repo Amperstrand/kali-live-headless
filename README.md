@@ -109,7 +109,8 @@ Other honest notes:
 $ ./configure.sh          # prompts for SSID, passphrase (hidden), pubkey, regdom
 $ ./build.sh              # builds output/kali-linux-<version>-live-amd64.iso (30–90 min)
 $ ./flash.sh              # lists removable USB disks, requires explicit confirm
-# ... boot the target machine from USB, pick "Live system" ...
+# ... boot the target machine from USB — no keypress needed,
+#     the default entry ("Live system") auto-boots after 5 s ...
 $ ssh kali@kali-live.local
 ```
 
