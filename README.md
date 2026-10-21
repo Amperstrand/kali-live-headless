@@ -362,6 +362,7 @@ the build finishes, unless `--keep-secrets`).
 |---|---|
 | No IPv4 on console banner | give it 60–90 s; check `journalctl -t kali-live-wifi-watchdog -b` |
 | Wi-Fi never associates | wrong PSK; AP is WPA3-only (try `sae`); regdom/world mode (set `WIFI_REGDOM`); driver missing — `dmesg`, `nmcli device` |
+| Wi-Fi drops every ~30 s | fixed 2026-10-21 (watchdog false-negative tore down a healthy association — see `docs/wifi-drop-postmortem-2026-10-21.md`); on sticks from the 2026-10-20 ISO: `sudo systemctl disable --now kali-live-wifi-watchdog` |
 | `ssh: connect to host ... port 22: Connection refused` | still booting; or `systemctl status ssh` from the console |
 | Password prompt instead of key | stale key on the client, or built with a different `SSH_PUBKEY_PATH` — rebuild |
 | Host key changed warning after rebuild | expected — each build generates fresh host keys |

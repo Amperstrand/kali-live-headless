@@ -20,8 +20,13 @@ wifi_device() {
 }
 
 profile_active() {
-    nmcli --terse --field NAME,TYPE connection show --active 2>/dev/null \
-        | awk -F: '$1 == "HEADLESS-WIFI" && $2 == "wifi" { found=1 } END { exit !found }'
+    # NB: match by NAME only — nmcli is inconsistent here: `connection show
+    # --active` reports TYPE as "802-11-wireless", while `device status`
+    # reports "wifi". Matching the connection TYPE against "wifi" never
+    # succeeds and made this watchdog tear down and re-activate a healthy
+    # association every INTERVAL seconds (the 2026-10-21 Wi-Fi drops).
+    nmcli --terse --field NAME connection show --active 2>/dev/null \
+        | grep -qx 'HEADLESS-WIFI'
 }
 
 diagnostics() {
