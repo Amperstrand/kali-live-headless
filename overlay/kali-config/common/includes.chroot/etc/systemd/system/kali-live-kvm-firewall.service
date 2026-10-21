@@ -6,6 +6,9 @@ ConditionPathExists=/usr/local/sbin/kali-live-kvm-firewall
 
 [Service]
 Type=oneshot
+# the script waits (up to 300s) for libvirt to create virbr0 — do not let
+# systemd's 90s default TimeoutStartSec kill it on slow boots
+TimeoutStartSec=330
 ExecStart=/usr/local/sbin/kali-live-kvm-firewall
 RemainAfterExit=yes
 

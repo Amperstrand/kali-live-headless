@@ -186,7 +186,7 @@ fi
 # host-role mesh identity generator: pure python3 + openssl, no extra deps
 ROLE_INIT="$REPO_DIR/overlay/kali-config/common/includes.chroot/usr/local/lib/kali-live-headless/host_role_init.py"
 if [ -x "$ROLE_INIT" ] && command -v python3 >/dev/null 2>&1; then
-  python3 -m py_compile "$ROLE_INIT" 2>/dev/null \
+  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$ROLE_INIT" 2>/dev/null \
     && record pass "host-role identity generator compiles" \
     || record fail "host-role identity generator compiles"
 else
@@ -266,16 +266,18 @@ else
       fi
     else record fail "skel authorized_keys shipped"; fi
 
-    # services enabled
+    # services enabled — symlink presence (targets resolve at BOOT, when the
+    # filesystem root is /; test -e here would resolve absolute targets
+    # against the HOST root and false-fail)
     for u in ssh NetworkManager avahi-daemon "${UNITS[@]}"; do
       sudo test -L "$SQ_MNT/etc/systemd/system/multi-user.target.wants/$u.service" && record pass "enabled: $u" || record fail "enabled: $u"
     done
     if [ "$WITH_KVM_EXPECTED" = true ]; then
       for u in libvirtd kali-live-kvm-enable kali-live-kvm-firewall; do
-        sudo test -e "$SQ_MNT/etc/systemd/system/multi-user.target.wants/$u.service" && record pass "enabled: $u" || record fail "enabled: $u"
+        sudo test -L "$SQ_MNT/etc/systemd/system/multi-user.target.wants/$u.service" && record pass "enabled: $u" || record fail "enabled: $u"
       done
     fi
-    for s in kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-headless-wifi-gen; do
+    for s in kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-headless-wifi-gen kali-live-kvm-enable kali-live-kvm-firewall; do
       sudo test -x "$SQ_MNT/usr/local/sbin/$s" && record pass "script executable: $s" || record fail "script executable: $s"
     done
     sudo test -f "$SQ_MNT/etc/kali-live-headless/headless-wifi.nmconnection.in" && record pass "wifi profile template shipped (runtime override support)" || record fail "wifi profile template shipped"

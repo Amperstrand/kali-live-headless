@@ -16,3 +16,4 @@ output/
 # Test scratch
 test/scratch/
 .klh-test-*
+__pycache__/
