@@ -9,7 +9,8 @@ WPA2/PSK. Signal and association themselves were healthy.
 
 ## Evidence
 
-`dmesg` showed a metronomic pattern — the CLIENT choosing to leave:
+`dmesg` showed a metronomic pattern — the CLIENT choosing to leave
+(AP BSSID anonymized in the excerpts below):
 
 ```
 [ 534.422444] wlan0: deauthenticating from 00:11:22:33:44:55 by local choice (Reason: 3=DEAUTH_LEAVING)
