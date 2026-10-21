@@ -44,6 +44,13 @@ done
 
 HN=$(hostname 2>/dev/null || echo kali-live)
 
+# mesh identity (public part only) if provisioned this boot
+NPUB=""
+if [ -r /run/kali-live-headless-npub ]; then
+    NPUB=$(head -n1 /run/kali-live-headless-npub 2>/dev/null)
+fi
+MESH_LINE=" mesh id (npub): ${NPUB:-not provisioned — boot from a stick with a KLHCONFIG partition}"
+
 BANNER=$(printf '
 ==============================================================
  kali-live-headless  |  host: %s
@@ -52,8 +59,9 @@ BANNER=$(printf '
        key auth only — passwords and root login are disabled
  ED25519 host key: %s
  RSA host key:     %s
+%s
 ==============================================================
-' "$HN" "$ADDRS" "$HN" "$FP_ED" "$FP_RSA")
+' "$HN" "$ADDRS" "$HN" "$FP_ED" "$FP_RSA" "$MESH_LINE")
 
 # Show on the console...
 printf '%s\n' "$BANNER" > /dev/console 2>/dev/null || true

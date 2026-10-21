@@ -183,6 +183,16 @@ else
   record skip "NM profile" "no config, python3 or generator"
 fi
 
+# host-role mesh identity generator: pure python3 + openssl, no extra deps
+ROLE_INIT="$REPO_DIR/overlay/kali-config/common/includes.chroot/usr/local/lib/kali-live-headless/host_role_init.py"
+if [ -x "$ROLE_INIT" ] && command -v python3 >/dev/null 2>&1; then
+  python3 -m py_compile "$ROLE_INIT" 2>/dev/null \
+    && record pass "host-role identity generator compiles" \
+    || record fail "host-role identity generator compiles"
+else
+  record fail "host-role identity generator present+executable"
+fi
+
 # systemd unit sanity
 UNITS=(kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog)
 for u in "${UNITS[@]}"; do
