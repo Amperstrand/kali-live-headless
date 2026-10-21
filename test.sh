@@ -419,7 +419,9 @@ else
       [ "$v" = "$HOSTNAME_EXPECTED" ] && record pass "$mode: hostname=$HOSTNAME_EXPECTED" || record fail "$mode: hostname (want $HOSTNAME_EXPECTED, got '$v')"
 
       local eff
-      eff=$(guest_sudo 'sshd -T 2>/dev/null' | grep -E '^(passwordauthentication|permitrootlogin|pubkeyauthentication)' | sort)
+      # OpenSSH ≥ 10 prints sshd -T keys in CamelCase (PermitRootLogin no);
+      # older prints lowercase. Normalize before the exact-match greps.
+      eff=$(guest_sudo 'sshd -T 2>/dev/null' | grep -iE '^(passwordauthentication|permitrootlogin|pubkeyauthentication)' | tr 'A-Z' 'a-z' | sort)
       echo "$eff" | grep -q '^passwordauthentication no' && record pass "$mode: effective PasswordAuthentication no" || record fail "$mode: effective PasswordAuthentication no"
       echo "$eff" | grep -q '^permitrootlogin no'        && record pass "$mode: effective PermitRootLogin no"        || record fail "$mode: effective PermitRootLogin no"
       echo "$eff" | grep -q '^pubkeyauthentication yes'  && record pass "$mode: effective PubkeyAuthentication yes"  || record fail "$mode: effective PubkeyAuthentication yes"
@@ -431,7 +433,9 @@ else
       v=$(guest 'stat -c %U /home/kali/.ssh/authorized_keys')
       [ "$v" = "kali" ] && record pass "$mode: authorized_keys owned by kali" || record fail "$mode: authorized_keys owned by kali ($v)"
 
-      v=$(guest 'nmcli -g connection.id connection show | grep -c HEADLESS-WIFI || true')
+      # newer NetworkManager removed connection.id from -g fields (allowed:
+      # NAME,UUID,TYPE,...) — NAME is the stable field across versions
+      v=$(guest 'nmcli -g NAME connection show | grep -c HEADLESS-WIFI || true')
       [ "$v" -ge 1 ] 2>/dev/null && record pass "$mode: NM profile loaded by NetworkManager" || record fail "$mode: NM profile loaded by NetworkManager"
       v=$(guest 'stat -c %a /etc/NetworkManager/system-connections/headless-wifi.nmconnection')
       [ "$v" = "600" ] && record pass "$mode: NM profile mode 0600 in guest" || record fail "$mode: NM profile mode 0600 in guest ($v)"
@@ -491,7 +495,7 @@ else
 
       if [ -n "${BAKED_FP:-}" ]; then
         local livefp
-        livefp=$(guest 'cat /etc/ssh/ssh_host_ed25519_key.pub' | awk '{print $2}')
+        livefp=$(guest 'ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null' | awk '{print $2}')
         [ "$livefp" = "$BAKED_FP" ] && record pass "$mode: host key stable (matches baked ISO key)" || record fail "$mode: host key mismatch"
       fi
       return 0
