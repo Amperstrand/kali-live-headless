@@ -374,3 +374,20 @@ $ sudo rm -rf build/          # upstream tree + caches (~20 GB)
 $ rm -rf output/              # ISOs + manifests
 $ shred -u config             # removes the plaintext passphrase copy
 ```
+
+## Rebuilding / long runs
+
+A build takes 30–90+ min. Run it inside `tmux` and redirect output to a
+**file** — do **not** pipe through `tee` in the pane:
+
+```console
+$ tmux new-session -d -s kali-build -c ~/src/kali-live-headless \
+      'BUILD_MIRROR=http://kali.download/kali ./build.sh > output/build-console.log 2>&1; echo rc=$?'
+```
+
+`./build.sh` already logs everything to `output/<iso>.log`. A pane-level
+`| tee` adds a fragile pipe hop: if that tee dies (e.g. unwritable stale
+root-owned log after a killed sudo build), the pipe's 64 KB buffer fills
+and every process upstream — up to and including `apt-get` inside the
+build container — silently blocks on `write()` forever. This exact wedge
+wasted three builds on 2026-10-21 before `wchan` showed `anon_pipe_write`.
