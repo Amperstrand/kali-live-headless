@@ -126,6 +126,47 @@ mkdir -p "$KLH_COMMON"
 klh_info "overlaying repo customizations into kali-config/common/"
 cp -a "$OVERLAY_DIR/." "$KLH_COMMON/"
 
+# KVM stack: package list written only for WITH_KVM builds; the unit
+# files/scripts from the overlay are removed otherwise so nothing dead
+# ships in the ISO.
+if [ "$WITH_KVM" = true ]; then
+  cat > "$KLH_COMMON/package-lists/kvm.list.chroot" <<'EOF'
+## KVM/libvirt stack (WITH_KVM=true builds) — see README "KVM"
+qemu-system-x86
+libvirt-daemon-system
+libvirt-clients
+virt-install
+virt-manager
+dnsmasq-base
+EOF
+  klh_info "KVM stack baked in (libvirtd enabled at boot; guests NAT-only, host shielded on virbr0)"
+else
+  rm -f "$KLH_COMMON/package-lists/kvm.list.chroot"
+  rm -f "$KLH_COMMON/includes.chroot/etc/systemd/system/kali-live-kvm-enable.service" \
+        "$KLH_COMMON/includes.chroot/etc/systemd/system/kali-live-kvm-firewall.service" \
+        "$KLH_COMMON/includes.chroot/usr/local/sbin/kali-live-kvm-enable" \
+        "$KLH_COMMON/includes.chroot/usr/local/sbin/kali-live-kvm-firewall" \
+        "$KLH_COMMON/includes.chroot/etc/modprobe.d/klh-kvm-nested.conf"
+  klh_info "KVM stack omitted (WITH_KVM=false)"
+fi
+
+# Default boot entry: move syslinux's "menu default" onto the chosen
+# entry and point GRUB at its index. Upstream defaults to the first
+# "Live system" entry; BOOT_DEFAULT=forensic makes the forensic entry
+# (no swap, no automount of internal disks) the zero-interaction default.
+LIVE_CFG="$KLH_COMMON/bootloaders/syslinux_common/live.cfg.in"
+GRUB_CFG="$KLH_COMMON/bootloaders/grub-pc/config.cfg"
+if [ -f "$LIVE_CFG" ]; then
+  sed -i '/^[[:space:]]*menu default[[:space:]]*$/d' "$LIVE_CFG"
+  if [ "$BOOT_DEFAULT" = forensic ]; then
+    sed -i '/menu label Live system (@FLAVOUR@ ^forensic mode)/a\        menu default' "$LIVE_CFG"
+  else
+    sed -i '/menu label \^Live system (@FLAVOUR@)/a\        menu default' "$LIVE_CFG"
+  fi
+fi
+[ -f "$GRUB_CFG" ] && sed -i "s/^set default=.*/set default=$([ "$BOOT_DEFAULT" = forensic ] && echo 1 || echo 0)/" "$GRUB_CFG"
+klh_info "default boot entry: $BOOT_DEFAULT (auto-boots after 5s)"
+
 # Scrub staged secrets on ANY exit from here on. The trap must be armed
 # BEFORE the secrets are staged (review M2: staging first, trapping later
 # left the PSK profile on disk when an early command failed).
@@ -173,6 +214,9 @@ install -m 0644 "$REPO_DIR/templates/headless-wifi.nmconnection.in" \
 cat > "$KLH_COMMON/includes.chroot/etc/default/kali-live-headless" <<EOF
 # Runtime defaults for kali-live-headless (no secrets here).
 WIFI_REGDOM="$WIFI_REGDOM"
+# random = console password randomized every boot (SSH is key-only,
+#         sudo passwordless); kali = standard Kali live "kali/kali"
+LIVE_PASSWORD_MODE="$LIVE_PASSWORD_MODE"
 EOF
 install -D -m 0644 \
   "$OVERLAY_DIR/includes.chroot/etc/ssh/sshd_config.d/0000-kali-live-headless.conf" \
@@ -194,6 +238,9 @@ MANIFEST="$OUT_DIR/build-manifest-$(date -u '+%Y%m%dT%H%M%SZ').txt"
   echo "hostname        : $HOSTNAME"
   echo "wifi ssid       : $WIFI_SSID"
   echo "wifi keymgmt    : $WIFI_KEYMGMT hidden=$WIFI_HIDDEN regdom=${WIFI_REGDOM:-<none>}"
+  echo "boot default    : $BOOT_DEFAULT (auto-boot 5s)"
+  echo "console password: $LIVE_PASSWORD_MODE"
+  echo "kvm stack       : $WITH_KVM"
   echo "authorized keys :"
   awk '{print "  " $1 " " substr($2,1,16) "... " $3}' "$STAGE_ETC/authorized_keys"
   echo "note            : WIFI_PSK deliberately NOT recorded"

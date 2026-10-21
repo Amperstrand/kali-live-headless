@@ -30,7 +30,7 @@ profile_active() {
 }
 
 diagnostics() {
-    local dev="$1"
+    dev="$1"
     log "--- diagnostics begin ---"
     nmcli --terse --field DEVICE,TYPE,STATE device status 2>/dev/null | log_diag
     [ -n "$dev" ] && nmcli device show "$dev" 2>/dev/null \

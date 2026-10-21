@@ -23,6 +23,7 @@ CONFIG_FILE="$REPO_DIR/config"
 ASSUME_YES=false
 OPT_HOSTNAME="" OPT_SSID="" OPT_KEYMGMT="" OPT_HIDDEN="" OPT_REGDOM=""
 OPT_PUBKEY="" OPT_EXTRA=""
+OPT_BOOTDEFAULT="" OPT_PASSMODE="" OPT_KVM=""
 
 usage() {
   cat <<EOF
@@ -36,6 +37,9 @@ Options:
   -r, --regdom CC         ISO 3166-1 alpha-2 regulatory domain (e.g. US); empty skips
   -k, --pubkey PATH       Path to SSH public key (e.g. ~/.ssh/id_ed25519.pub)
   -e, --extra-pubkeys P   Extra public keys, space-separated paths
+  -B, --boot-default D    Default boot entry: live (default) or forensic
+  -P, --password-mode M   Console password: random (default) or kali
+      --with-kvm B        Bake in KVM/libvirt stack: true (default) or false
   -y, --assume-yes        Overwrite an existing ./config without asking
   -h, --help              This help
 
@@ -54,6 +58,9 @@ EOF
     -r|--regdom)         OPT_REGDOM=${2:?}; shift 2 ;;
     -k|--pubkey)         OPT_PUBKEY=${2:?}; shift 2 ;;
     -e|--extra-pubkeys)  OPT_EXTRA=${2:?}; shift 2 ;;
+    -B|--boot-default)   OPT_BOOTDEFAULT=${2:?}; shift 2 ;;
+    -P|--password-mode)  OPT_PASSMODE=${2:?}; shift 2 ;;
+    --with-kvm)          OPT_KVM=${2:?}; shift 2 ;;
     -y|--assume-yes)     ASSUME_YES=true; shift ;;
     -h|--help)           usage ;;
     *) klh_die "unknown option: $1 (see --help)" ;;
@@ -143,6 +150,34 @@ if [ -n "$SSH_EXTRA_PUBKEYS" ]; then
   done
 fi
 
+# --------------------------------------------------- boot + security options
+BOOT_DEFAULT=${OPT_BOOTDEFAULT:-}
+if [ -z "$BOOT_DEFAULT" ]; then
+  cat >&2 <<'EOF'
+Default boot entry (auto-boots after 5s either way):
+  1. live     standard Kali Live
+  2. forensic also disables swap and internal-disk automounting
+EOF
+  prompt_choice BOOT_DEFAULT "Choose" "live" live forensic
+fi
+klh_validate_boot_default "$BOOT_DEFAULT" || klh_die "boot default must be live or forensic"
+
+LIVE_PASSWORD_MODE=${OPT_PASSMODE:-}
+if [ -z "$LIVE_PASSWORD_MODE" ]; then
+  cat >&2 <<'EOF'
+Console password for the live user 'kali' (SSH is key-only regardless):
+  1. random  randomized at every boot; nobody can log in at the console
+             (sudo is passwordless over SSH, so this rarely matters)
+  2. kali    standard Kali live behavior (kali/kali at the console)
+EOF
+  prompt_choice LIVE_PASSWORD_MODE "Choose" "random" random kali
+fi
+klh_validate_password_mode "$LIVE_PASSWORD_MODE" || klh_die "password mode must be random or kali"
+
+WITH_KVM=${OPT_KVM:-}
+if [ -z "$WITH_KVM" ]; then prompt_choice WITH_KVM "Bake in the KVM/libvirt stack?" "true" true false; fi
+klh_validate_bool "$WITH_KVM" || klh_die "--with-kvm must be true or false"
+
 # ------------------------------------------------------------------- write
 if [ -e "$CONFIG_FILE" ] && [ "$ASSUME_YES" != true ]; then
   read -r -p "Overwrite existing $CONFIG_FILE? [y/N] " ans || true
@@ -161,6 +196,9 @@ TMP=$(mktemp)
   printf 'WIFI_REGDOM=%q\n' "$WIFI_REGDOM"
   printf 'SSH_PUBKEY_PATH=%q\n' "$SSH_PUBKEY_PATH"
   printf 'SSH_EXTRA_PUBKEYS=%q\n' "$SSH_EXTRA_PUBKEYS"
+  printf 'BOOT_DEFAULT=%q\n' "$BOOT_DEFAULT"
+  printf 'LIVE_PASSWORD_MODE=%q\n' "$LIVE_PASSWORD_MODE"
+  printf 'WITH_KVM=%q\n' "$WITH_KVM"
 } > "$TMP"
 chmod 600 "$TMP"
 mv -f "$TMP" "$CONFIG_FILE"
@@ -172,6 +210,9 @@ klh_info "Wi-Fi SSID      : $WIFI_SSID  ($WIFI_KEYMGMT$( [ "$WIFI_HIDDEN" = true
 [ -n "$WIFI_REGDOM" ] && klh_info "regdom          : $WIFI_REGDOM" || klh_info "regdom          : (not set)"
 klh_info "authorized key  : $PUBKEY_FP"
 [ -n "$EXTRA_FPS" ] && klh_info "extra keys      : $EXTRA_FPS"
+klh_info "boot default    : $BOOT_DEFAULT (auto-boots after 5s)"
+klh_info "console password: $LIVE_PASSWORD_MODE"
+klh_info "KVM stack       : $WITH_KVM$( [ "$WITH_KVM" = true ] && echo ' (libvirtd + virt-manager, host shielded from guests)')"
 cat <<'EOF'
 
 Reminder: the Wi-Fi passphrase is stored recoverably (plaintext) in ./config

@@ -1,0 +1,23 @@
+#!/bin/sh
+# Load KVM modules (some boards don't auto-load via udev) and report
+# whether hardware virtualization is available.
+
+set -u
+
+if [ -e /dev/kvm ]; then
+    exit 0
+fi
+
+modprobe kvm 2>/dev/null || true
+if grep -q -w vmx /proc/cpuinfo 2>/dev/null; then
+    modprobe kvm_intel 2>/dev/null || true
+elif grep -q -w svm /proc/cpuinfo 2>/dev/null; then
+    modprobe kvm_amd 2>/dev/null || true
+fi
+
+if [ -e /dev/kvm ]; then
+    logger -t kali-live-kvm "KVM module loaded, /dev/kvm available"
+else
+    logger -t kali-live-kvm "WARNING: no /dev/kvm (VT-x/AMD-V disabled in firmware or unsupported CPU) — libvirt falls back to slow TCG emulation"
+fi
+exit 0

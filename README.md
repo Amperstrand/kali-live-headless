@@ -154,6 +154,9 @@ the next build.)
 | `WIFI_REGDOM` | *(empty)* | ISO 3166-1 alpha-2 regulatory domain (e.g. `US`, `DE`); applied before NetworkManager starts |
 | `SSH_PUBKEY_PATH` | `~/.ssh/id_ed25519.pub` | Your **public** key |
 | `SSH_EXTRA_PUBKEYS` | *(empty)* | Space-separated extra public keys (e.g. a test key) |
+| `BOOT_DEFAULT` | `live` | Default boot-menu entry (`live` or `forensic`); either way it auto-boots after 5 s |
+| `LIVE_PASSWORD_MODE` | `random` | `random`: console password for `kali` randomized at every boot; `kali`: standard kali/kali console login. SSH is key-only in both modes, sudo is passwordless in both modes |
+| `WITH_KVM` | `true` | Bake in the KVM/libvirt stack (see below) |
 | `KALI_LIVE_REF` | pinned commit | Upstream kali-live revision — keeps builds reproducible |
 | `VARIANT` / `ARCH` / `BRANCH` | `default` / `amd64` / `kali-rolling` | Standard upstream build options |
 
@@ -260,6 +263,57 @@ Notes:
 * All runtime writes (logs, `/home/kali`, NM state) live in RAM
   (tmpfs overlay) and vanish on power-off — nothing is written back to the
   USB stick or to internal disks.
+
+## KVM
+
+`WITH_KVM=true` (default) turns the stick into a ready-to-use virtualization
+host for an old gaming PC: boot, `ssh` in, `virsh` / `virt-manager` are live.
+
+What ships:
+
+* `qemu-system-x86`, `libvirt-daemon-system`, `libvirt-clients`,
+  `virt-install`, `virt-manager` (GUI over the desktop session),
+  `dnsmasq-base`; `libvirtd` enabled at boot
+* the live user `kali` is added to `kvm` + `libvirt` groups — no root needed
+  to manage guests
+* nested virtualization enabled (`/etc/modprobe.d/klh-kvm-nested.conf`), so
+  guests can themselves run KVM (handy for CI/test jobs)
+* KVM modules loaded eagerly; on hardware without VT-x/AMD-V the system
+  still boots and libvirt falls back to slow TCG emulation (logged)
+
+Security model (be honest with yourself about each layer):
+
+| Layer | State |
+|---|---|
+| Guest → **host disks** | isolated by default — guests see only their own qcow2/raw images; nothing is passed through unless you explicitly attach it with virt-manager/virsh |
+| Guest → **host services** (sshd, libvirt API, anything on the stick) | blocked: `kali-live-kvm-firewall` installs iptables rules on `virbr0` allowing only DHCP + DNS, dropping all other guest→host traffic |
+| Guest → **LAN/Internet** | allowed via libvirt's NAT — a guest behaves like any other client on your network. This is what makes "run build jobs" work out of the box |
+| Guest → **guests** | separated by libvirt's bridge + firewalld/iptables rules (standard libvirt behavior) |
+| Full quarantine | if a workload must not reach anything, use virt-manager's "Isolated network" (or `virsh net-define` with no `<forward>`); the host shield above still applies |
+| Guest escape containment | guests run as confined `qemu` processes; no SELinux/AppArmor sVirt enforcement is guaranteed on the live session — treat the stick host as a disposable machine, which is the point |
+
+The test suite asserts the stack: packages shipped, `libvirtd` enabled and
+reachable via `virsh` as the live user, host-shield service active
+(a guest VM with networking is not booted inside the QEMU test guest).
+
+## Security notes (audit)
+
+* **SSH**: public-key only — `PasswordAuthentication no`,
+  `KbdInteractiveAuthentication no`, `PermitRootLogin no` via a drop-in that
+  sorts first; verified with the **effective** config (`sudo sshd -T`) and
+  a live "server offers publickey only" probe in the test suite.
+* **Console password**: randomized at every boot (`LIVE_PASSWORD_MODE=random`)
+  — the value is generated from `/dev/urandom`, applied with `chpasswd`,
+  never logged or stored. Nobody (including you) can log in at the physical
+  console; the normal access path is your SSH key. Set
+  `LIVE_PASSWORD_MODE=kali` if you want the standard kali/kali console login.
+* **sudo**: passwordless for `kali` (`/etc/sudoers.d/kali-live-headless`,
+  mode 0440, `visudo`-validated at build time). On a live system physical
+  console access is already game-over (kernel cmdline editing), so this
+  adds convenience without removing meaningful protection.
+* **SSH host keys**: unique per ISO build, stable across boots of the same
+  stick; fingerprint shown on the console banner for verification.
+
 
 ## Testing
 

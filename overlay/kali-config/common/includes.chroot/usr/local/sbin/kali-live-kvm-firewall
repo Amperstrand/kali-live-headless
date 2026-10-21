@@ -1,0 +1,42 @@
+#!/bin/sh
+# Shield the live host from KVM/libvirt guests on the default NAT bridge.
+#
+# Model (see README "KVM"):
+#   - Guests get outbound NAT (internet/LAN egress) like any client.
+#   - Guests must NOT reach host services (sshd, libvirt API, anything
+#     listening on the host) through virbr0 — only DHCP + DNS, which the
+#     built-in dnsmasq serves on that bridge.
+#   - Guests get NO access to host disks or devices unless someone
+#     explicitly attaches them with virsh/virt-manager.
+#
+# This deliberately does NOT isolate guests from the LAN — for a fully
+# quarantined guest use an isolated libvirt network instead
+# (`virsh net-define` with <forward mode='none'/> or virt-manager's
+# "Isolated network" option).
+
+set -u
+
+# No iptables (package missing)? Do nothing rather than fail the boot.
+command -v iptables >/dev/null 2>&1 || exit 0
+
+# Wait (bounded, up to 5 min) for libvirt to create the bridge.
+i=0
+while [ "$i" -lt 60 ] && ! ip link show virbr0 >/dev/null 2>&1; do
+    sleep 5
+    i=$((i + 1))
+done
+ip link show virbr0 >/dev/null 2>&1 || exit 0
+
+# Idempotent: skip if the rule set is already installed.
+if iptables -C INPUT -i virbr0 -j DROP >/dev/null 2>&1; then
+    exit 0
+fi
+
+# -I inserts at the top, so install in reverse order:
+# final order = [53 ACCEPT, 67 ACCEPT, DROP]
+iptables -I INPUT -i virbr0 -j DROP
+iptables -I INPUT -i virbr0 -p udp --dport 67 -j ACCEPT   # DHCP (dnsmasq)
+iptables -I INPUT -i virbr0 -p udp --dport 53 -j ACCEPT   # DNS  (dnsmasq)
+
+logger -t kali-live-kvm "virbr0 host-shield installed (DNS/DHCP only; host services unreachable from guests)"
+exit 0
