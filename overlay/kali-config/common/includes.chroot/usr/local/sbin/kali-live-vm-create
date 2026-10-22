@@ -1,0 +1,138 @@
+#!/bin/sh
+# kali-live-vm-create — create a VM root-filesystem image in the NTFS store.
+#
+# M1 scope (docs/vm-store-ntfs-research.md §4): image lifecycle only —
+# create the sparse volume via libvirt (pool klh-vmstore), write a small
+# sidecar .meta for M2, and print the matching virt-install line for the
+# chosen guest-provisioning source. Domain define/start stays with the
+# operator/build-job until the provisioning default is decided (see the
+# research doc §8 — cloud-init seed vs ISO install vs prebuilt image).
+#
+# Usage:
+#   kali-live-vm-create --id NAME --cores N --ram-gb N --disk-gb N
+#                       [--format raw|qcow2] [--prealloc] [--meta k=v ...]
+#
+#   --id        VM identifier: [a-z0-9-], first char alnum, max 48 — also
+#               the Windows-side file name C:\vms\<id>.<format> and the
+#               libvirt volume name. Restricted on purpose: it becomes a
+#               file name on the Windows filesystem.
+#   --format    raw (default, best I/O path through ntfs-3g) or qcow2
+#               (pick this if the VM will later need snapshots/resume).
+#   --prealloc  fully allocate instead of sparse.
+#
+# Guards: refuses when the store is not mounted, the pool is not active,
+# free space would drop below reserved_free_mb, or the id is taken.
+# Guests NEVER get raw devices through this tool — only pool volumes
+# (the raw-partition invariant from the research doc §6).
+#
+# POSIX sh only — dash parses this file; no bashisms (build #11 lesson).
+
+set -u
+
+TAG=kali-live-vmstore
+ENVFILE=/run/kali-live-vmstore.env
+
+usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+[ $# -ge 1 ] || usage
+
+ID="" CORES="" RAM_GB="" DISK_GB="" FORMAT="" PREALLOC=false
+METAS=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --id)      ID=${2:?}; shift 2 ;;
+        --cores)   CORES=${2:?}; shift 2 ;;
+        --ram-gb)  RAM_GB=${2:?}; shift 2 ;;
+        --disk-gb) DISK_GB=${2:?}; shift 2 ;;
+        --format)  FORMAT=${2:?}; shift 2 ;;
+        --prealloc) PREALLOC=true; shift ;;
+        --meta)    METAS="$METAS $2"; shift 2 ;;
+        -h|--help) usage ;;
+        *) echo "kali-live-vm-create: unknown option: $1" >&2; usage ;;
+    esac
+done
+
+log() { logger -t "$TAG" -- "$*" 2>/dev/null || true; }
+die() { log "ERROR: $*"; echo "kali-live-vm-create: $*" >&2; exit 1; }
+
+# ---------------------------------------------------------------- validate
+case "$ID" in
+    '') die "--id is required" ;;
+esac
+printf '%s' "$ID" | grep -Eq '^[a-z0-9][a-z0-9-]{0,47}$' \
+    || die "--id must match [a-z0-9][a-z0-9-]{0,47} (it becomes a file name on the Windows filesystem)"
+case "$CORES" in ''|*[!0-9]*) die "--cores must be a positive integer" ;; esac
+case "$RAM_GB" in ''|*[!0-9]*) die "--ram-gb must be a positive integer" ;; esac
+case "$DISK_GB" in ''|*[!0-9]*) die "--disk-gb must be a positive integer" ;; esac
+[ "$CORES" -ge 1 ] 2>/dev/null || die "--cores must be >= 1"
+[ "$RAM_GB" -ge 1 ] 2>/dev/null || die "--ram-gb must be >= 1"
+[ "$DISK_GB" -ge 1 ] 2>/dev/null || die "--disk-gb must be >= 1"
+[ "$FORMAT" = "" ] && FORMAT=raw
+case "$FORMAT" in raw|qcow2) ;; *) die "--format must be raw or qcow2" ;; esac
+
+# The libvirt volume name — and therefore the Windows-side file name — is
+# "<id>.image" (the C:\vms\<id>.image contract; libvirt dir pools name the
+# file after the volume). Domain names (M2) will use the bare <id>.
+VOL="$ID.image"
+
+# ------------------------------------------------------------- store state
+[ -r "$ENVFILE" ] || die "VM store not mounted (no $ENVFILE) — is kali-live-vmstore-mount active and vm-store.conf enabled?"
+# shellcheck disable=SC1090
+. "$ENVFILE"
+STORE_DIR=${KLH_VMSTORE_DIR:?}
+POOL=${KLH_VMSTORE_POOL:?}
+RESERVED_MB=${KLH_VMSTORE_RESERVED_MB:-20480}
+
+mountpoint -q "${KLH_VMSTORE_MOUNT:?}" || die "store mount ${KLH_VMSTORE_MOUNT} is not mounted"
+virsh -c qemu:///system pool-info "$POOL" >/dev/null 2>&1 || die "libvirt pool $POOL is not active"
+
+if virsh -c qemu:///system vol-path --pool "$POOL" "$VOL" >/dev/null 2>&1; then
+    die "volume '$VOL' already exists in pool $POOL (pick another --id or kali-live-vm-rm it first)"
+fi
+
+NEED_MB=$(( DISK_GB * 1024 ))   # reserve headroom against FULL growth: a
+                                # sparse volume starts empty but is meant to
+                                # hold Z GB — reserved_free_mb exists so C:
+                                # never fills to the brim
+AVAIL_MB=$(df -Pm "$STORE_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
+[ -n "$AVAIL_MB" ] || die "cannot determine free space in $STORE_DIR"
+if [ $(( AVAIL_MB - NEED_MB )) -lt "$RESERVED_MB" ]; then
+    die "not enough headroom: ${AVAIL_MB}MB free, need ${NEED_MB}MB + ${RESERVED_MB}MB reserved (reserved_free_mb from vm-store.conf)"
+fi
+
+# ---------------------------------------------------------------- create
+ALLOC_ARGS=""
+[ "$PREALLOC" = true ] && ALLOC_ARGS="--allocation ${DISK_GB}G"
+if ! virsh -c qemu:///system vol-create-as "$POOL" "$VOL" "${DISK_GB}G" --format "$FORMAT" $ALLOC_ARGS >/dev/null 2>&1; then
+    die "virsh vol-create-as failed for '$VOL' (see libvirtd journal)"
+fi
+VOLPATH=$(virsh -c qemu:///system vol-path --pool "$POOL" "$VOL" 2>/dev/null || echo "?")
+
+# sidecar for M2 (reboot persistence): plain key=value, no secrets
+METAFILE="$STORE_DIR/$ID.meta"
+{
+    echo "format=$FORMAT"
+    echo "cores=$CORES"
+    echo "ram_gb=$RAM_GB"
+    echo "disk_gb=$DISK_GB"
+    echo "prealloc=$PREALLOC"
+    echo "created=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    for m in $METAS; do
+        case "$m" in
+            *=*) printf '%s\n' "$m" | grep -Eq '^[A-Za-z0-9_.-]+=[A-Za-z0-9_.:@/+ -]*$' && printf '%s\n' "$m" ;;
+        esac
+    done
+} > "$METAFILE" 2>/dev/null || log "WARNING: could not write $METAFILE (non-fatal)"
+
+log "created $VOLPATH (${DISK_GB}G $FORMAT, sparse=$([ "$PREALLOC" = true ] && echo no || echo yes)) for vm '$ID'"
+
+# Print the matching domain-start line for each provisioning source (the
+# M1 research fold-in): pick ONE of the three shapes below.
+echo "created: $VOLPATH"
+echo "meta:    $METAFILE"
+echo "next (prebuilt rootfs image):"
+echo "  virt-install --connect qemu:///system --name $ID --vcpus $CORES --memory $((RAM_GB * 1024)) \\"
+echo "    --cpu host --controller scsi,model=virtio-scsi --import --noreboot \\"
+echo "    --disk vol=$POOL/$VOL,bus=scsi,cache=writeback,discard=unmap,format=$FORMAT"
+echo "next (cloud-init seed / install ISO): add --disk path=<seed-or-iso>,bus=scsi \\"
+echo "  and the corresponding install/import flags (docs/vm-store-ntfs-research.md §8)"
+exit 0

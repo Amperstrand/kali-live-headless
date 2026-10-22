@@ -194,14 +194,22 @@ libvirt-clients
 virt-install
 virt-manager
 dnsmasq-base
+## NTFS VM store (docs/vm-store-ntfs-research.md): the only RW-capable NTFS
+## driver on the live kernel (ntfs3 module is absent; ntfs-3g would already
+## be pulled in transitively, but metapackage contents churn — pin it).
+ntfs-3g
 EOF
-  klh_info "KVM stack baked in (libvirtd enabled at boot; guests NAT-only, host shielded on virbr0)"
+  klh_info "KVM stack baked in (libvirtd enabled at boot; guests NAT-only, host shielded on virbr0; opt-in NTFS vm store available)"
 else
   rm -f "$KLH_COMMON/package-lists/kvm.list.chroot"
   rm -f "$KLH_COMMON/includes.chroot/etc/systemd/system/kali-live-kvm-enable.service" \
         "$KLH_COMMON/includes.chroot/etc/systemd/system/kali-live-kvm-firewall.service" \
+        "$KLH_COMMON/includes.chroot/etc/systemd/system/kali-live-vmstore-mount.service" \
         "$KLH_COMMON/includes.chroot/usr/local/sbin/kali-live-kvm-enable" \
         "$KLH_COMMON/includes.chroot/usr/local/sbin/kali-live-kvm-firewall" \
+        "$KLH_COMMON/includes.chroot/usr/local/sbin/kali-live-vmstore-mount" \
+        "$KLH_COMMON/includes.chroot/usr/local/sbin/kali-live-vm-create" \
+        "$KLH_COMMON/includes.chroot/usr/local/sbin/kali-live-vm-rm" \
         "$KLH_COMMON/includes.chroot/etc/modprobe.d/klh-kvm-nested.conf"
   klh_info "KVM stack omitted (WITH_KVM=false)"
 fi

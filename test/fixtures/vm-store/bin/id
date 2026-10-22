@@ -1,0 +1,7 @@
+#!/bin/sh
+# only -u/-g <name> forms are used by the mount script
+case " $* " in
+  *" -u "*) echo 64055 ;;
+  *" -g "*) echo 108 ;;
+  *) /usr/bin/id "$@" ;;
+esac

@@ -1,0 +1,1 @@
+BOOT_IMAGE=/live/vmlinuz boot=live username=kali hostname=kali systemd.swap=no noautomount

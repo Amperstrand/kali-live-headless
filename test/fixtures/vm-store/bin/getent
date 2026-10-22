@@ -1,0 +1,7 @@
+#!/bin/sh
+# minimal: only the two queries the mount script makes
+case "$1" in
+  passwd) [ "$2" = libvirt-qemu ] && echo "libvirt-qemu:x:64055:64055::/var/lib/libvirt:/usr/sbin/nologin" && exit 0 ;;
+  group)  [ "$2" = kvm ] && echo "kvm:x:108:" && exit 0 ;;
+esac
+exit 2
