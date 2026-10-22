@@ -136,7 +136,11 @@ unsquashfs -no-progress -d /out/rootfs /out/fs.orig.sq >/out/unsquashfs.log 2>&1
 rm -f /out/fs.orig.sq
 
 step "apply overlay runtime files"
-rsync -a /overlay/kali-config/common/includes.chroot/ /out/rootfs/
+# --no-owner --no-group: rsync -a would copy the REPO WORKTREE's uid/gid
+# (1000:1000) onto the image's directories — /etc/sudoers.d owned by uid 1000
+# makes sudo refuse every sudoers.d file ("owned by uid 1000, should be 0"),
+# killing passwordless sudo invisibly (the #13 lesson #3, 2026-10-22).
+rsync -a --no-owner --no-group /overlay/kali-config/common/includes.chroot/ /out/rootfs/
 # Enforce the same modes the chroot hook enforces (zz-headless-configure):
 # rsync copies the git worktree's modes, which differ (sudoers 0644 in git vs
 # 0440 required — sudo IGNORES a bad-mode sudoers file, which would silently
@@ -156,7 +160,9 @@ chmod 0440 /out/rootfs/etc/sudoers.d/kali-live-headless 2>/dev/null || true
 mkdir -p /out/rootfs/etc/issue.d; chmod 0755 /out/rootfs/etc/issue.d
 
 step "mksquashfs (compression matched to parent)"
-mksquashfs /out/rootfs /out/fs.new.sq -comp "$COMP" -b "$BS" -noappend \
+# -all-root: matches live-build's own squashfs (every file root-owned), so
+# the extracted tree's ownership can never leak into the image.
+mksquashfs /out/rootfs /out/fs.new.sq -comp "$COMP" -b "$BS" -noappend -all-root \
   -processors "$PROCESSORS" -no-progress >/out/mksquashfs.log 2>&1
 stat -c %s /out/fs.new.sq > /out/filesystem.size
 
@@ -218,9 +224,14 @@ while IFS= read -r f; do
     echo "  MISMATCH: $f"; FAIL=1
   fi
 done < /out/scope.txt
-# mode-sensitive files: content equal is NOT enough (the #13 sudoers lesson)
+# mode- and ownership-sensitive paths: content equal is NOT enough
+# (the #13 lessons: sudoers mode, then /etc/sudoers.d owned by uid 1000)
 [ "$(stat -c %a /out/check/etc/sudoers.d/kali-live-headless 2>/dev/null)" = "440" ] \
   || { echo "  MODE MISMATCH: sudoers not 0440 in the new ISO"; FAIL=1; }
+[ "$(stat -c %u /out/check/etc/sudoers.d 2>/dev/null)" = "0" ] \
+  || { echo "  OWNERSHIP MISMATCH: /etc/sudoers.d not uid 0 in the new ISO"; FAIL=1; }
+[ "$(stat -c %u /out/check/etc/sudoers.d/kali-live-headless 2>/dev/null)" = "0" ] \
+  || { echo "  OWNERSHIP MISMATCH: sudoers file not uid 0"; FAIL=1; }
 for f in /out/check/usr/local/sbin/kali-live-*; do
   [ -e "$f" ] || continue
   [ "$(stat -c %a "$f")" = "755" ] || { echo "  MODE MISMATCH: $f not 0755"; FAIL=1; }
