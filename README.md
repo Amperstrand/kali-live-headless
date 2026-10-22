@@ -482,20 +482,30 @@ stick on real hardware*, over SSH, from the same `./config`:
 
 ```console
 $ tools/hw-check.sh --host <ip-or-mdns-name>            # everything below
-$ tools/hw-check.sh --host <ip> --expect-npub npub1...  # identity stable across a reboot
+$ tools/hw-check.sh --host <ip> --expect-npub npub1...  # mesh identity stable across a reboot
+$ tools/hw-check.sh --host <ip> --expect-wg <pubkey>    # wireguard identity stable across a reboot
+$ tools/hw-check.sh --host <ip> --vm-forward            # behavioural test of the inbound port path
+$ tools/hw-check.sh --host <ip> --vm-image noble-server-cloudimg-amd64.img \
+                     --vm-user ubuntu                   # REAL guest VM egress test (needs VT-x)
 $ tools/hw-check.sh --host <ip> --no-mesh               # stick deliberately dd-flashed
+$ tools/hw-check.sh --host <ip> --no-wg                 # wireguard deliberately not configured
 ```
 
 It asserts what the QEMU suite asserts (sshd effective config, key-only
 auth, provisioning, watchdog, Wi-Fi on the real radio) **plus the things
 only a deployed device can show**: mesh identity provisioned and matching
 the `KLHCONFIG` partition (public `npub` only — the `nsec` is never
-read), the guest-firewall **rules** (not just the service state) and
-their **behaviour** — a simulated guest bridged into `virbr0` (netns +
-veth, the same FORWARD/NAT path a real guest takes) must NOT reach the
-LAN or the host's sshd, must resolve DNS via the host dnsmasq, and still
-egress to the internet. Every "blocked" assertion has a host-side
-positive control first, so an unreachable target can't fake a pass.
+read), the wireguard identity + a **fresh handshake** (proves the hub
+enrolled the stick), the guest-firewall **rules** (not just the service
+state) and their **behaviour** — a simulated guest bridged into `virbr0`
+(netns + veth, the same FORWARD/NAT path a real guest takes) must NOT
+reach the LAN or the host's sshd, must resolve DNS via the host dnsmasq,
+and still egress to the internet. With `--vm-image` the simulated guest
+becomes a **real** booting VM under KVM (libvirt + dnsmasq lease +
+cloud-init, with phase timing). With `--vm-forward`, one inbound port is
+opened into the guest net, dialed from this workstation, and must close
+again after `remove`. Every "blocked" assertion has a host-side positive
+control first, so an unreachable target can't fake a pass.
 
 Verdict + evidence land in `output/hw-check-*.log` and `output/hw-<ts>/`
 (gitignored) — record PASS in `BUILDS.md` and the ISO archive's
