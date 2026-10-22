@@ -384,7 +384,6 @@ if [ "$TEST_VMFORWARD" = true ]; then
       guest_sudo 'nohup python3 -m http.server 2222 --bind 192.168.122.250 >/tmp/vmfw-test.log 2>&1 & echo $! > /run/vmfw-test.pid' >/dev/null 2>&1
       sleep 2
       if guest_sudo '/usr/local/sbin/kali-live-vm-forward add hwtest 192.168.122.250 2222 2222 >/dev/null 2>&1'; then
-        EXT_IF=$(guest 'ip -4 route get 192.168.122.250 2>/dev/null | grep -oE "dev [a-z0-9]+" | cut -d" " -f2')
         # NOTE: this dials in over the LAN from THIS workstation — exactly the
         # traffic the DNAT is designed to catch (PREROUTING, not OUTPUT).
         code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 8 "http://$LAN_IP:2222/" || echo 000)
@@ -393,7 +392,7 @@ if [ "$TEST_VMFORWARD" = true ]; then
         else
           record fail "vm-forward: inbound port" "HTTP $code from http://$LAN_IP:2222/ (want 200); check iptables -t nat -S PREROUTING on the stick"
         fi
-        guest_sudo '/usr/local/sbin/kali-live-vm-forward remove hwtest >/dev/null 2>&1' || true
+        guest_sudo "KLH_VM_FORWARD_IFACES=\$EXT_IF /usr/local/sbin/kali-live-vm-forward remove hwtest >/dev/null 2>&1" || true
         code2=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://$LAN_IP:2222/" || echo 000)
         [ "$code2" = "000" ] && record pass "vm-forward: port closed again after remove" || record fail "vm-forward: port still open after remove (HTTP $code2)"
       else

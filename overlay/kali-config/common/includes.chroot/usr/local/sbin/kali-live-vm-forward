@@ -29,8 +29,10 @@ set -u
 
 IPTABLES=$(command -v iptables 2>/dev/null || echo /usr/sbin/iptables)
 STATE_DIR=/run/kali-live-headless/vm-forwards
-EXT_IFACES="wg0"     # default external ingress; add LAN ifaces explicitly:
-                     #   EXT_IFACES="wg0 eth0" is set by callers that want it
+# External ingress interface(s), space separated. Default: the wireguard
+# tunnel only (never expose a guest to the bench LAN by accident). Override
+# for deployments/tests that want more: KLH_VM_FORWARD_IFACES="wg0 eth0"
+EXT_IFACES="${KLH_VM_FORWARD_IFACES:-wg0}"
 DEFAULT_NET=192.168.122
 
 err() { echo "vm-forward: $*" >&2; }
