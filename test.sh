@@ -886,9 +886,9 @@ DOCKERFILE
         VMW="$SCRATCH/vmstore.img"
         truncate -s 2G "$VMW"
         if [ "$NTFS_MKFS" = host ]; then
-          mkfs.ntfs --quick --label VMSTORE "$VMW" >/dev/null 2>&1
+          mkfs.ntfs --quick --force --label VMSTORE "$VMW" >/dev/null 2>&1
         else
-          $NTFS_MKFS run --rm -v "$SCRATCH:/w:rw" --entrypoint mkfs.ntfs kali-build/vmstore-test --quick --label VMSTORE /w/vmstore.img >/dev/null 2>&1
+          $NTFS_MKFS run --rm -v "$SCRATCH:/w:rw" --entrypoint mkfs.ntfs kali-build/vmstore-test --quick --force --label VMSTORE /w/vmstore.img >/dev/null 2>&1
         fi
         VM_MNT="$SCRATCH/vmstore-mnt"; mkdir -p "$VM_MNT"
         if sudo mount -o loop,uid="$(id -u)" -t ntfs3 "$VMW" "$VM_MNT" 2>/dev/null; then
