@@ -84,6 +84,22 @@ for f in overlay/kali-config/common/includes.chroot/usr/local/sbin/* overlay/kal
   if bash -n "$REPO_DIR/$f" 2>/dev/null || sh -n "$REPO_DIR/$f" 2>/dev/null; then record pass "sh -n $(basename "$f")"; else record fail "sh -n $(basename "$f")"; fi
 done
 
+# POSIX-sh runtime guard. bash -n happily accepts bashisms in #!/bin/sh
+# scripts, and dash only reports them at RUNTIME ("Bad substitution") — build
+# #11 booted with provision dead on every machine because of \${MODE//\"/}.
+# Running shellcheck in sh mode (SC30xx, "In POSIX sh, ... is undefined")
+# sees it statically, so this belongs in the 17-second static level, not the
+# boot suite.
+for f in "$REPO_DIR"/overlay/kali-config/common/includes.chroot/usr/local/sbin/* \
+         "$REPO_DIR"/overlay/kali-config/common/hooks/live/*.hook.chroot; do
+  [ -f "$f" ] || continue
+  [ "$(head -n1 "$f")" = "#!/bin/sh" ] || continue
+  if command -v shellcheck >/dev/null 2>&1; then
+    posix_bad=$(shellcheck --shell=sh -S info "$f" 2>/dev/null | grep -cE 'SC30[0-9][0-9]' || true)
+    if [ "${posix_bad:-0}" -eq 0 ]; then record pass "POSIX sh: $(basename "$f")"; else record fail "POSIX sh: $(basename "$f")" "$(shellcheck --shell=sh -S info "$f" 2>/dev/null | grep -m1 -B2 'SC30[0-9][0-9]' | head -1 | tr -s ' ')"; fi
+  fi
+done
+
 if command -v shellcheck >/dev/null 2>&1; then
   SC="shellcheck"
 elif command -v docker >/dev/null 2>&1 && (docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1); then
