@@ -568,6 +568,22 @@ else
       v=$(guest 'systemctl is-active kali-live-wifi-watchdog')
       [ "$v" = "active" ] && record pass "$mode: wifi watchdog active" || record fail "$mode: wifi watchdog active ($v)"
 
+      # WireGuard: when the hub is staged, wg0 must EXIST with a valid dotted
+      # quad. The first hardware boot of #14 shipped 5-octet addresses
+      # (10.66.0.164.194) because the derivation appended two octets to a
+      # three-octet base — wg0 silently never came up, and no suite check
+      # looked. This would have caught it.
+      if [ -n "${WG_ENDPOINT_EXPECTED:-}" ]; then
+        v=$(guest 'ip -4 addr show wg0 2>/dev/null | grep -oE "inet [0-9.]+" | cut -d" " -f2')
+        if [ -n "$v" ] && printf '%s' "$v" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+          record pass "$mode: wg0 up with valid address" "$v"
+        elif [ -n "$v" ]; then
+          record fail "$mode: wg0 address malformed" "$v"
+        else
+          record fail "$mode: wg0 up" "no wg0 — check the wireguard-init journal (derivation? wg-quick?)"
+        fi
+      fi
+
       # passwordless sudo works over SSH (no password anywhere)
       if guest 'sudo -n true' 2>/dev/null; then record pass "$mode: passwordless sudo"; else record fail "$mode: passwordless sudo"; fi
 
