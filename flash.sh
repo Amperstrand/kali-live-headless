@@ -25,17 +25,20 @@ BUILD=""
 DEVICE=""
 ASSUME_YES=false
 LIST_ONLY=false
+DRY_RUN=false
 ORIG_ARGS=("$@")   # preserved across the sudo re-exec below
 
 usage() {
   cat <<EOF
-Usage: ./flash.sh [--build N | --iso PATH] [--device PATH] [--yes] [--list]
+Usage: ./flash.sh [--build N | --iso PATH] [--device PATH] [--yes] [--dry-run] [--list]
 
   --build N      Flash the archived build N (output/iso-buildN/)
   --iso PATH     ISO to write (default: newest archived build, else the slot)
   --list         List available archived builds with sha512 + verdict, exit
   --device PATH  Target disk, e.g. /dev/sdc (still confirmed unless --yes)
   --yes          Skip the typed confirmation (scripted use — dangerous)
+  --dry-run      Check ISO, devices and target, then stop before writing
+                 (runs unprivileged; use it to convince yourself first)
 
 If no removable USB device is found, manual flashing instructions are
 printed instead.
@@ -45,11 +48,12 @@ EOF
 
 [ $# -eq 0 ] || while [ $# -gt 0 ]; do
   case "$1" in
-    --iso)    ISO=${2:?}; shift 2 ;;
-    --build)  BUILD=${2:?}; shift 2 ;;
-    --list)   LIST_ONLY=true; shift ;;
-    --device) DEVICE=${2:?}; shift 2 ;;
-    --yes)    ASSUME_YES=true; shift ;;
+    --iso)     ISO=${2:?}; shift 2 ;;
+    --build)   BUILD=${2:?}; shift 2 ;;
+    --list)    LIST_ONLY=true; shift ;;
+    --device)  DEVICE=${2:?}; shift 2 ;;
+    --yes)     ASSUME_YES=true; shift ;;
+    --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage ;;
     *) klh_die "unknown option: $1 (see --help)" ;;
   esac
@@ -60,21 +64,22 @@ if [ "$LIST_ONLY" = true ]; then
   exec "$REPO_DIR/tools/iso-prune.sh" --list
 fi
 
-[ "$(id -u)" -eq 0 ] || exec sudo "$0" "${ORIG_ARGS[@]}"
+# A dry run touches nothing, so it does not need (or ask for) root.
+[ "$DRY_RUN" = true ] || [ "$(id -u)" -eq 0 ] || exec sudo "$0" "${ORIG_ARGS[@]}"
 
 # ---------------------------------------------------------------- find ISO
 NAMED=""
 if [ -n "$BUILD" ]; then
-  ISO="$REPO_DIR/output/iso-build$BUILD/kali-linux-rolling-live-amd64.iso"
+  ISO=$(find "$REPO_DIR/output/iso-build$BUILD" -maxdepth 1 -name '*.iso' -print -quit 2>/dev/null || true)
   NAMED="build #$BUILD"
-  [ -f "$ISO" ] || klh_die "build $BUILD is not archived (available: $(ls -d "$REPO_DIR"/output/iso-build* 2>/dev/null | sed 's/.*iso-build/#/' | tr '\n' ' '))"
+  [ -n "$ISO" ] || klh_die "build $BUILD is not archived (available: $(ls -d "$REPO_DIR"/output/iso-build* 2>/dev/null | sed 's/.*iso-build/#/' | tr '\n' ' '))"
 elif [ -z "$ISO" ]; then
   # Prefer the newest archived build: archives are the versioned artifacts and
   # the slot is only a pointer/last-write convenience.
   newest=$(find "$REPO_DIR/output" -maxdepth 1 -type d -name 'iso-build*' 2>/dev/null \
     | sed 's/.*iso-build//' | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
   if [ -n "$newest" ]; then
-    ISO="$REPO_DIR/output/iso-build$newest/kali-linux-rolling-live-amd64.iso"
+    ISO=$(find "$REPO_DIR/output/iso-build$newest" -maxdepth 1 -name '*.iso' -print -quit 2>/dev/null || true)
     NAMED="build #$newest (newest archive)"
   else
     ISO=$(ls -t "$REPO_DIR"/output/kali-linux-*-live-*.iso 2>/dev/null | head -1 || true)
@@ -96,10 +101,12 @@ fi
 echo
 
 # ------------------------------------------------------- list USB devices
-# Removable = removable flag (RM=1) or USB transport. Whole disks only.
+# Removable = removable flag (RM=1) or USB transport. Whole disks only, and
+# zero-size entries are dropped (card-reader slots report 0B and are not
+# flashable).
 mapfile -t CANDIDATES < <(
   lsblk -rpn -o NAME,SIZE,TRAN,RM,TYPE,MODEL 2>/dev/null \
-    | awk -F' ' '$5 == "disk" && ($4 == "1" || tolower($3) == "usb") { m=$6; for (i=7; i<=NF; i++) m=m" "$i; print $1 "|" $2 "|" m }'
+    | awk -F' ' '$5 == "disk" && $2 != "0B" && $2 != "0" && ($4 == "1" || tolower($3) == "usb") { m=$6; for (i=7; i<=NF; i++) m=m" "$i; print $1 "|" $2 "|" m }'
 )
 
 if [ "${#CANDIDATES[@]}" -eq 0 ]; then
@@ -124,20 +131,32 @@ for c in "${CANDIDATES[@]}"; do
   i=$((i + 1))
   IFS='|' read -r dev size model <<< "$c"
   model=${model:-<unknown>}
+  model=${model//\\x20/ }      # lsblk escapes spaces in MODEL as \x20
+  model=${model%"${model##*[![:space:]]}"}
   printf '  %-2s %-14s %-10s %s\n' "$i" "$dev" "$size" "$model"
 done
 echo
 
 # ------------------------------------------------------------------ pick
-root_disk() {
-  local src
-  src=$(findmnt -n -o SOURCE / 2>/dev/null || true)
-  [ -n "$src" ] || return 1
-  src=$(realpath "$src")
-  # strip partition suffix (sda1 -> sda, nvme0n1p3 -> nvme0n1)
-  if [[ "$src" =~ ^(.*[0-9]+)p[0-9]+$ ]]; then src=${BASH_REMATCH[1]}; fi
-  if [[ "$src" =~ ^(/dev/.+[a-z])([0-9]+)$ ]]; then src=${BASH_REMATCH[1]}; fi
-  realpath "$src"
+# Every physical disk backing the running system (/ , /boot , /boot/efi and
+# swap). LVM/LUKS/md/partition layers are walked up with `lsblk -s`, and btrfs
+# subvolume suffixes are stripped. The previous version called realpath() on
+# findmnt's raw output; on a btrfs-on-LUKS host that is
+# "/dev/mapper/root[/@]", realpath failed, the function returned nothing and
+# the running-system-disk guard was skipped *silently* (found 2026-10-22).
+system_disks() {
+  local src disk mp
+  {
+    for mp in / /boot /boot/efi; do
+      findmnt -n -o SOURCE --target "$mp" 2>/dev/null || true
+    done
+    swapon --show=NAME --noheadings 2>/dev/null || true
+  } | while read -r src; do
+    src=${src%%\[*}                     # btrfs subvol: /dev/x[/@] -> /dev/x
+    [ -n "$src" ] && [ -b "$src" ] || continue
+    disk=$(lsblk -srno NAME,TYPE "$src" 2>/dev/null | awk '$2 == "disk" { print $1; exit }')
+    if [ -n "$disk" ]; then printf '/dev/%s\n' "$disk"; else printf '%s\n' "$src"; fi
+  done | sort -u
 }
 
 validate_device() { # $1 = device path ; returns 0 if usable
@@ -149,9 +168,13 @@ validate_device() { # $1 = device path ; returns 0 if usable
     [ "$(realpath "$devname")" = "$(realpath "$dev")" ] && ok=1
   done
   [ "$ok" -eq 1 ] || { klh_warn "$dev is not in the removable USB list above"; return 1; }
-  local sysdisk
-  sysdisk=$(root_disk || true)
-  [ -z "$sysdisk" ] || [ "$(realpath "$dev")" != "$sysdisk" ] || { klh_warn "$dev IS THE RUNNING SYSTEM DISK — refusing"; return 1; }
+  local sys
+  while read -r sys; do
+    [ -n "$sys" ] || continue
+    if [ "$(realpath "$dev")" = "$(realpath "$sys")" ]; then
+      klh_warn "$dev holds the running system ($sys) — refusing"; return 1
+    fi
+  done < <(system_disks)
   local mounted
   mounted=$(lsblk -rn -o MOUNTPOINTS "$dev" 2>/dev/null | grep -v '^$' || true)
   [ -z "$mounted" ] || { klh_warn "$dev has mounted partitions:"$'\n'"$mounted"; klh_warn "unmount first, e.g.: sudo umount ..."; return 1; }
@@ -177,6 +200,8 @@ fi
 DEVPATH=$(realpath "$DEVICE")
 DEVSZ=$(lsblk -drn -o SIZE "$DEVPATH")
 MODELP=$(lsblk -drn -o MODEL "$DEVPATH" 2>/dev/null || echo "?")
+MODELP=${MODELP//\\x20/ }
+MODELP=${MODELP%"${MODELP##*[![:space:]]}"}
 cat >&2 <<EOF
 
   WARNING: THIS WILL DESTROY ALL DATA ON $DEVPATH
@@ -184,9 +209,15 @@ cat >&2 <<EOF
            ISO  : $ISO
 
 EOF
-if [ "$ASSUME_YES" != true ]; then
+if [ "$ASSUME_YES" != true ] && [ "$DRY_RUN" != true ]; then
   read -r -p "Type the full device path ($DEVPATH) to confirm: " typed || klh_die "aborted"
   [ "$typed" = "$DEVPATH" ] || klh_die "confirmation mismatch — aborting (nothing was written)"
+fi
+
+if [ "$DRY_RUN" = true ]; then
+  klh_ok "dry run: target $DEVPATH validated, ISO checksum OK — nothing was written"
+  klh_info "re-run without --dry-run to write it"
+  exit 0
 fi
 
 # --------------------------------------------------------------- write
