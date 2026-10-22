@@ -15,6 +15,9 @@
 #   tools/hw-check.sh --expect-npub npub1...  # identity survived a reboot
 #   tools/hw-check.sh --no-mesh           # stick deliberately has no
 #                                         # KLHCONFIG partition (dd-flashed)
+#   tools/hw-check.sh --vm-image ~/noble-server-cloudimg-amd64.img \
+#                     [--vm-user ubuntu]  # + REAL libvirt VM egress test
+#                                         # (cloud image; NoCloud seed)
 #
 # Prereqs: the stick booted, the machine joined the LAN (Wi-Fi or ethernet),
 # and the SSH key from ./config is the one baked into the ISO.
@@ -28,7 +31,8 @@ source "$REPO_DIR/lib/common.sh"
 klh_load_config "$REPO_DIR/config"
 
 HOST_ARG="" MODE="hw" TIMEOUT=300 EXPECT_NPUB="" NO_MESH=false EXPECT_WG="" NO_WG=false TEST_VMFORWARD=false
-usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+VM_IMAGE="" VM_USER="ubuntu"
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 [ $# -eq 0 ] || while [ $# -gt 0 ]; do
   case "$1" in
@@ -40,6 +44,8 @@ usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
     --expect-wg)   EXPECT_WG=${2:?}; shift 2 ;;
     --no-wg)       NO_WG=true; shift ;;
     --vm-forward)  TEST_VMFORWARD=true; shift ;;
+    --vm-image)    VM_IMAGE=${2:?}; shift 2 ;;
+    --vm-user)     VM_USER=${2:?}; shift 2 ;;
     -h|--help) usage ;;
     *) klh_die "unknown option: $1" ;;
   esac
@@ -287,6 +293,76 @@ REMOTE
       record info "guest internet egress via NAT works"
     else
       record info "guest internet egress did not answer (LAN may be offline) — not a failure"
+    fi
+  fi
+  # --- optional: REAL VM egress test (the full product path) ----------
+  # The netns test above proves the RULES; this proves virsh + dnsmasq +
+  # KVM + DHCP + the firewall against a real guest OS. NB: virt-install
+  # --cloud-init's generated seed is REJECTED by cloud-init 26.1
+  # ("label=cidata not a valid seed", proven 2026-10-22) — the NoCloud
+  # ISO is hand-rolled here: xorriso -as mkisofs -V cidata -joliet -rock.
+  if [ -n "$VM_IMAGE" ]; then
+    VMIMG=$(realpath "$VM_IMAGE")
+    if [ ! -f "$VMIMG" ]; then
+      record fail "real VM test: cloud image found" "$VM_IMAGE"
+    else
+      record info "real VM: $(basename "$VMIMG") as user '$VM_USER' — key+seed in $EVID/"
+      ssh-keygen -q -t ed25519 -N '' -C klh-hwcheck -f "$EVID/vmkey" >/dev/null 2>&1 || true
+      printf '#cloud-config\nhostname: klh-hwcheck\nssh_authorized_keys:\n  - %s\n' \
+        "$(cut -d' ' -f1-2 "$EVID/vmkey.pub")" > "$EVID/user-data"
+      printf 'instance-id: klh-hwcheck-1\nlocal-hostname: klh-hwcheck\n' > "$EVID/meta-data"
+      if command -v xorriso >/dev/null 2>&1; then
+        (cd "$EVID" && xorriso -as mkisofs -V cidata -joliet -rock -o seed.iso user-data meta-data) >/dev/null 2>&1
+      elif docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1; then
+        docker info >/dev/null 2>&1 && D=docker || D="sudo docker"
+        (cd "$EVID" && $D run --rm -i -v "$EVID:/out" kali-build/hotpatch \
+          xorriso -as mkisofs -V cidata -joliet -rock -o /out/seed.iso /out/user-data /out/meta-data) >/dev/null 2>&1
+      fi
+      if [ ! -f "$EVID/seed.iso" ]; then
+        record fail "real VM test: seed ISO built" "no xorriso locally and docker fallback failed"
+      else
+        OPTS=("${SSH_OPTS[@]:0:$((${#SSH_OPTS[@]}-1))}")
+        # clean slate: libvirt's dynamic_ownership chowns staged files to
+        # libvirt-qemu while a domain runs - a crashed prior run leaves
+        # foreign-owned files that scp (as kali) cannot overwrite
+        guest 'sudo -n rm -rf /tmp/klh-vmtest && mkdir -p /tmp/klh-vmtest' 2>/dev/null
+        if scp -q "${OPTS[@]}" "$EVID/seed.iso" "$EVID/vmkey" "$VMIMG" kali@"$HOST":/tmp/klh-vmtest/ 2>/dev/null; then
+          sed "s/@VMUSER@/$VM_USER/g; s/@BASEIMG@/$(basename "$VMIMG")/g" \
+            "$REPO_DIR/tools/vm-egress-remote.sh" \
+            | ssh "${SSH_OPTS[@]}" 'sudo -n sh -s' > "$EVID/vm-raw.txt" 2>/dev/null
+          vmr=$(cat "$EVID/vm-raw.txt")
+          sed 's/^/    vm-marker: /' "$EVID/vm-raw.txt" || true
+          if ! printf '%s' "$vmr" | grep -q '^VMR-DONE$'; then
+            last=$(grep 'VMR-TRACE' "$EVID/vm-raw.txt" | tail -1 | sed 's/^VMR-TRACE //')
+            record fail "real VM test ran to completion" "no VMR-DONE - last phase: ${last:-none (died before first phase - transport/staging)}; full transcript: $EVID/vm-raw.txt"
+          elif printf '%s' "$vmr" | grep -qE '^NO-'; then
+            record fail "real VM test ran" "$(printf '%s' "$vmr" | grep -m1 -E '^NO-') - full transcript: $EVID/vm-raw.txt"
+          else
+            if printf '%s' "$vmr" | grep -q 'VMR-LAN-TCP blocked\|VMR-LAN-ICMP blocked'; then
+              if printf '%s' "$vmr" | grep -q 'VMR-CTRL ok'; then
+                record pass "REAL VM cannot reach the LAN (product path)" "$(printf '%s' "$vmr" | grep -o 'VMR-LAN-[A-Z]* [a-z]*' | head -1)"
+              else
+                record info "REAL VM LAN isolation unproven" "control failed too - LAN target unreachable from the host, not a pass"
+              fi
+            else
+              record fail "REAL VM cannot reach the LAN (product path)" "a real guest reached the deployment LAN"
+            fi
+            printf '%s' "$vmr" | grep -q 'VMR-HOSTSSH blocked' \
+              && record pass "REAL VM cannot reach host sshd (host shield)" \
+              || record fail "REAL VM cannot reach host sshd (host shield)"
+            printf '%s' "$vmr" | grep -q 'VMR-DNS ok' \
+              && record pass "REAL VM DNS via host dnsmasq" \
+              || record fail "REAL VM DNS via host dnsmasq"
+            if printf '%s' "$vmr" | grep -q 'VMR-INET ok'; then
+              record info "REAL VM internet egress via NAT works"
+            else
+              record info "REAL VM internet egress did not answer - not a failure on an offline bench"
+            fi
+          fi
+        else
+          record fail "real VM test: staging files onto the device" "scp of image/seed/key failed"
+        fi
+      fi
     fi
   fi
 else
