@@ -21,15 +21,19 @@ klh_require_cmd lsblk
 klh_require_cmd dd
 
 ISO=""
+BUILD=""
 DEVICE=""
 ASSUME_YES=false
+LIST_ONLY=false
 ORIG_ARGS=("$@")   # preserved across the sudo re-exec below
 
 usage() {
   cat <<EOF
-Usage: ./flash.sh [--iso PATH] [--device PATH] [--yes]
+Usage: ./flash.sh [--build N | --iso PATH] [--device PATH] [--yes] [--list]
 
-  --iso PATH     ISO to write (default: newest kali-linux-*-live-*.iso in ./output)
+  --build N      Flash the archived build N (output/iso-buildN/)
+  --iso PATH     ISO to write (default: newest archived build, else the slot)
+  --list         List available archived builds with sha512 + verdict, exit
   --device PATH  Target disk, e.g. /dev/sdc (still confirmed unless --yes)
   --yes          Skip the typed confirmation (scripted use — dangerous)
 
@@ -42,6 +46,8 @@ EOF
 [ $# -eq 0 ] || while [ $# -gt 0 ]; do
   case "$1" in
     --iso)    ISO=${2:?}; shift 2 ;;
+    --build)  BUILD=${2:?}; shift 2 ;;
+    --list)   LIST_ONLY=true; shift ;;
     --device) DEVICE=${2:?}; shift 2 ;;
     --yes)    ASSUME_YES=true; shift ;;
     -h|--help) usage ;;
@@ -49,18 +55,39 @@ EOF
   esac
 done
 
+# Listing needs no privileges, and must work before the sudo re-exec.
+if [ "$LIST_ONLY" = true ]; then
+  exec "$REPO_DIR/tools/iso-prune.sh" --list
+fi
+
 [ "$(id -u)" -eq 0 ] || exec sudo "$0" "${ORIG_ARGS[@]}"
 
 # ---------------------------------------------------------------- find ISO
-if [ -z "$ISO" ]; then
-  ISO=$(ls -t "$REPO_DIR"/output/kali-linux-*-live-*.iso 2>/dev/null | head -1 || true)
+NAMED=""
+if [ -n "$BUILD" ]; then
+  ISO="$REPO_DIR/output/iso-build$BUILD/kali-linux-rolling-live-amd64.iso"
+  NAMED="build #$BUILD"
+  [ -f "$ISO" ] || klh_die "build $BUILD is not archived (available: $(ls -d "$REPO_DIR"/output/iso-build* 2>/dev/null | sed 's/.*iso-build/#/' | tr '\n' ' '))"
+elif [ -z "$ISO" ]; then
+  # Prefer the newest archived build: archives are the versioned artifacts and
+  # the slot is only a pointer/last-write convenience.
+  newest=$(find "$REPO_DIR/output" -maxdepth 1 -type d -name 'iso-build*' 2>/dev/null \
+    | sed 's/.*iso-build//' | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
+  if [ -n "$newest" ]; then
+    ISO="$REPO_DIR/output/iso-build$newest/kali-linux-rolling-live-amd64.iso"
+    NAMED="build #$newest (newest archive)"
+  else
+    ISO=$(ls -t "$REPO_DIR"/output/kali-linux-*-live-*.iso 2>/dev/null | head -1 || true)
+    NAMED="the slot (no archives yet)"
+  fi
 fi
-[ -n "$ISO" ] && [ -f "$ISO" ] || klh_die "no ISO found — run ./build.sh first (or pass --iso PATH)"
+[ -n "$ISO" ] && [ -f "$ISO" ] || klh_die "no ISO found — run ./build.sh first (or pass --iso PATH / --build N)"
 ISO=$(realpath "$ISO")
 ISO_SIZE=$(stat -c '%s' "$ISO")
 
 echo
 printf 'ISO      : %s\n' "$ISO"
+[ -n "$NAMED" ] && printf 'Selected : %s\n' "$NAMED"
 printf 'Size     : %s\n' "$(numfmt --to=iec "$ISO_SIZE" 2>/dev/null || echo "$ISO_SIZE bytes")"
 if [ -f "$ISO.sha512sum" ]; then
   klh_info "verifying ISO checksum first"
