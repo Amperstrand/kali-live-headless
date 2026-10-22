@@ -99,7 +99,13 @@ for f in build.sh configure.sh flash.sh test.sh; do
   if bash -n "$REPO_DIR/$f" 2>"$SCRATCH/syntax.err"; then record pass "bash -n $f"; else record fail "bash -n $f" "$(head -1 "$SCRATCH/syntax.err")"; fi
 done
 for f in overlay/kali-config/common/includes.chroot/usr/local/sbin/* overlay/kali-config/common/hooks/live/*.hook.chroot; do
-  if bash -n "$REPO_DIR/$f" 2>/dev/null || sh -n "$REPO_DIR/$f" 2>/dev/null; then record pass "sh -n $(basename "$f")"; else record fail "sh -n $(basename "$f")"; fi
+  # only shell-shebang files: python CLIs legitimately live in sbin too
+  # (kali-live-wg-enroll) and must not be bash -n'd as shell
+  if head -n1 "$REPO_DIR/$f" | grep -qE '^#![^ ]*(ba)?sh'; then
+    if bash -n "$REPO_DIR/$f" 2>/dev/null || sh -n "$REPO_DIR/$f" 2>/dev/null; then record pass "sh -n $(basename "$f")"; else record fail "sh -n $(basename "$f")"; fi
+  else
+    record pass "sh -n $(basename "$f")" "non-shell shebang, skipped"
+  fi
 done
 
 # POSIX-sh runtime guard. bash -n happily accepts bashisms in #!/bin/sh
@@ -665,12 +671,20 @@ else
       # looked. This would have caught it.
       if [ -n "${WG_ENDPOINT_EXPECTED:-}" ]; then
         v=$(guest 'ip -4 addr show wg0 2>/dev/null | grep -oE "inet [0-9.]+" | cut -d" " -f2')
-        if [ -n "$v" ] && printf '%s' "$v" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
-          record pass "$mode: wg0 up with valid address" "$v"
-        elif [ -n "$v" ]; then
-          record fail "$mode: wg0 address malformed" "$v"
+        if [ "$mode" = override ]; then
+          # the override stage attaches a KLHCONFIG disk: wg must provision
+          if [ -n "$v" ] && printf '%s' "$v" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+            record pass "$mode: wg0 up with valid address" "$v"
+          elif [ -n "$v" ]; then
+            record fail "$mode: wg0 address malformed" "$v"
+          else
+            record fail "$mode: wg0 up" "no wg0 despite a config partition — check the wireguard-init journal"
+          fi
         else
-          record fail "$mode: wg0 up" "no wg0 — check the wireguard-init journal (derivation? wg-quick?)"
+          # no config partition in the bios/uefi stages: the init must REFUSE
+          # (an unpersisted key would silently rotate every boot)
+          [ -z "$v" ] && record pass "$mode: wg0 correctly absent (no config partition to persist the key)" \
+            || record fail "$mode: wg0 present WITHOUT a config partition" "$v — persistence guard broken"
         fi
       fi
 
