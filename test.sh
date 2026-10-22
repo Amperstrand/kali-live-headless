@@ -289,7 +289,7 @@ if [ -x "$VMSTORE" ] && [ -d "$FIX" ]; then
     record pass "vmstore: $desc"
   }
   vm_assert 0 ok.conf      lsblk-normal cmdline-live "auto picks the LARGEST ntfs (1.5T, not 500G)" '^plan device=/dev/sda3$'
-  vm_assert 0 ok.conf      lsblk-normal cmdline-live "default driver resolves to fuseblk (ntfs-3g)" '^plan type=fuseblk$'
+  vm_assert 0 ok.conf      lsblk-normal cmdline-live "default driver mounts via the ntfs-3g helper" '^plan type=ntfs-3g$'
   vm_assert 0 ok.conf      lsblk-normal cmdline-live "store dir under the mount"               '^plan store_dir=/mnt/klh-vmstore/vms$'
   vm_assert 0 ok.conf      lsblk-normal cmdline-live "uid mapping for the qemu runtime user"    'uid=64055,gid=108,umask=007,windows_names'
   vm_assert 0 label.conf   lsblk-normal cmdline-live "LABEL: selector"                          '^plan device=/dev/sda3$'
