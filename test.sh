@@ -142,18 +142,19 @@ fi
 
 # load config values if available (non-fatal)
 HOSTNAME_EXPECTED="kali-live" WIFI_SSID_EXPECTED="" PUBKEY_FP_EXPECTED="" SSH_KEY=""
-BOOT_DEFAULT_EXPECTED="live" LIVE_PASSWORD_MODE_EXPECTED="random" WITH_KVM_EXPECTED="true"
+BOOT_DEFAULT_EXPECTED="live" LIVE_PASSWORD_MODE_EXPECTED="random" WITH_KVM_EXPECTED="true" WG_ENDPOINT_EXPECTED=""
 if [ -r "$REPO_DIR/config" ]; then
   rm -f "$SCRATCH/env" "$SCRATCH/pubkeypath"
   # shellcheck disable=SC1091
   ( set -a; source "$REPO_DIR/lib/common.sh"; klh_load_config "$REPO_DIR/config"; \
-    printf '%s\n%s\n%s\n%s\n%s\n' "$HOSTNAME" "$WIFI_SSID" "$BOOT_DEFAULT" "$LIVE_PASSWORD_MODE" "$WITH_KVM" > "$SCRATCH/env"; \
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$HOSTNAME" "$WIFI_SSID" "$BOOT_DEFAULT" "$LIVE_PASSWORD_MODE" "$WITH_KVM" "${WG_ENDPOINT:-}" > "$SCRATCH/env"; \
     printf '%s\n' "$(klh_expand_tilde "$SSH_PUBKEY_PATH")" > "$SCRATCH/pubkeypath" )
   HOSTNAME_EXPECTED=$(sed -n 1p "$SCRATCH/env")
   WIFI_SSID_EXPECTED=$(sed -n 2p "$SCRATCH/env")
   BOOT_DEFAULT_EXPECTED=$(sed -n 3p "$SCRATCH/env")
   LIVE_PASSWORD_MODE_EXPECTED=$(sed -n 4p "$SCRATCH/env")
   WITH_KVM_EXPECTED=$(sed -n 5p "$SCRATCH/env")
+  WG_ENDPOINT_EXPECTED=$(sed -n 6p "$SCRATCH/env")
   PUBKEY_PATH=$(cat "$SCRATCH/pubkeypath")
   if [ -r "$PUBKEY_PATH" ] && command -v ssh-keygen >/dev/null; then
     if PUBKEY_FP_EXPECTED=$(ssh-keygen -lf "$PUBKEY_PATH" 2>/dev/null | sed 's/^ *[0-9]* //'); then
@@ -319,9 +320,26 @@ else
         sudo test -L "$SQ_MNT/etc/systemd/system/multi-user.target.wants/$u.service" && record pass "enabled: $u" || record fail "enabled: $u"
       done
     fi
-    for s in kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-headless-wifi-gen kali-live-kvm-enable kali-live-kvm-firewall; do
+    for s in kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-headless-wifi-gen kali-live-kvm-enable kali-live-kvm-firewall kali-live-wireguard-init; do
       sudo test -x "$SQ_MNT/usr/local/sbin/$s" && record pass "script executable: $s" || record fail "script executable: $s"
     done
+    # WireGuard M1: package installed in the image, and the /etc/default
+    # staging carries the non-secret hub values when the feature is on (the
+    # runtime init treats "no endpoint" as feature-off). A private key must
+    # NEVER be staged — keys are generated on the stick, on first boot.
+    if sudo grep -A1 "^Package: wireguard-tools$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "Status: install ok installed"; then
+      record pass "wireguard-tools installed in image"
+    else
+      record fail "wireguard-tools installed in image"
+    fi
+    WG_DEFAULTS=$(sudo cat "$SQ_MNT/etc/default/kali-live-headless" 2>/dev/null || true)
+    printf '%s' "$WG_DEFAULTS" | grep -q '^PrivateKey' \
+      && record fail "WG private key staged" "secrets are generated on the stick, never baked" \
+      || record pass "no WG private key baked"
+    if [ -n "${WG_ENDPOINT_EXPECTED:-}" ]; then
+      printf '%s' "$WG_DEFAULTS" | grep -q '^WG_ENDPOINT=' && record pass "WG_ENDPOINT staged" || record fail "WG_ENDPOINT staged"
+      printf '%s' "$WG_DEFAULTS" | grep -q '^WG_PEER_PUBKEY=' && record pass "WG_PEER_PUBKEY staged" || record fail "WG_PEER_PUBKEY staged"
+    fi
     sudo test -f "$SQ_MNT/etc/kali-live-headless/headless-wifi.nmconnection.in" && record pass "wifi profile template shipped (runtime override support)" || record fail "wifi profile template shipped"
 
     # host keys baked per-build

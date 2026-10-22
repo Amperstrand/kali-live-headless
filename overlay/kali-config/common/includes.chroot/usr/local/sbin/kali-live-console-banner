@@ -51,6 +51,17 @@ if [ -r /run/kali-live-headless-npub ]; then
 fi
 MESH_LINE=" mesh id (npub): ${NPUB:-not provisioned — boot from a stick with a KLHCONFIG partition}"
 
+# wireguard tunnel identity (public key only) if provisioned this boot
+WGPUB=""
+if [ -r /run/kali-live-headless-wg-pub ]; then
+    WGPUB=$(head -n1 /run/kali-live-headless-wg-pub 2>/dev/null)
+fi
+if [ -n "$WGPUB" ]; then
+    WG_LINE=" wireguard pubkey: $WGPUB   (enroll on the hub to enable ssh-over-wg)"
+else
+    WG_LINE=""
+fi
+
 BANNER=$(printf '
 ==============================================================
  kali-live-headless  |  host: %s
@@ -60,8 +71,9 @@ BANNER=$(printf '
  ED25519 host key: %s
  RSA host key:     %s
 %s
+%s
 ==============================================================
-' "$HN" "$ADDRS" "$HN" "$FP_ED" "$FP_RSA" "$MESH_LINE")
+' "$HN" "$ADDRS" "$HN" "$FP_ED" "$FP_RSA" "$MESH_LINE" "${WG_LINE:-}")
 
 # Show on the console...
 printf '%s\n' "$BANNER" > /dev/console 2>/dev/null || true

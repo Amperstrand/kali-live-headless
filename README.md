@@ -294,6 +294,44 @@ stick keeps the same `npub` — its mesh address — across power cycles.
   mesh firewall (`fips-firewall.service`) enforces the baseline; the
   deployment side lives in the private overlay, not this repo.
 
+## WireGuard access (ssh over WireGuard)
+
+M1 of the remote-access channel: the stick brings up a WireGuard tunnel to a
+hub you control (e.g. a VPS) and you ssh to the stick **through** the tunnel
+— no inbound port on the stick, nothing exposed to the LAN beyond what sshd
+already does today (M2 will bind sshd to `wg0` only and close the LAN hole).
+
+Credential model — the important part:
+
+* **No secret is baked into the ISO and none is committed.** The stick
+  generates its own WireGuard keypair **on first boot** and persists it to
+  the `KLHCONFIG` partition (`wireguard.conf`, plaintext — same threat model
+  and mitigations as the Wi-Fi PSK and the FIPS nsec: physical access to the
+  stick is game over; rotate by deleting the file and rebooting).
+* What IS staged at build time is non-secret only: the hub endpoint, the
+  hub's **public** key, the tunnel network and port
+  (`./configure.sh --wg-endpoint inr2.example.com --wg-peer <hub pubkey>`).
+* The stick's tunnel address is **derived from its public key**
+  (sha256 → two octets of the tunnel /24), so the hub keeps no per-stick IP
+  ledger.
+* Enrollment is one command on the hub, once per stick (the console banner
+  and `tools/hw-check.sh` print the stick's public key and address):
+
+      wg set wg0 peer <stick-pubkey> allowed-ips <stick-tunnel-ip>/32
+
+* Leave `--wg-endpoint` empty and the whole feature is dormant — the runtime
+  init is a no-op and `hw-check` reports it as off (`--no-wg` silences it).
+
+The hub side (its own keypair, listen port, and forwarding between peers) is
+yours to run — this repo only ships the stick half. `AllowedIPs` on the stick
+is just the tunnel /24: the stick keeps its normal default route, and the hub
+routes peer-to-peer.
+
+`hw-check.sh` asserts the stick half end-to-end: identity provisioned, `wg0`
+up with the derived address, a **fresh handshake** (proves the hub enrolled
+it), and `--expect-wg <pubkey>` for across-reboot stability — mirroring
+`--expect-npub` for the mesh identity.
+
 ## KVM
 
 `WITH_KVM=true` (default) turns the stick into a ready-to-use virtualization

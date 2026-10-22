@@ -93,6 +93,20 @@ if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
     else
         log "host-role identity not provisioned (non-fatal — no generator or unwritable medium)"
     fi
+
+    # ------------------------------------------------------ wireguard tunnel
+    # Per-stick tunnel identity (same persistence model as the host-role
+    # identity above): keypair generated on FIRST boot and persisted to the
+    # config partition, tunnel address derived from the PUBLIC key. Prints
+    # "<pubkey> <tunnel-ip>"; secrets never leave the stick. Disabled and a
+    # no-op unless WG_ENDPOINT was staged at build time (see README).
+    if WGOUT=$(/usr/local/sbin/kali-live-wireguard-init "$OVERRIDE_MNT" 2>/dev/null) \
+       && [ -n "$WGOUT" ]; then
+        echo "${WGOUT%% *}" > /run/kali-live-headless-wg-pub 2>/dev/null || true
+        log "wireguard tunnel ready: $WGOUT"
+    else
+        log "wireguard not provisioned (non-fatal — off, unconfigured, or unwritable medium)"
+    fi
     umount "$OVERRIDE_MNT" 2>/dev/null || true
     rmdir "$OVERRIDE_MNT" 2>/dev/null || true
 fi

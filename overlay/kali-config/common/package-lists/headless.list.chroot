@@ -10,3 +10,7 @@ curl
 git
 tmux
 tcpdump
+## WireGuard access channel (M1): the tunnel identity itself is generated on
+## first boot and persisted to the KLHCONFIG partition — nothing baked, see
+## README "WireGuard access".
+wireguard-tools

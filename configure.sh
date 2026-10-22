@@ -24,6 +24,7 @@ ASSUME_YES=false
 OPT_HOSTNAME="" OPT_SSID="" OPT_KEYMGMT="" OPT_HIDDEN="" OPT_REGDOM=""
 OPT_PUBKEY="" OPT_EXTRA=""
 OPT_BOOTDEFAULT="" OPT_PASSMODE="" OPT_KVM=""
+OPT_WG_ENDPOINT="${WG_ENDPOINT:-}" OPT_WG_PEER="${WG_PEER_PUBKEY:-}" OPT_WG_NET="" OPT_WG_PORT=""
 
 usage() {
   cat <<EOF
@@ -40,6 +41,12 @@ Options:
   -B, --boot-default D    Default boot entry: live (default) or forensic
   -P, --password-mode M   Console password: random (default) or kali
       --with-kvm B        Bake in KVM/libvirt stack: true (default) or false
+      --wg-endpoint H     WireGuard hub (host or host:port) — enables the
+                          ssh-over-wireguard access channel; the stick's
+                          private key is generated on first boot (not baked)
+      --wg-peer KEY       The hub's PUBLIC key (44-char base64 from wg pubkey)
+      --wg-net NET        Tunnel /24 first three octets (default: 10.66.0)
+      --wg-port PORT      Hub UDP port (default: 51820)
   -y, --assume-yes        Overwrite an existing ./config without asking
   -h, --help              This help
 
@@ -61,6 +68,10 @@ EOF
     -B|--boot-default)   OPT_BOOTDEFAULT=${2:?}; shift 2 ;;
     -P|--password-mode)  OPT_PASSMODE=${2:?}; shift 2 ;;
     --with-kvm)          OPT_KVM=${2:?}; shift 2 ;;
+    --wg-endpoint)       OPT_WG_ENDPOINT=${2:?}; shift 2 ;;
+    --wg-peer)           OPT_WG_PEER=${2:?}; shift 2 ;;
+    --wg-net)            OPT_WG_NET=${2:?}; shift 2 ;;
+    --wg-port)           OPT_WG_PORT=${2:?}; shift 2 ;;
     -y|--assume-yes)     ASSUME_YES=true; shift ;;
     -h|--help)           usage ;;
     *) klh_die "unknown option: $1 (see --help)" ;;
@@ -178,6 +189,14 @@ WITH_KVM=${OPT_KVM:-}
 if [ -z "$WITH_KVM" ]; then prompt_choice WITH_KVM "Bake in the KVM/libvirt stack?" "true" true false; fi
 klh_validate_bool "$WITH_KVM" || klh_die "--with-kvm must be true or false"
 
+# WireGuard access channel (non-interactive only: flags or environment; all
+# staged values are NON-secret — the stick generates its own private key on
+# first boot and persists it to the KLHCONFIG partition, nothing is baked).
+WG_ENDPOINT=${OPT_WG_ENDPOINT:-}
+WG_PEER_PUBKEY=${OPT_WG_PEER:-}
+WG_TUNNET=${OPT_WG_NET:-}
+WG_PORT=${OPT_WG_PORT:-}
+
 # ------------------------------------------------------------------- write
 if [ -e "$CONFIG_FILE" ] && [ "$ASSUME_YES" != true ]; then
   read -r -p "Overwrite existing $CONFIG_FILE? [y/N] " ans || true
@@ -199,6 +218,10 @@ TMP=$(mktemp)
   printf 'BOOT_DEFAULT=%q\n' "$BOOT_DEFAULT"
   printf 'LIVE_PASSWORD_MODE=%q\n' "$LIVE_PASSWORD_MODE"
   printf 'WITH_KVM=%q\n' "$WITH_KVM"
+  printf 'WG_ENDPOINT=%q\n' "$WG_ENDPOINT"
+  printf 'WG_PEER_PUBKEY=%q\n' "$WG_PEER_PUBKEY"
+  printf 'WG_TUNNET=%q\n' "$WG_TUNNET"
+  printf 'WG_PORT=%q\n' "$WG_PORT"
 } > "$TMP"
 chmod 600 "$TMP"
 mv -f "$TMP" "$CONFIG_FILE"
@@ -212,6 +235,7 @@ klh_info "authorized key  : $PUBKEY_FP"
 [ -n "$EXTRA_FPS" ] && klh_info "extra keys      : $EXTRA_FPS"
 klh_info "boot default    : $BOOT_DEFAULT (auto-boots after 5s)"
 klh_info "console password: $LIVE_PASSWORD_MODE"
+klh_info "wireguard       : ${WG_ENDPOINT:-off}${WG_TUNNET:+ ($WG_TUNNET.0/24 via $WG_TUNNET hub)}"
 klh_info "KVM stack       : $WITH_KVM$( [ "$WITH_KVM" = true ] && echo ' (libvirtd + virt-manager, host shielded from guests)')"
 cat <<'EOF'
 
