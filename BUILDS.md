@@ -9,7 +9,9 @@ number → commit → pin → verdict → where the artifact went.
 ## Artifact layout (on disk)
 
 ```
-output/kali-linux-rolling-live-amd64.iso        # "slot" — last build to finish (mutable)
+output/kali-linux-rolling-live-amd64.iso        # "slot" — SYMLINK to the newest archive (build.sh stages + archives automatically)
+output/.stage-<N>/                              # per-build staging dir while a build runs (moved away on success)
+output/.build-current                           # marker: the build build.sh just finished (consumed by iso-archive.sh)
 output/iso-build<N>/                            # immutable archive of build N
   kali-linux-rolling-live-amd64.iso
   kali-linux-rolling-live-amd64.iso.sha512sum
@@ -21,10 +23,21 @@ output/build-console-<N>.log                    # wrapper + upstream output
 output/test-run-<N>.log                         # suite verdict for build N
 ```
 
-`test.sh` with no `--iso` picks the newest `output/kali-linux-*.iso` (the
-slot). **Always pass `--iso output/iso-build<N>/...` when validating a
-specific build** — the slot is a moving target and gets overwritten by the next
-build.
+`test.sh` with no `--iso` picks the newest archived build (`iso-build<N>`
+with the highest N), falling back to the slot only when nothing is archived.
+Explicit `--iso` is still the gold standard for gating a specific build.
+
+## Adding an entry
+
+1. Build (`./build.sh > output/build-console-<N>.log 2>&1` in tmux — the
+   wrapper locks against concurrent builds, stages the ISO and archives it
+   into `output/iso-build<N>/` automatically; `--number N` pins the number).
+2. Suite: `./test.sh --iso output/iso-build<N>/kali-linux-rolling-live-amd64.iso`
+   → `output/test-run-<N>.log` (levels: `--level static` ≈ 18 s, `content`
+   adds ISO inspection, default = full boot suite).
+3. Record the verdict here and in the archive's `INDEX.md`.
+4. Reclaim: `tools/iso-prune.sh` (dry-run by default; `--keep N` for the
+   fallback, `--yes` to delete). Flash a specific build: `./flash.sh --build N`.
 
 ## Retention rule
 
@@ -41,7 +54,28 @@ build.
 | #8 | 2026-10-21 06:37 | `791af962e0f3` | `b4b53d1` (pre-rewrite; see `~/backups/kali-live-headless-pre-rewrite-20261021.bundle`) | no | live, autoboot 5 s | 87 pass / 5 fail / 1 skip — **all 5 were harness bugs** (fixed in `5442c82`); KVM-less fallback | `output/iso-build8/` |
 | #9 | 2026-10-21 11:26 | *(not retained)* | `9120d19` (HEAD at start; `5442c82` landed mid-build) | yes | live, autoboot 5 s | 153 pass / 10 fail → root-caused, all fixed in `e53dae7` | **ISO overwritten by #10 — no copy exists** |
 | #10 | 2026-10-21 18:15 | `e832c080d3f1` | `e53dae7` | yes | live, autoboot 5 s | Stage A+B 81 pass / **2 real fail** + 4 false fail (see below) | `output/iso-build10/` |
-| #11 | 2026-10-22 07:20 | *pending* | `fd8abd3` | yes | live, autoboot 5 s | in flight — **tape-out target** | slot → move to `output/iso-build11/` |
+| #11 | 2026-10-22 07:20 | `63483c55f779` | `fd8abd3` | yes | live, autoboot 5 s | 150 pass / **14 fail** — one root cause (see below); **not shippable** | `output/iso-build11/` |
+
+### Build #11 detail (2026-10-22)
+
+- **The 14 fails are all one defect, plus its fallout.** `e53dae7`
+  (2026-10-21 20:15) introduced `${MODE//\"/}` into
+  `kali-live-headless-provision` — a bashism under `#!/bin/sh`. Kali's dash
+  aborts with `Bad substitution` at line 141, so the provision service died
+  on **every** #11 boot, taking with it: console-password randomization,
+  the KLHCONFIG credential override, and the `libvirt` group membership
+  (`virsh` then falls back to polkit and fails headless). `kvm-firewall`
+  shows "activating" because it waits for `virbr0`.
+- Found by the suite (bios/uefi/forensic × provision/console-pw/virsh/shield
+  + override ×2) and confirmed live in a side QEMU: journal shows the abort.
+  Fixed in `d512610`; the class is now caught statically (SC30xx guard in
+  Stage A, `a95152a`).
+- `e53dae7` landed *after* #10 was cut (18:15), so #10 never ran the bad
+  line — that is why #10's provision passed while #11's died.
+- First build archived via `tools/iso-archive.sh` (staging + move + slot
+  symlink); flashed to USB for hardware validation despite the defect (SSH,
+  Wi-Fi, hostname, avahi, watchdog all work — provisioning of
+  password/override/libvirt-group does not).
 
 ### Build #10 detail (the "unnumbered" ISO, 2026-10-22)
 
@@ -62,11 +96,5 @@ build.
 
 ## Adding an entry
 
-1. Build (`BUILD_MIRROR=... ./build.sh > output/build-console-<N>.log 2>&1` in tmux).
-2. Archive: `output/iso-build<N>/` with ISO + sha512sum + `BUILD-MANIFEST.txt`
-   (copy of the newest `output/build-manifest-*.txt`) + `INDEX.md` +
-   `SHA256SUMS`.
-3. Suite: `./test.sh --iso output/iso-build<N>/kali-linux-rolling-live-amd64.iso`
-   → `output/test-run-<N>.log`.
-4. Add the row here with the sha512 prefix, commit, and update the
-   `~/src/ops/workspace-state.md` lane section.
+(Now documented in the workflow section above: build → suite → verdict →
+prune. Manual escape hatch: `tools/iso-archive.sh --iso PATH --build N`.)
