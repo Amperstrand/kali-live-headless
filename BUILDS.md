@@ -96,6 +96,44 @@ Explicit `--iso` is still the gold standard for gating a specific build.
   Wi-Fi, hostname, avahi, watchdog all work — provisioning of
   password/override/libvirt-group does not).
 
+### Build #11 device review (2026-10-22, live hardware — Lenovo x280, Wi-Fi)
+
+Physical boot on the deployment LAN, reviewed over SSH. What the suite
+could not see, found on the real machine:
+
+- **`kvm host-shield` was structurally dead, not just latent.** libvirtd
+  socket-activates and the libvirt `default` network had `Autostart: no`,
+  so `virbr0` never existed at boot; the old firewall script waited 300 s
+  and exited 0 with **zero rules installed** — while `systemctl is-active`
+  reported "active". Any VM started later had a completely unshielded
+  host and unrestricted network reach.
+- **Guests could reach the LAN.** A simulated guest (netns+veth bridged
+  into `virbr0`) reached the LAN gateway and other LAN hosts — confirmed
+  live. The old firewall explicitly allowed LAN egress; the deployment
+  posture (bench/lab LAN + FIPS-mesh NAT-host pilot) requires RFC1918
+  blocked. Both fixed: firewall is now a self-healing daemon (rules
+  re-asserted at the top of INPUT/FORWARD every 30 s, survives libvirt
+  chain re-insertion), `kvm-enable`/chroot-hook autostart the default
+  network so `virbr0` exists deterministically.
+- **Mesh identity absent — collateral of the flash.sh mid-run-edit
+  incident** (AGENTS.md 2026-10-22): the stick has no `KLHCONFIG`
+  partition, so first-boot identity generation and the credential
+  override silently skipped. Stick needs a `./flash.sh` reflash (finish
+  with `--verify-only` per the flash.sh self-check).
+- **`kali-live-console-banner`** failed to write `/etc/issue.d/…`
+  (directory absent in the image) — banner still printed to console.
+- **Provision rerun deadlock**: `systemctl try-restart avahi-daemon` at
+  the end of the provision script deadlocks when provision is restarted
+  after boot (avahi's restart job queues behind provision's own
+  `Before=`-ordered activation). Harmless at boot, fixed with
+  `--no-block`.
+- After RAM hot-patching the device with the fixed scripts:
+  `tools/hw-check.sh` **28 pass / 0 fail** (`--no-mesh`), including the
+  new behavioural firewall assertions. Evidence:
+  `output/hw-check-hw-20261022T131645.log` (gitignored). The stick
+  reverts to the baked #11 image on reboot — fixes ship from build #12
+  (provision, main) / v13 (this branch) onward.
+
 ### Build #10 detail (the "unnumbered" ISO, 2026-10-22)
 
 - Identified as #10 from `.disk/info` (`Binary 20261021-18:15`); the missing

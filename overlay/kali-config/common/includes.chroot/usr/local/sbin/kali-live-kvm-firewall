@@ -1,42 +1,99 @@
 #!/bin/sh
-# Shield the live host from KVM/libvirt guests on the default NAT bridge.
+# Firewall for KVM/libvirt guests on the default NAT bridge (virbr0).
 #
 # Model (see README "KVM"):
-#   - Guests get outbound NAT (internet/LAN egress) like any client.
-#   - Guests must NOT reach host services (sshd, libvirt API, anything
-#     listening on the host) through virbr0 — only DHCP + DNS, which the
-#     built-in dnsmasq serves on that bridge.
-#   - Guests get NO access to host disks or devices unless someone
-#     explicitly attaches them with virsh/virt-manager.
+#   - Guests may egress to the INTERNET via libvirt's NAT.
+#   - Guests must NOT reach the LAN the host sits on (RFC1918:
+#     10/8, 172.16/12, 192.168/16) — the deployment LAN is a bench/
+#     lab network and guests have no business talking to it.
+#   - Guests must NOT reach host services (sshd, libvirt API, ...)
+#     through virbr0 — only DHCP + DNS from the built-in dnsmasq.
 #
-# This deliberately does NOT isolate guests from the LAN — for a fully
-# quarantined guest use an isolated libvirt network instead
-# (`virsh net-define` with <forward mode='none'/> or virt-manager's
-# "Isolated network" option).
+# This is a DAEMON, not a oneshot: virbr0 may appear at any time
+# (libvirtd socket-activates, the default network is autostarted by
+# kali-live-kvm-enable, a user may start it hours later), and libvirt
+# (re)inserts its own chains at the TOP of the base chains whenever a
+# network starts — which would shadow our rules. So every loop tick:
+#   1. wait for virbr0,
+#   2. make sure our rules are present AND at the top of INPUT/FORWARD,
+#   3. re-install (and log) if missing or displaced.
+# Escape hatch (documented in README): to let guests reach a LAN subnet,
+# delete the matching DROP rule — the daemon will re-add it within one
+# tick, so also `systemctl stop kali-live-kvm-firewall` first.
+#
+# POSIX sh only — dash parses this file; no bashisms (build #11 lesson).
 
 set -u
+
+TICK=30
 
 # No iptables (package missing)? Do nothing rather than fail the boot.
 command -v iptables >/dev/null 2>&1 || exit 0
 
-# Wait (bounded, up to 5 min) for libvirt to create the bridge.
-i=0
-while [ "$i" -lt 60 ] && ! ip link show virbr0 >/dev/null 2>&1; do
-    sleep 5
-    i=$((i + 1))
+log() { logger -t kali-live-kvm -- "$*" 2>/dev/null || true; }
+
+# Desired rules, in order, at the TOP of each base chain. libvirt's own
+# jumps (LIBVIRT_INP/LIBVIRT_FWO...) sit BELOW them, so a guest packet
+# hits our policy before any libvirt ACCEPT.
+forward_rules_ok() {
+    # first three FORWARD rules (after the policy line) must be exactly
+    # our RFC1918 drops in top-down order 10/8, 172.16/12, 192.168/16 —
+    # anything else (missing, or libvirt's jumps re-inserted above them
+    # by a network (re)start) means we are shadowed: rebuild.
+    # ('iptables -S' prefixes rules with '-A FORWARD '; strip via read.)
+    [ "$(iptables -S FORWARD 2>/dev/null | sed -n '2,4p' | while read -r _ _ rest; do echo "$rest"; done \
+        | paste -sd'|')" = \
+      "-i virbr0 -d 10.0.0.0/8 -j DROP|-i virbr0 -d 172.16.0.0/12 -j DROP|-i virbr0 -d 192.168.0.0/16 -j DROP" ]
+}
+
+install_input() {
+    iptables -D INPUT -i virbr0 -j DROP >/dev/null 2>&1
+    iptables -I INPUT -i virbr0 -j DROP
+    iptables -I INPUT -i virbr0 -p udp --dport 67 -j ACCEPT   # DHCP (dnsmasq)
+    iptables -I INPUT -i virbr0 -p udp --dport 53 -j ACCEPT   # DNS  (dnsmasq)
+}
+
+install_forward() {
+    iptables -D FORWARD -i virbr0 -d 192.168.0.0/16 -j DROP >/dev/null 2>&1
+    iptables -D FORWARD -i virbr0 -d 172.16.0.0/12 -j DROP >/dev/null 2>&1
+    iptables -D FORWARD -i virbr0 -d 10.0.0.0/8      -j DROP >/dev/null 2>&1
+    iptables -I FORWARD -i virbr0 -d 192.168.0.0/16 -j DROP
+    iptables -I FORWARD -i virbr0 -d 172.16.0.0/12 -j DROP
+    iptables -I FORWARD -i virbr0 -d 10.0.0.0/8      -j DROP
+}
+
+installed_once=0
+while :; do
+    if ! ip link show virbr0 >/dev/null 2>&1; then
+        # No bridge yet (no VMs / net not started). Nothing to shield;
+        # keep watching so rules go in the moment virbr0 appears.
+        sleep "$TICK"
+        continue
+    fi
+
+    changed=0
+    if ! iptables -C INPUT -i virbr0 -j DROP >/dev/null 2>&1; then
+        install_input
+        changed=1
+    else
+        # drop present — but are the ACCEPTs still above it? Cheap check:
+        # the first INPUT rule must be our DNS ACCEPT. If libvirt
+        # re-ordered, rebuild.
+        first=$(iptables -S INPUT 2>/dev/null | sed -n '2p')
+        case "$first" in
+            *"-p udp --dport 53 -j ACCEPT"*) : ;;
+            *) install_input; changed=1 ;;
+        esac
+    fi
+
+    if ! forward_rules_ok; then
+        install_forward
+        changed=1
+    fi
+
+    if [ "$changed" = 1 ] || [ "$installed_once" = 0 ]; then
+        log "virbr0 guest firewall installed: DNS/DHCP to host only; guest->LAN (RFC1918) dropped; internet egress via NAT stays"
+        installed_once=1
+    fi
+    sleep "$TICK"
 done
-ip link show virbr0 >/dev/null 2>&1 || exit 0
-
-# Idempotent: skip if the rule set is already installed.
-if iptables -C INPUT -i virbr0 -j DROP >/dev/null 2>&1; then
-    exit 0
-fi
-
-# -I inserts at the top, so install in reverse order:
-# final order = [53 ACCEPT, 67 ACCEPT, DROP]
-iptables -I INPUT -i virbr0 -j DROP
-iptables -I INPUT -i virbr0 -p udp --dport 67 -j ACCEPT   # DHCP (dnsmasq)
-iptables -I INPUT -i virbr0 -p udp --dport 53 -j ACCEPT   # DNS  (dnsmasq)
-
-logger -t kali-live-kvm "virbr0 host-shield installed (DNS/DHCP only; host services unreachable from guests)"
-exit 0

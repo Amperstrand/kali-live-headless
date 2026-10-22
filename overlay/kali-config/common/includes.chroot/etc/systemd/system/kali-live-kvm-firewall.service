@@ -1,16 +1,18 @@
 [Unit]
-Description=kali-live-headless: shield the host from libvirt guests on virbr0
+Description=kali-live-headless: guest firewall on virbr0 (host shield + LAN isolation)
 After=libvirtd.service network.target
 Wants=libvirtd.service
 ConditionPathExists=/usr/local/sbin/kali-live-kvm-firewall
 
 [Service]
-Type=oneshot
-# the script waits (up to 300s) for libvirt to create virbr0 — do not let
-# systemd's 90s default TimeoutStartSec kill it on slow boots
-TimeoutStartSec=330
+# The script is a self-healing daemon: it watches for virbr0 (which can
+# appear any time — libvirtd socket-activates, users start networks),
+# installs the rules at the TOP of INPUT/FORWARD, and re-asserts them if
+# libvirt's own chain inserts shadow ours or someone flushes the ruleset.
+Type=simple
 ExecStart=/usr/local/sbin/kali-live-kvm-firewall
-RemainAfterExit=yes
+Restart=on-failure
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target

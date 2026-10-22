@@ -20,4 +20,21 @@ if [ -e /dev/kvm ]; then
 else
     logger -t kali-live-kvm "WARNING: no /dev/kvm (VT-x/AMD-V disabled in firmware or unsupported CPU) — libvirt falls back to slow TCG emulation"
 fi
+
+# Bring the default NAT network up deterministically. Without this,
+# libvirtd socket-activation + Autostart=no meant virbr0 NEVER existed
+# at boot until someone ran a virsh command — and the guest firewall
+# waited 300s and exited "success" with zero rules installed (the
+# build #11 "active but dead" false green). virsh socket-activates the
+# daemon, so this works even when libvirtd.service is not running yet.
+if command -v virsh >/dev/null 2>&1; then
+    virsh -c qemu:///system net-autostart default >/dev/null 2>&1 || true
+    if ! virsh -c qemu:///system net-info default 2>/dev/null | grep -q 'Active:.*yes'; then
+        if virsh -c qemu:///system net-start default >/dev/null 2>&1; then
+            logger -t kali-live-kvm "default network started (virbr0 up; guest firewall will engage)"
+        else
+            logger -t kali-live-kvm "WARNING: could not start libvirt default network (virbr0 later?)"
+        fi
+    fi
+fi
 exit 0
