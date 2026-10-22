@@ -294,6 +294,33 @@ stick keeps the same `npub` — its mesh address — across power cycles.
   mesh firewall (`fips-firewall.service`) enforces the baseline; the
   deployment side lives in the private overlay, not this repo.
 
+## Forwarding one port into a VM (kali-live-vm-forward)
+
+Default-deny means nothing outside reaches a guest. When a deployment (the
+FIPS mesh gateway, a one-off build job dashboard) needs exactly one service
+in one disposable VM, `kali-live-vm-forward` opens exactly that flow —
+explicitly, reversibly, and re-asserted against the firewall daemon:
+
+    sudo kali-live-vm-forward add   mesh-ssh 192.168.122.50 22 2222  # ext:2222 -> guest:22
+    sudo kali-live-vm-forward list
+    sudo kali-live-vm-forward remove mesh-ssh
+
+Rules of the road:
+
+* The guest IP must be **pinned** (static lease or cloud-init address) —
+  forwarding to a DHCP-floating address would hand your port to whatever VM
+  grabbed that lease.
+* The tool refuses addresses outside the libvirt default network, installs
+  per-forward ACCEPTs **above** the kvm-firewall daemon's drops, and adds a
+  per-guest ESTABLISHED accept so replies survive the daemon's stateless
+  RFC1918 drops. `reassert` re-installs everything (called from a timer or
+  your deployment tooling every 30 s, mirroring the firewall daemon).
+* With WireGuard up, the natural external interface is `wg0` — set
+  `EXT_IFACES="wg0"` (the default). Adding a LAN interface is a deliberate
+  decision to expose the port to the bench network.
+* Behavioural proof belongs in deployment tooling: assert from outside that
+  the port answers **and** that the guest still cannot reach the LAN.
+
 ## WireGuard access (ssh over WireGuard)
 
 M1 of the remote-access channel: the stick brings up a WireGuard tunnel to a

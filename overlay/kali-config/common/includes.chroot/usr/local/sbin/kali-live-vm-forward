@@ -1,0 +1,125 @@
+#!/bin/sh
+# kali-live-vm-forward — the ONE sanctioned inbound path into a guest VM.
+#
+# The stick is default-deny: guests reach the internet (NAT) but not the LAN
+# or the host, and nothing from outside reaches a guest. When a deployment
+# (e.g. the FIPS mesh gateway) needs exactly one service in exactly one
+# disposable VM, this tool opens that one flow, explicitly and reversibly:
+#
+#   kali-live-vm-forward add   mesh-ssh 192.168.122.50 22 2222   # LAN:2222 -> guest:22
+#   kali-live-vm-forward add   mesh-ssh 192.168.122.50 22        # same ext port as guest port
+#   kali-live-vm-forward list
+#   kali-live-vm-forward remove mesh-ssh
+#
+# What it installs (and removes again, by exact rule text):
+#   * nat PREROUTING: DNAT  ext-port -> guest:port   (only when a real
+#     external interface exists; with none it still installs the local path)
+#   * filter FORWARD: ACCEPT for exactly this destination+port, inserted
+#     ABOVE the kvm-firewall daemon's drops
+#   * filter FORWARD: ACCEPT ESTABLISHED,RELATED for exactly this guest IP,
+#     so replies survive the daemon's stateless "-i virbr0 -d RFC1918 DROP"
+#     (the daemon re-asserts its rules every 30s; these per-forward rules are
+#     re-asserted too — see the vm-forward.service companion)
+#
+# The guest IP must be pinned (static or a libvirt lease you control):
+# forwarding to a DHCP-floating address would send your port to whatever VM
+# grabbed that lease. List before adding if unsure.
+
+set -u
+
+IPTABLES=$(command -v iptables 2>/dev/null || echo /usr/sbin/iptables)
+STATE_DIR=/run/kali-live-headless/vm-forwards
+EXT_IFACES="wg0"     # default external ingress; add LAN ifaces explicitly:
+                     #   EXT_IFACES="wg0 eth0" is set by callers that want it
+DEFAULT_NET=192.168.122
+
+err() { echo "vm-forward: $*" >&2; }
+die() { err "$*"; exit 1; }
+
+rule_file() { printf '%s/%s' "$STATE_DIR" "$1"; }
+
+fw_add() { # name guest_ip guest_port ext_port
+    name=$1 gip=$2 gport=$3 eport=$4
+    [ -n "$name" ] && [ -n "$gip" ] && [ -n "$gport" ] && [ -n "$eport" ] \
+        || die "add needs: <name> <guest-ip> <guest-port> [ext-port]"
+    case "$gip" in "$DEFAULT_NET".*) ;; *) die "guest ip must be in the libvirt default net ($DEFAULT_NET.0/24), got '$gip'";; esac
+    printf '%s' "$eport" | grep -Eq '^[0-9]+$' || die "ext port must be numeric"
+    printf '%s' "$gport" | grep -Eq '^[0-9]+$' || die "guest port must be numeric"
+    [ -e "$(rule_file "$name")" ] && die "forward '$name' exists (remove it first)"
+
+    # 1) per-forward ACCEPT for the destination (above the daemon's drops)
+    "$IPTABLES" -I FORWARD 1 -d "$gip/32" -p tcp --dport "$gport" -j ACCEPT
+    # 2) per-guest ESTABLISHED accept so replies are not eaten by the
+    #    daemon's stateless RFC1918 drops
+    "$IPTABLES" -I FORWARD 1 -s "$gip/32" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    # 3) DNAT from every configured external interface
+    for ifn in $EXT_IFACES; do
+        if ip link show "$ifn" >/dev/null 2>&1; then
+            "$IPTABLES" -t nat -I PREROUTING 1 -i "$ifn" -p tcp --dport "$eport" \
+                -j DNAT --to-destination "$gip:$gport"
+        fi
+    done
+
+    mkdir -p "$STATE_DIR"
+    printf 'GIP=%s\nGPORT=%s\nEPORT=%s\n' "$gip" "$gport" "$eport" > "$(rule_file "$name")"
+    echo "vm-forward: '$name' -> $gip:$gport (ext port $eport on: $(echo $EXT_IFACES | tr ' ' ','))"
+    echo "vm-forward: assert it on the guest side before relying on it."
+}
+
+fw_remove() { # name
+    name=$1
+    f=$(rule_file "$name")
+    [ -e "$f" ] || die "no forward named '$name'"
+    # shellcheck disable=SC1090
+    . "$f"
+    "$IPTABLES" -D FORWARD -d "$GIP/32" -p tcp --dport "$GPORT" -j ACCEPT 2>/dev/null
+    "$IPTABLES" -D FORWARD -s "$GIP/32" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
+    for ifn in $EXT_IFACES; do
+        "$IPTABLES" -t nat -D PREROUTING -i "$ifn" -p tcp --dport "$EPORT" \
+            -j DNAT --to-destination "$GIP:$GPORT" 2>/dev/null
+    done
+    rm -f "$f"
+    echo "vm-forward: '$name' removed"
+}
+
+fw_list() {
+    [ -d "$STATE_DIR" ] || { echo "(no forwards)"; return 0; }
+    found=0
+    for f in "$STATE_DIR"/*; do
+        [ -e "$f" ] || continue
+        # shellcheck disable=SC1090
+        . "$f"
+        printf '  %-16s %s:%s  (ext port %s)\n' "$(basename "$f")" "$GIP" "$GPORT" "$EPORT"
+        found=1
+    done
+    [ "$found" = 1 ] || echo "(no forwards)"
+}
+
+fw_reassert() { # re-install every recorded forward (call from a timer/unit)
+    [ -d "$STATE_DIR" ] || return 0
+    for f in "$STATE_DIR"/*; do
+        [ -e "$f" ] || continue
+        # shellcheck disable=SC1090
+        . "$f"
+        "$IPTABLES" -C FORWARD -d "$GIP/32" -p tcp --dport "$GPORT" -j ACCEPT 2>/dev/null \
+            || "$IPTABLES" -I FORWARD 1 -d "$GIP/32" -p tcp --dport "$GPORT" -j ACCEPT
+        "$IPTABLES" -C FORWARD -s "$GIP/32" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null \
+            || "$IPTABLES" -I FORWARD 1 -s "$GIP/32" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        for ifn in $EXT_IFACES; do
+            if ip link show "$ifn" >/dev/null 2>&1; then
+                "$IPTABLES" -t nat -C PREROUTING -i "$ifn" -p tcp --dport "$EPORT" \
+                    -j DNAT --to-destination "$GIP:$GPORT" 2>/dev/null \
+                    || "$IPTABLES" -t nat -I PREROUTING 1 -i "$ifn" -p tcp --dport "$EPORT" \
+                        -j DNAT --to-destination "$GIP:$GPORT"
+            fi
+        done
+    done
+}
+
+case "${1:-}" in
+    add)      shift; fw_add "$@" ;;
+    remove)   shift; fw_remove "$@" ;;
+    list)     fw_list ;;
+    reassert) fw_reassert ;;
+    *) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
