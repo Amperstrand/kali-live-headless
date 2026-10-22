@@ -133,7 +133,7 @@ klh_load_config() {
       || klh_die "invalid WG_TUNNET '$WG_TUNNET' (want RFC1918 /24 like 10.66.0)"
     printf '%s' "$WG_PORT" | grep -Eq '^[0-9]{1,5}$' || klh_die "invalid WG_PORT '$WG_PORT'"
     # optional: the hub's own tunnel address when it lives outside WG_TUNNET
-    [ -z "$WG_HUB_ADDR" ] || printf '%s' "$WG_HUB_ADDR" | grep -Eq '^(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}(/32)?$' \
+    [ -z "$WG_HUB_ADDR" ] || printf '%s' "$WG_HUB_ADDR" | grep -Eq '^(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3})(/32)?$' \
       || klh_die "invalid WG_HUB_ADDR '$WG_HUB_ADDR' (want an RFC1918 address like 10.99.0.1, optionally /32)"
   fi
   [ -n "${WIFI_PSK:-}" ] || klh_die "WIFI_PSK not set in $f"
