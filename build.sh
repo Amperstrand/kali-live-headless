@@ -273,6 +273,13 @@ WIFI_REGDOM="$WIFI_REGDOM"
 # random = console password randomized every boot (SSH is key-only,
 #         sudo passwordless); kali = standard Kali live "kali/kali"
 LIVE_PASSWORD_MODE="$LIVE_PASSWORD_MODE"
+# WireGuard hub (all NON-secret; the stick generates its own private key on
+# first boot — an empty WG_ENDPOINT leaves the whole feature dormant).
+WG_ENDPOINT="$WG_ENDPOINT"
+WG_PEER_PUBKEY="$WG_PEER_PUBKEY"
+WG_TUNNET="$WG_TUNNET"
+WG_HUB_ADDR="$WG_HUB_ADDR"
+WG_PORT="$WG_PORT"
 EOF
 install -D -m 0644 \
   "$OVERLAY_DIR/includes.chroot/etc/ssh/sshd_config.d/0000-kali-live-headless.conf" \
