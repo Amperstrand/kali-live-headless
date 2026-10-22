@@ -42,6 +42,18 @@ drift is absorbed by bumping the pin, nothing else.
 6. **QEMU suite environment**: `-cdrom` vs virtio-blk boot quirks are
    firmware-dependent (SeaBIOS refuses virtio firmware-boot of this ISO);
    re-verify stage layout if QEMU/SeaBIOS/OVMF updates change behavior.
+7. **Orphaned build clients burn CPU silently** (found 2026-10-22): when the
+   tmux that drives a build dies, the root-owned
+   `sudo -E build-in-container.sh → sudo → docker run` chain can survive with
+   no container behind it and spin ~1.4 cores each forever (three chains from
+   2026-10-21 had burned ~1.3 CPU-days and were masking as "slow builds").
+   Before blaming a slow build, compare
+   `ps -eo user,pid,ppid,etime,pcpu,cmd | grep -E "build-in-container|docker run"`
+   with `sudo docker ps` — a client with no container is a zombie; kill the
+   whole chain. Related: the suite's SSH forward is 127.0.0.1:2222, so a leaked
+   QEMU (deleted pidfile = `test.sh` cleanup can't find it) makes all four boot
+   stages FAIL on port bind after ~40 min of waiting; check
+   `ss -ltnp | grep 2222` before starting the suite.
 
 ## Build discipline (hard-won)
 
@@ -60,6 +72,18 @@ drift is absorbed by bumping the pin, nothing else.
   `git worktree` (e.g. `git worktree add --detach <dir> <ref>` + copy
   `./config` in, run `./test.sh --iso <path>`). HEAD's suite asserts HEAD's
   features and will false-fail against older images.
+- **ISO artifacts**: never commit ISO bytes (gitignored by design — each image
+  bakes the PSK, host keys and console password; the repo is public). Version
+  them by *provenance* instead: every build gets a row in `BUILDS.md` (build
+  number, repo commit, `KALI_LIVE_REF`, KVM on/off, suite verdict, sha512) and
+  a self-describing archive at `output/iso-build<N>/` with `BUILD-MANIFEST.txt`,
+  `INDEX.md` and `SHA256SUMS`. Always validate with an explicit
+  `--iso output/iso-build<N>/...` — the bare `output/*.iso` slot is overwritten
+  by the next build. Retention: latest green + one KVM-less fallback + any
+  image holding unique defect evidence.
+- **One build at a time per output dir**: the slot path is shared, so starting
+  build N+1 while N's ISO is still wanted silently destroys N. Preserve first,
+  then build.
 
 ## Public-repo hygiene
 
