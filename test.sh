@@ -219,7 +219,10 @@ if [ -z "$ISO" ] || [ ! -f "$ISO" ]; then
 else
   record pass "ISO exists" "$(basename "$ISO")"
   if [ -f "$ISO.sha512sum" ]; then
-    (cd "$(dirname "$ISO")" && sha512sum --check --quiet < "$ISO.sha512sum") && record pass "ISO sha512sum" || record fail "ISO sha512sum"
+    # Resolve the manifest relative to the ISO's own directory: the cd above
+    # makes a *relative* --iso argument invalid as a redirect target after the
+    # cd (2026-10-22: a relative --iso made this check fail on a good ISO).
+    (cd "$(dirname "$ISO")" && sha512sum --check --quiet < "$(basename "$ISO").sha512sum") && record pass "ISO sha512sum" || record fail "ISO sha512sum"
   else
     record skip "ISO sha512sum" "no .sha512sum file"
   fi
