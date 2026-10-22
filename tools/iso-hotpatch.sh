@@ -178,10 +178,21 @@ else
 fi
 
 step "xorriso: remux the ISO with the new squashfs"
+# -boot_image any replay re-creates the parent's El Torito + isohybrid MBR
+# setup on the new image. WITHOUT it the remux keeps only the raw system
+# area: 'Boot record: (system area only)' — no bootloader, and the BIOS
+# stage times out silently (the #13 lesson, 2026-10-22).
 xorriso -indev "$SRC" -outdev "$OUT_ISO" \
+  -boot_image any replay \
   -map /out/fs.new.sq /live/filesystem.squashfs \
   -map /out/filesystem.size /live/filesystem.size \
   ${MD5_ARGS[@]+"${MD5_ARGS[@]}"} >/out/xorriso-remux.log 2>&1
+
+step "assert the boot record survived the remux"
+BOOTREC=$(xorriso -indev "$OUT_ISO" -report_el_torito as_mkisofs 2>&1 | grep -m1 "Boot record")
+echo "  $BOOTREC"
+printf '%s' "$BOOTREC" | grep -q "El Torito" \
+  || { echo "  FATAL: El Torito boot record missing from the new ISO"; exit 1; }
 
 step "pad to the parent's size (isohybrid MBR geometry stays valid)"
 # The parent's MBR partition entries describe the PARENT's extents. A smaller
