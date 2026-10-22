@@ -79,7 +79,8 @@ Explicit `--iso` is still the gold standard for gating a specific build.
 | #9 | 2026-10-21 11:26 | *(not retained)* | `9120d19` (HEAD at start; `5442c82` landed mid-build) | yes | live, autoboot 5 s | 153 pass / 10 fail → root-caused, all fixed in `e53dae7` | **ISO overwritten by #10 — no copy exists** |
 | #10 | 2026-10-21 18:15 | `e832c080d3f1` | `e53dae7` | yes | live, autoboot 5 s | Stage A+B 81 pass / **2 real fail** + 4 false fail (see below) | `output/iso-build10/` |
 | #11 | 2026-10-22 07:20 | `63483c55f779` | `fd8abd3` | yes | live, autoboot 5 s | 150 pass / **14 fail** — one root cause (see below); **not shippable** | `output/iso-build11/` |
-| #12 | 2026-10-22 11:59 | `8cfac3d2a559` | `fc52f39` | yes | live, autoboot 5 s | rc=0 in **2h22m** (vs #11's 3h06); suite pending — contains the provision fix, **not** c8fd47c's firewall daemon (hotpatch #13 adds that) | `output/iso-build12/` |
+| #12 | 2026-10-22 11:59 | `8cfac3d2a559` | `fc52f39` | yes | live, autoboot 5 s | BIOS gate 119 pass / 7 fail — **all 7 expected** (6 features added after #12 started: WG package/staging/scripts, vm-forward; + old firewall oneshot still in it). Provision fixed, boots, virsh OK | `output/iso-build12/` |
+| #13 | 2026-10-22 16:44 | `e2fba5cca92b` | `d99ad01` (hotpatch of #12) | yes | live, autoboot 5 s | gates pending — carries provision fix + firewall daemon + vm-forward (timer unenabled: build-time) | `output/iso-build13/` |
 
 ### Build #11 detail (2026-10-22)
 
