@@ -24,7 +24,7 @@ ASSUME_YES=false
 OPT_HOSTNAME="" OPT_SSID="" OPT_KEYMGMT="" OPT_HIDDEN="" OPT_REGDOM=""
 OPT_PUBKEY="" OPT_EXTRA=""
 OPT_BOOTDEFAULT="" OPT_PASSMODE="" OPT_KVM=""
-OPT_WG_ENDPOINT="${WG_ENDPOINT:-}" OPT_WG_PEER="${WG_PEER_PUBKEY:-}" OPT_WG_NET="" OPT_WG_PORT=""
+OPT_WG_ENDPOINT="${WG_ENDPOINT:-}" OPT_WG_PEER="${WG_PEER_PUBKEY:-}" OPT_WG_NET="" OPT_WG_PORT="" OPT_WG_HUB="${WG_HUB_ADDR:-}"
 
 usage() {
   cat <<EOF
@@ -46,6 +46,8 @@ Options:
                           private key is generated on first boot (not baked)
       --wg-peer KEY       The hub's PUBLIC key (44-char base64 from wg pubkey)
       --wg-net NET        Tunnel /24 first three octets (default: 10.66.0)
+      --wg-hub-addr A     Hub's own tunnel address if outside the tunnel net
+                          (e.g. 10.99.0.1 when joining an existing hub)
       --wg-port PORT      Hub UDP port (default: 51820)
   -y, --assume-yes        Overwrite an existing ./config without asking
   -h, --help              This help
@@ -71,6 +73,7 @@ EOF
     --wg-endpoint)       OPT_WG_ENDPOINT=${2:?}; shift 2 ;;
     --wg-peer)           OPT_WG_PEER=${2:?}; shift 2 ;;
     --wg-net)            OPT_WG_NET=${2:?}; shift 2 ;;
+    --wg-hub-addr)       OPT_WG_HUB=${2:?}; shift 2 ;;
     --wg-port)           OPT_WG_PORT=${2:?}; shift 2 ;;
     -y|--assume-yes)     ASSUME_YES=true; shift ;;
     -h|--help)           usage ;;
@@ -196,6 +199,7 @@ WG_ENDPOINT=${OPT_WG_ENDPOINT:-}
 WG_PEER_PUBKEY=${OPT_WG_PEER:-}
 WG_TUNNET=${OPT_WG_NET:-}
 WG_PORT=${OPT_WG_PORT:-}
+WG_HUB_ADDR=${OPT_WG_HUB:-}
 
 # ------------------------------------------------------------------- write
 if [ -e "$CONFIG_FILE" ] && [ "$ASSUME_YES" != true ]; then
@@ -222,6 +226,7 @@ TMP=$(mktemp)
   printf 'WG_PEER_PUBKEY=%q\n' "$WG_PEER_PUBKEY"
   printf 'WG_TUNNET=%q\n' "$WG_TUNNET"
   printf 'WG_PORT=%q\n' "$WG_PORT"
+  printf 'WG_HUB_ADDR=%q\n' "$WG_HUB_ADDR"
 } > "$TMP"
 chmod 600 "$TMP"
 mv -f "$TMP" "$CONFIG_FILE"
