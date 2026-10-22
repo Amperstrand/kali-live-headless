@@ -120,7 +120,7 @@ step "scope: overlay runtime files"
 cd /overlay/kali-config/common/includes.chroot
 find . -type f | sed 's|^\./||' | sort > /out/scope.txt
 if [ "$KVM" != true ]; then
-  grep -v -E 'kali-live-kvm-(enable|firewall)|klh-kvm-nested' /out/scope.txt > /out/scope.kvm \
+  grep -v -E 'kali-live-kvm-(enable|firewall)|kali-live-vmstore-mount|kali-live-vm-create|kali-live-vm-rm|klh-kvm-nested' /out/scope.txt > /out/scope.kvm \
     && mv /out/scope.kvm /out/scope.txt
 fi
 echo "  files in scope: $(wc -l < /out/scope.txt)"
@@ -148,10 +148,28 @@ rsync -a --no-owner --no-group /overlay/kali-config/common/includes.chroot/ /out
 if [ "$KVM" != true ]; then
   rm -f /out/rootfs/etc/systemd/system/kali-live-kvm-enable.service \
         /out/rootfs/etc/systemd/system/kali-live-kvm-firewall.service \
+        /out/rootfs/etc/systemd/system/kali-live-vmstore-mount.service \
         /out/rootfs/usr/local/sbin/kali-live-kvm-enable \
         /out/rootfs/usr/local/sbin/kali-live-kvm-firewall \
+        /out/rootfs/usr/local/sbin/kali-live-vmstore-mount \
+        /out/rootfs/usr/local/sbin/kali-live-vm-create \
+        /out/rootfs/usr/local/sbin/kali-live-vm-rm \
         /out/rootfs/etc/modprobe.d/klh-kvm-nested.conf
 fi
+# Unit enablement: the chroot hook (zz-headless-configure) creates these
+# symlinks on a clean build; a hotpatch cannot run the hook, so recreate
+# them here for units whose enablement the hook owns. Keep this list in
+# sync with the hook's `systemctl enable` list (KVM-gated part).
+mkdir -p /out/rootfs/etc/systemd/system/multi-user.target.wants \
+         /out/rootfs/etc/systemd/system/sockets.target.wants
+enable_unit() { # $1=unit $2=target.wants-dir-name
+  [ -e "/out/rootfs/etc/systemd/system/$1" ] || return 0
+  ln -sfn "/etc/systemd/system/$1" "/out/rootfs/etc/systemd/system/$2/$1"
+}
+for u in libvirtd.service kali-live-kvm-enable.service kali-live-kvm-firewall.service kali-live-vmstore-mount.service; do
+  enable_unit "$u" multi-user.target.wants
+done
+enable_unit virtlogd.socket sockets.target.wants
 for f in /out/rootfs/usr/local/sbin/kali-live-*; do
     [ -e "$f" ] && chmod 0755 "$f"
 done
@@ -236,6 +254,15 @@ for f in /out/check/usr/local/sbin/kali-live-*; do
   [ -e "$f" ] || continue
   [ "$(stat -c %a "$f")" = "755" ] || { echo "  MODE MISMATCH: $f not 0755"; FAIL=1; }
 done
+# unit enablement symlinks must exist in the repacked image (hotpatch
+# cannot run the chroot hook; recreate = the block above)
+if [ "$KVM" = true ]; then
+  for link in multi-user.target.wants/kali-live-vmstore-mount.service \
+              multi-user.target.wants/kali-live-kvm-firewall.service \
+              multi-user.target.wants/libvirtd.service; do
+    [ -L "/out/rootfs/etc/systemd/system/$link" ] || { echo "  ENABLE MISMATCH: $link not a symlink"; FAIL=1; }
+  done
+fi
 [ "$FAIL" -eq 0 ] || { echo "verification FAILED"; exit 1; }
 echo "  all $(wc -l < /out/scope.txt) scoped files verified inside the new ISO"
 
