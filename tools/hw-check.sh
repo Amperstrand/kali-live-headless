@@ -27,7 +27,7 @@ source "$REPO_DIR/lib/common.sh"
 
 klh_load_config "$REPO_DIR/config"
 
-HOST_ARG="" MODE="hw" TIMEOUT=300 EXPECT_NPUB="" NO_MESH=false
+HOST_ARG="" MODE="hw" TIMEOUT=300 EXPECT_NPUB="" NO_MESH=false EXPECT_WG="" NO_WG=false
 usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 [ $# -eq 0 ] || while [ $# -gt 0 ]; do
@@ -37,6 +37,8 @@ usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
     --timeout)     TIMEOUT=${2:?}; shift 2 ;;
     --expect-npub) EXPECT_NPUB=${2:?}; shift 2 ;;
     --no-mesh)     NO_MESH=true; shift ;;
+    --expect-wg)   EXPECT_WG=${2:?}; shift 2 ;;
+    --no-wg)       NO_WG=true; shift ;;
     -h|--help) usage ;;
     *) klh_die "unknown option: $1" ;;
   esac
@@ -111,6 +113,34 @@ guest 'sudo -n true' 2>/dev/null && record pass "passwordless sudo" || record fa
 if [ "$LIVE_PASSWORD_MODE" = random ]; then
   v=$(guest_sudo "grep '^kali:' /etc/shadow | cut -d: -f2")
   [ -n "$v" ] && [ "$v" != "AqLUsDitNnTsw" ] && record pass "console password randomized" || record fail "console password randomized"
+fi
+
+section "wireguard tunnel (ssh-over-wg access channel)"
+# All values inspected here are PUBLIC: the stick's wg pubkey and its tunnel
+# address. The private key never leaves the stick's KLHCONFIG partition.
+wgp=$(guest 'cat /run/kali-live-headless-wg-pub 2>/dev/null || true')
+if [ -n "$wgp" ]; then
+  record pass "wireguard identity provisioned this boot" "${wgp:0:16}…"
+  wg_ip=$(guest 'ip -4 addr show wg0 2>/dev/null | grep -oE "(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]+\.[0-9]+" | head -1')
+  [ -n "$wg_ip" ] && record pass "wg0 up with tunnel address" "$wg_ip" || record fail "wg0 up with tunnel address"
+  hs=$(guest 'wg show wg0 latest-handshakes 2>/dev/null | awk "{print \$2}" | head -1')
+  now=$(date +%s)
+  if [ -n "$hs" ] && [ "$hs" -gt 0 ] && [ $(( now - hs )) -lt 180 ]; then
+    record pass "wireguard handshake fresh" "$(( now - hs ))s ago (hub reachable)"
+  else
+    record fail "wireguard handshake fresh" "latest=${hs:-none} — is the stick's pubkey enrolled on the hub?"
+  fi
+  if [ -n "$EXPECT_WG" ]; then
+    [ "$wgp" = "$EXPECT_WG" ] && record pass "wg pubkey stable across reboot" || record fail "wg pubkey stable across reboot (had $EXPECT_WG)"
+  fi
+  record info "enroll on the hub: wg set wg0 peer $wgp allowed-ips $wg_ip/32"
+elif [ "$NO_WG" = true ]; then
+  record info "wireguard off (--no-wg)"
+elif guest 'grep -q "^WG_ENDPOINT=" <(cat /etc/default/kali-live-headless) 2>/dev/null || grep -q "^WG_ENDPOINT=" /etc/default/kali-live-headless 2>/dev/null'; then
+  record fail "wireguard provisioned" "WG_ENDPOINT staged but no /run/kali-live-headless-wg-pub — check the provision journal"
+  capture provision-journal guest_sudo 'journalctl -t kali-live-headless --no-pager -n 60'
+else
+  record info "wireguard off (not configured at build time — see configure.sh --wg-endpoint)"
 fi
 
 section "mesh identity (FIPS host-role)"

@@ -1,0 +1,89 @@
+#!/bin/sh
+# kali-live-wireguard-init — per-stick WireGuard identity and tunnel (M1).
+#
+# Credentials model (mirrors the FIPS host-role identity):
+#   * the private key NEVER exists anywhere before first boot — it is
+#     generated on the stick and persisted to the KLHCONFIG partition
+#     (wireguard.conf, plaintext, same threat model as the Wi-Fi PSK and the
+#     FIPS nsec: physical access to the stick is game over).
+#   * nothing secret is baked into the ISO or committed to git. The only
+#     staged values are non-secret: endpoint, peer (hub) pubkey, tunnel
+#     network, port — from ./config via /etc/default/kali-live-headless.
+#   * the stick's tunnel address is derived from its PUBLIC key
+#     (sha256 -> two octets of WG_TUNNET), so the hub needs no per-stick IP
+#     ledger: enroll `wg set wg0 peer <pubkey> allowed-ips <addr>/32`.
+#
+# Output: the stick's PUBLIC key on stdout (for the provision log, the
+# console banner, and hub enrollment). Any secret stays on the stick.
+#
+# Usage: kali-live-wireguard-init <config-mount-dir>
+# Exits 0 with empty output when the feature is off or unavailable.
+
+set -u
+
+ETC_DEFAULT=/etc/default/kali-live-headless
+
+cfg_get() { # var -> value from /etc/default/kali-live-headless (quotes stripped)
+    sed -n "s/^$1=//p" "$ETC_DEFAULT" 2>/dev/null | head -n 1 | tr -d \'\"
+}
+
+ENDPOINT=$(cfg_get WG_ENDPOINT)
+PEER=$(cfg_get WG_PEER_PUBKEY)
+TUNNET=$(cfg_get WG_TUNNET);  [ -n "$TUNNET" ] || TUNNET=10.66.0
+PORT=$(cfg_get WG_PORT);      [ -n "$PORT" ]   || PORT=51820
+
+[ -n "$ENDPOINT" ] || { echo "wireguard: off (WG_ENDPOINT not configured)" >&2; exit 0; }
+[ -n "$PEER" ]     || { echo "wireguard: WG_ENDPOINT set but WG_PEER_PUBKEY missing — refusing to bring up an unauthenticated tunnel" >&2; exit 0; }
+command -v wg >/dev/null 2>&1 || { echo "wireguard: wg not installed (wireguard-tools missing)" >&2; exit 0; }
+[ $# -ge 1 ] && [ -d "$1" ] || { echo "wireguard: no config mount — identity would not survive a reboot, not provisioning" >&2; exit 1; }
+KV="$1/wireguard.conf"
+
+PRIV=""; PUB=""; TUNIP=""
+if [ -r "$KV" ]; then
+    PRIV=$(  sed -n 's/^PRIVKEY=//p' "$KV" | head -n 1)
+    PUB=$(   sed -n 's/^PUBKEY=//p'  "$KV" | head -n 1)
+    TUNIP=$( sed -n 's/^TUNIP=//p'   "$KV" | head -n 1 | tr -d \'\")
+fi
+
+if [ -z "$PRIV" ] || [ -z "$PUB" ]; then
+    PRIV=$(wg genkey) || { echo "wireguard: wg genkey failed" >&2; exit 1; }
+    PUB=$(printf '%s\n' "$PRIV" | wg pubkey) || { echo "wireguard: wg pubkey failed" >&2; exit 1; }
+    # Persist BEFORE using it: an unpersisted key would silently rotate every
+    # boot and break hub enrollment.
+    if ! printf '# kali-live-headless wireguard identity - generated on first boot.\n# PRIVKEY IS A SECRET (plaintext, same threat model as the Wi-Fi PSK).\n# TUNIP is optional (set to pin the address instead of deriving it).\nPRIVKEY=%s\nPUBKEY=%s\n' \
+            "$PRIV" "$PUB" > "$KV" 2>/dev/null; then
+        echo "wireguard: cannot persist identity to $KV" >&2
+        exit 1
+    fi
+fi
+
+# Deterministic tunnel address from the PUBLIC key (never the secret).
+if [ -z "$TUNIP" ]; then
+    H1=$(printf '%s' "$PUB" | sha256sum | cut -c 1-2)
+    H2=$(printf '%s' "$PUB" | sha256sum | cut -c 3-4)
+    # 1..250 in both octets: avoid the .0 network and .255 broadcast addresses
+    TUNIP="$TUNNET.$(( 0x$H1 % 250 + 1 )).$(( 0x$H2 % 250 + 1 ))"
+fi
+
+umask 077
+mkdir -p /etc/wireguard
+{
+    printf '[Interface]\n'
+    printf 'Address = %s/24\n' "$TUNIP"
+    printf 'PrivateKey = %s\n' "$PRIV"
+    printf '\n[Peer]\n'
+    printf 'PublicKey = %s\n' "$PEER"
+    printf 'Endpoint = %s:%s\n' "$ENDPOINT" "$PORT"
+    # Route only the tunnel network through the hub: the stick keeps its own
+    # default route (Wi-Fi/LAN) and the hub forwards between peers.
+    printf 'AllowedIPs = %s.0/24\n' "$TUNNET"
+    printf 'PersistentKeepalive = 25\n'
+} > /etc/wireguard/wg0.conf
+
+if ! wg show wg0 >/dev/null 2>&1; then
+    wg-quick up wg0 >/dev/null 2>&1 \
+        || { echo "wireguard: wg-quick up failed (endpoint unreachable?)" >&2; }
+fi
+
+# Public key only — for the provision log, banner and hub enrollment.
+printf '%s %s\n' "$PUB" "$TUNIP"
