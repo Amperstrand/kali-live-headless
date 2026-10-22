@@ -147,7 +147,7 @@ fi
 chmod 0755 /out/rootfs/usr/local/sbin/kali-live-*
 
 step "mksquashfs (compression matched to parent)"
-mksquashfs /out/rootfs /out/fs.new.sq -comp "$COMP" -b "$BS" -no-append \
+mksquashfs /out/rootfs /out/fs.new.sq -comp "$COMP" -b "$BS" -noappend \
   -processors "$PROCESSORS" -no-progress >/out/mksquashfs.log 2>&1
 stat -c %s /out/fs.new.sq > /out/filesystem.size
 
