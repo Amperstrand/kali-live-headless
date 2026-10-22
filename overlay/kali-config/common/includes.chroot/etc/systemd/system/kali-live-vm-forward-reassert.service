@@ -1,0 +1,10 @@
+[Unit]
+Description=kali-live-headless: re-assert configured vm-forwards (companion to the kvm-firewall daemon)
+Documentation=file:///usr/local/sbin/kali-live-vm-forward
+# The kvm firewall daemon re-inserts its chains at the top of the base chains
+# every 30s; vm-forward rules must be re-asserted on the same cadence or an
+# allowed inbound flow silently dies on the next daemon pass.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/kali-live-vm-forward reassert

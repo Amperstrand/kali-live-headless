@@ -18,6 +18,7 @@ systemctl enable avahi-daemon.service 2>&1 || true
 systemctl enable kali-live-headless-provision.service 2>&1 || true
 systemctl enable kali-live-console-banner.service 2>&1 || true
 systemctl enable kali-live-wifi-watchdog.service 2>&1 || true
+systemctl enable kali-live-vm-forward-reassert.timer 2>&1 || true
 
 # DEFENSE: enforce exec bits on every shipped script — a git mode mishap
 # once shipped 0644 units (203/EXEC) twice; never again (test.sh also asserts)
