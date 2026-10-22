@@ -72,6 +72,13 @@ drift is absorbed by bumping the pin, nothing else.
   `git worktree` (e.g. `git worktree add --detach <dir> <ref>` + copy
   `./config` in, run `./test.sh --iso <path>`). HEAD's suite asserts HEAD's
   features and will false-fail against older images.
+- **Verdict capture**: `echo "[$(date)] rc=$?"` always prints `rc=0` — the
+  command substitution runs first and resets `$?`. Capture the rc into a
+  variable on the line *after* the command, before any substitution. (Chains
+  5/7/8 did this wrong: `output/CHAIN-STATUS` records rc=0 for suites whose log
+  says `RESULT: FAIL`, and chain5's checksum gate ran `sha512sum -c` from the
+  repo root instead of `output/`, reporting a bogus ISO failure. The file is
+  annotated; `output/test-run*.log` is the only real verdict.)
 - **ISO artifacts**: never commit ISO bytes (gitignored by design — each image
   bakes the PSK, host keys and console password; the repo is public). Version
   them by *provenance* instead: every build gets a row in `BUILDS.md` (build

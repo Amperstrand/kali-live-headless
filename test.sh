@@ -376,6 +376,31 @@ else
   record pass "qemu accel" "$ACCEL"
   klh_info "CD-ROM boots (BIOS/UEFI) allow ${CD_BOOT_TIMEOUT}s: the ISO's ~226MB initrd crawls over emulated ATAPI; direct-kernel boots (override/forensic) get ${BOOT_TIMEOUT}s"
 
+  # Preflight: every boot stage below forwards host 127.0.0.1:$PORT to the
+  # guest's sshd. A QEMU left over from an interrupted run still holds the
+  # port (its pidfile may already be gone), and then every stage burns a full
+  # timeout and reports a misleading "did not boot to SSH" FAIL — 2026-10-22
+  # lost 40 min of BIOS wait plus three more stages that way. Reap pidfile
+  # leftovers, then refuse to start if the port is still taken.
+  PORT_OK=true
+  PORT=2222
+  for _pf in "$SCRATCH"/qemu-*.pid; do
+    [ -e "$_pf" ] || continue
+    _p=$(cat "$_pf" 2>/dev/null || true)
+    if [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null; then
+      klh_warn "leftover QEMU from an earlier run ($_pf, pid $_p) — killing it"
+      kill "$_p" 2>/dev/null || true
+    fi
+    rm -f "$_pf"
+  done
+  port_listening() { (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; }
+  for _ in 1 2 3 4 5; do port_listening || break; sleep 2; done
+  if port_listening; then
+    _owner=$(ss -ltnp 2>/dev/null | awk -v p=":$PORT" '$4 ~ p {print $NF}' | head -1 || true)
+    record fail "qemu: port $PORT free" "already in use${_owner:+ by $_owner} — kill the stale listener and re-run (see AGENTS.md watch list: leaked QEMU)"
+    PORT_OK=false
+  fi
+
   # extract kernel+initrd once for the direct-kernel boots (override + forensic)
   KERN_OK=false
   EX_MNT="$SCRATCH/iso-extract"; mkdir -p "$EX_MNT"
@@ -390,9 +415,15 @@ else
   fi
   [ "$KERN_OK" = true ] || record skip "kernel/initrd extraction" "override+forensic boots need them"
 
-  PORT=2222
-  if [ -n "$SSH_KEY" ]; then
-    SSH_OPTS=(-F none -i "$SSH_KEY" -p "$PORT" -o UserKnownHostsFile="$SCRATCH/known_hosts" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes kali@127.0.0.1)
+  if [ -n "$SSH_KEY" ] && [ "$PORT_OK" = true ]; then
+    # Reset the transport's host-key memory first: a stale known_hosts from a
+    # different ISO makes 'accept-new' refuse the *changed* key, so every stage
+    # reports "did not boot to SSH" even though the guest booted (2026-10-22:
+    # the whole C-E section false-failed exactly this way against a healthy
+    # guest). Real host-key drift is asserted explicitly in common_guest_checks
+    # against the baked fingerprint, so the transport must not gate on it.
+    rm -f "$SCRATCH/known_hosts"
+    SSH_OPTS=(-F none -i "$SSH_KEY" -p "$PORT" -o UserKnownHostsFile="$SCRATCH/known_hosts" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes kali@127.0.0.1)
 
     guest() { ssh "${SSH_OPTS[@]}" "$@" 2>/dev/null; }
     guest_sudo() { printf 'kali\n' | ssh "${SSH_OPTS[@]}" "sudo -S -p '' $*" 2>/dev/null; }
@@ -526,7 +557,7 @@ else
       WITNESS_MD5_AFTER=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
       [ "$WITNESS_MD5" = "$WITNESS_MD5_AFTER" ] && record pass "bios: witness disk byte-identical (no internal-disk writes)" || record fail "bios: witness disk WAS MODIFIED"
     else
-      record fail "bios: booted to SSH" "timeout after ${BOOT_TIMEOUT}s — see $SCRATCH/serial-bios.log"
+      record fail "bios: booted to SSH" "timeout after ${CD_BOOT_TIMEOUT}s — the menu boot logs to VGA only, so serial-bios.log can be empty while the firmware is still progressing"
       kill_qemu bios
     fi
 
@@ -573,7 +604,7 @@ else
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
             kill -9 "$QPID" 2>/dev/null || true
           else
-            record fail "override: booted to SSH" "see $SCRATCH/serial-override.log"
+            record fail "override: booted to SSH" "timeout after ${BOOT_TIMEOUT}s — see $SCRATCH/serial-override.log"
             kill_qemu override
           fi
         else
@@ -610,7 +641,7 @@ else
         WITNESS_MD5_AFTER=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
         [ "$WITNESS_MD5" = "$WITNESS_MD5_AFTER" ] && record pass "uefi: witness disk byte-identical" || record fail "uefi: witness disk WAS MODIFIED"
       else
-        record fail "uefi: booted to SSH" "see $SCRATCH/serial-uefi.log"
+        record fail "uefi: booted to SSH" "timeout after ${CD_BOOT_TIMEOUT}s — see $SCRATCH/serial-uefi.log"
         kill_qemu uefi
       fi
     else
@@ -641,10 +672,13 @@ else
             WITNESS_MD5_AFTER=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
             [ "$WITNESS_MD5" = "$WITNESS_MD5_AFTER" ] && record pass "forensic: witness disk byte-identical (no automount/no writes)" || record fail "forensic: witness disk WAS MODIFIED"
           else
-            record fail "forensic: booted to SSH" "see $SCRATCH/serial-forensic.log"
+            record fail "forensic: booted to SSH" "timeout after ${BOOT_TIMEOUT}s — see $SCRATCH/serial-forensic.log"
             kill_qemu forensic
           fi
     fi
+  elif [ "$PORT_OK" != true ]; then
+    : # already recorded as a failure in the port preflight above — do not
+      # add three more misleading "did not boot to SSH" failures
   else
     record skip "qemu" "no SSH private key available for the baked public key"
   fi
