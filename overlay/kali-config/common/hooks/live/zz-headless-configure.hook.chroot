@@ -33,10 +33,14 @@ systemctl enable kali-live-kvm-enable.service 2>&1 || true
 systemctl enable kali-live-kvm-firewall.service 2>&1 || true
 
 # Deterministic virbr0: autostart the default network (kali-live-kvm-enable
-# also tries at runtime — socket-activation makes that work even when
-# libvirtd.service is not up; this symlink is the belt to its braces, the
-# build #11 lesson: an absent virbr0 silently disarmed the guest firewall).
-if [ -d /var/lib/libvirt/qemu/networks ] && [ -f /var/lib/libvirt/qemu/networks/default.xml ]; then
+# also does it at runtime — socket-activation makes that work even when
+# libvirtd.service is not up). This symlink is the belt to its braces.
+# NB: default.xml usually does NOT exist in the build chroot (libvirtd
+# creates it on first run, not at package install) — so do NOT gate on
+# it: a dangling ../default.xml symlink is harmless and resolves the
+# moment libvirtd materializes the file (build #14 hardware lesson:
+# the gated version silently never created anything).
+if [ -d /var/lib/libvirt/qemu/networks ]; then
     mkdir -p /var/lib/libvirt/qemu/networks/autostart
     ln -sf ../default.xml /var/lib/libvirt/qemu/networks/autostart/default.xml
 fi
