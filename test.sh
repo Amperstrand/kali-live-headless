@@ -331,6 +331,7 @@ else
       for u in libvirtd kali-live-kvm-enable kali-live-kvm-firewall; do
         sudo test -L "$SQ_MNT/etc/systemd/system/multi-user.target.wants/$u.service" && record pass "enabled: $u" || record fail "enabled: $u"
       done
+      sudo test -L "$SQ_MNT/etc/systemd/system/timers.target.wants/kali-live-vm-forward-reassert.timer" && record pass "enabled: vm-forward-reassert.timer" || record fail "enabled: vm-forward-reassert.timer"
     fi
     for s in kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-headless-wifi-gen kali-live-kvm-enable kali-live-kvm-firewall kali-live-wireguard-init kali-live-vm-forward; do
       sudo test -x "$SQ_MNT/usr/local/sbin/$s" && record pass "script executable: $s" || record fail "script executable: $s"
