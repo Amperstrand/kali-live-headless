@@ -18,8 +18,8 @@
 # QEMU tests use virtual ETHERNET. Physical Wi-Fi hardware compatibility is
 # NOT covered here — see README.md "Physical hardware tests".
 #
-# Usage: ./test.sh [--skip-qemu] [--only-static] [--no-uefi] [--no-forensic]
-#                  [--iso PATH] [--ssh-key PATH]
+# Usage: ./test.sh [--level static|content|boot] [--skip-qemu] [--only-static]
+#                  [--no-uefi] [--no-forensic] [--iso PATH] [--ssh-key PATH]
 
 set -uo pipefail
 
@@ -32,12 +32,14 @@ mkdir -p "$SCRATCH"
 
 RUN_QEMU=true RUN_UEFI=true RUN_FORENSIC=true
 ONLY_STATIC=false
+LEVEL="full"
 ISO_ARG="" SSH_KEY_ARG=""
 
 [ $# -eq 0 ] || while [ $# -gt 0 ]; do
   case "$1" in
     --skip-qemu)   RUN_QEMU=false; shift ;;
     --only-static) ONLY_STATIC=true; shift ;;
+    --level)       LEVEL=${2:?}; shift 2 ;;
     --no-uefi)     RUN_UEFI=false; shift ;;
     --no-forensic) RUN_FORENSIC=false; shift ;;
     --iso)         ISO_ARG=${2:?}; shift 2 ;;
@@ -46,6 +48,17 @@ ISO_ARG="" SSH_KEY_ARG=""
     *) klh_die "unknown option: $1" ;;
   esac
 done
+
+# Test depth, for iteration speed. Small changes (a hook tweak, a docs/packaging
+# edit) usually only need `static` or `content`; the boot suite is the gate for
+# anything that ships.
+case "$LEVEL" in
+  static)      ONLY_STATIC=true; RUN_QEMU=false ;;
+  content)     RUN_QEMU=false ;;
+  boot|full)   : ;;
+  *) klh_die "unknown --level '$LEVEL' (static | content | boot)" ;;
+esac
+klh_info "level: $LEVEL (static = no VM, content = + ISO inspection, boot = + QEMU boots)"
 
 PASS=0 FAIL=0 SKIP=0
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -211,6 +224,16 @@ section "B. ISO content"
 
 find_iso() {
   if [ -n "$ISO_ARG" ]; then echo "$ISO_ARG"; return; fi
+  # Prefer the newest archived build: archives are the versioned artifacts and
+  # the slot is only a last-write convenience pointer (which a failed build can
+  # leave stale). Fall back to the slot when nothing is archived yet.
+  local newest
+  newest=$(find "$REPO_DIR/output" -maxdepth 1 -type d -name 'iso-build*' 2>/dev/null \
+    | sed 's/.*iso-build//' | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
+  if [ -n "$newest" ] && [ -f "$REPO_DIR/output/iso-build$newest/kali-linux-rolling-live-amd64.iso" ]; then
+    echo "$REPO_DIR/output/iso-build$newest/kali-linux-rolling-live-amd64.iso"
+    return
+  fi
   ls -t "$REPO_DIR"/output/kali-linux-*-live-*.iso 2>/dev/null | head -1 || true
 }
 ISO=$(find_iso)
