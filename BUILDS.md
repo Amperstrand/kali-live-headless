@@ -96,6 +96,23 @@ Explicit `--iso` is still the gold standard for gating a specific build.
   Wi-Fi, hostname, avahi, watchdog all work — provisioning of
   password/override/libvirt-group does not).
 
+### Build #11 on hardware (x280, 2026-10-22) — evidence for the ledger
+
+- **The QEMU suite predicts hardware exactly.** Cold boot of stock #11 on
+  the laptop reproduced the three QEMU findings one-to-one: provision
+  `failed/exit-code` (the bashism), `kvm-firewall` stuck `activating`
+  (300 s virbr0 wait), `virsh` as kali → polkit error (no libvirt group).
+- **Time-to-SSH on a cold boot: 127 s** over Wi-Fi (README's "1-3 min" is
+  honest). "Boot finished" takes ~7 min only because the dead firewall job
+  blocks the boot target — the system is usable long before that; c8fd47c's
+  daemon removes the wait entirely.
+- **Real nested VM isolation proof (RAM-fixed state, pre-reboot):** a real
+  libvirt VM (Ubuntu 24.04 cloud image, KVM accel, DHCP lease from libvirt's
+  dnsmasq, cloud-init finished in 15 s) — internet egress **OK**,
+  guest→LAN gateway **BLOCKED**, guest→host sshd **BLOCKED**, ICMP to the
+  host **BLOCKED** (shield drops everything but DNS/DHCP by design). The
+  flagship feature works end-to-end on hardware.
+
 ### Build #11 device review (2026-10-22, live hardware — Lenovo x280, Wi-Fi)
 
 Physical boot on the deployment LAN, reviewed over SSH. What the suite
