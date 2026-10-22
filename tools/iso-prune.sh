@@ -57,7 +57,10 @@ row() { # build -> one line of the table
     size="MISSING"; date="-"; sha="-"
   fi
   verdict=$(sed -n 's/^- \*\*Verdict:\*\* //p' "$d/INDEX.md" 2>/dev/null | head -1)
-  [ -n "$verdict" ] || verdict=$(awk '/^## Verdict/{getline; while ($0 ~ /^$/) getline; print; exit}' "$d/INDEX.md" 2>/dev/null | cut -c1-60)
+  [ -n "$verdict" ] || verdict=$(awk '/^## Verdict/{getline; while ($0 ~ /^[[:space:]]*$/) getline; print; exit}' "$d/INDEX.md" 2>/dev/null | cut -c1-60)
+  # strip markdown bold + backticks so the table stays readable
+  verdict=${verdict//\*\*/}
+  verdict=$(printf '%s' "$verdict" | tr -d '\140')
   printf ' %-4s %-9s %-20s %-13s %s\n' "#$b" "$size" "$date" "${sha:--}" "${verdict:-_unrecorded_}"
 }
 
