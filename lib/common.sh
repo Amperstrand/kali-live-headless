@@ -105,6 +105,7 @@ klh_load_config() {
   : "${WG_ENDPOINT:=}"
   : "${WG_PEER_PUBKEY:=}"
   : "${WG_TUNNET:=10.66.0}"
+  : "${WG_HUB_ADDR:=}"
   : "${WG_PORT:=51820}"
 
   klh_validate_hostname "$HOSTNAME"     || klh_die "invalid HOSTNAME '$HOSTNAME' in $f"
@@ -131,6 +132,9 @@ klh_load_config() {
     printf '%s' "$WG_TUNNET" | grep -Eq '^(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}$' \
       || klh_die "invalid WG_TUNNET '$WG_TUNNET' (want RFC1918 /24 like 10.66.0)"
     printf '%s' "$WG_PORT" | grep -Eq '^[0-9]{1,5}$' || klh_die "invalid WG_PORT '$WG_PORT'"
+    # optional: the hub's own tunnel address when it lives outside WG_TUNNET
+    [ -z "$WG_HUB_ADDR" ] || printf '%s' "$WG_HUB_ADDR" | grep -Eq '^(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}(/32)?$' \
+      || klh_die "invalid WG_HUB_ADDR '$WG_HUB_ADDR' (want an RFC1918 address like 10.99.0.1, optionally /32)"
   fi
   [ -n "${WIFI_PSK:-}" ] || klh_die "WIFI_PSK not set in $f"
 }
