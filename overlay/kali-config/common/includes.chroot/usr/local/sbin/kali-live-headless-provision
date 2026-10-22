@@ -239,7 +239,11 @@ fi
 # ------------------------------------------------------------------ avahi
 if command -v systemctl > /dev/null 2>&1; then
     if systemctl is-active --quiet avahi-daemon 2>/dev/null; then
-        systemctl try-restart avahi-daemon 2>/dev/null || true
+        # --no-block: a plain try-restart from inside this unit deadlocks
+        # on reruns — avahi's restart job queues behind our own (Before=)
+        # activation, which waits for this script to exit. At boot avahi
+        # is not up yet, so only manual/idempotent reruns hit it.
+        systemctl try-restart --no-block avahi-daemon 2>/dev/null || true
     fi
 fi
 

@@ -31,6 +31,18 @@ systemctl enable virtlogd.socket 2>&1 || true
 systemctl enable kali-live-kvm-enable.service 2>&1 || true
 systemctl enable kali-live-kvm-firewall.service 2>&1 || true
 
+# Deterministic virbr0: autostart the default network (kali-live-kvm-enable
+# also tries at runtime — socket-activation makes that work even when
+# libvirtd.service is not up; this symlink is the belt to its braces, the
+# build #11 lesson: an absent virbr0 silently disarmed the guest firewall).
+if [ -d /var/lib/libvirt/qemu/networks ] && [ -f /var/lib/libvirt/qemu/networks/default.xml ]; then
+    mkdir -p /var/lib/libvirt/qemu/networks/autostart
+    ln -sf ../default.xml /var/lib/libvirt/qemu/networks/autostart/default.xml
+fi
+
+# console banner writes here (getty shows /etc/issue.d/* on the prompt)
+install -d -m 0755 /etc/issue.d 2>/dev/null || true
+
 # Passwordless sudo for the live user must be 0440 and syntactically valid
 if [ -f /etc/sudoers.d/kali-live-headless ]; then
     chown root:root /etc/sudoers.d/kali-live-headless

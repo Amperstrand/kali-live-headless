@@ -67,6 +67,7 @@ BANNER=$(printf '
 printf '%s\n' "$BANNER" > /dev/console 2>/dev/null || true
 # ...and on the getty login prompt (only if we have a real address).
 if [ -n "$(ipv4_addrs)" ]; then
+    install -d -m 0755 /etc/issue.d 2>/dev/null || mkdir -p /etc/issue.d 2>/dev/null || true
     printf '%s\n' "$BANNER" > /etc/issue.d/kali-live-headless.issue 2>/dev/null || true
 fi
 

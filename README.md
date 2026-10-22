@@ -274,6 +274,12 @@ short name, **generated on first boot** and persisted to the stick's
 stick keeps the same `npub` — its mesh address — across power cycles.
 
 * The ISO itself ships **no identity**: nothing baked, nothing in git.
+* **This requires a stick flashed with `./flash.sh`** — the identity is
+  generated on first boot and persisted to the `KLHCONFIG` partition. A
+  stick made by plain `dd` of the ISO has no config partition: no mesh
+  identity, no credential override (each boot logs "not provisioned",
+  the console banner says so, and `tools/hw-check.sh` fails the mesh
+  checks — pass `--no-mesh` only if that is deliberate).
 * The console banner prints the stick's `npub` (public — it's how peers
   find the node).
 * The `nsec` is a **secret stored in plaintext** on the FAT32 config
@@ -310,8 +316,9 @@ Security model (be honest with yourself about each layer):
 | Layer | State |
 |---|---|
 | Guest → **host disks** | isolated by default — guests see only their own qcow2/raw images; nothing is passed through unless you explicitly attach it with virt-manager/virsh |
-| Guest → **host services** (sshd, libvirt API, anything on the stick) | blocked: `kali-live-kvm-firewall` installs iptables rules on `virbr0` allowing only DHCP + DNS, dropping all other guest→host traffic |
-| Guest → **LAN/Internet** | allowed via libvirt's NAT — a guest behaves like any other client on your network. This is what makes "run build jobs" work out of the box |
+| Guest → **host services** (sshd, libvirt API, anything on the stick) | blocked: `kali-live-kvm-firewall` allows only DHCP + DNS from guests on `virbr0`, drops everything else to the host |
+| Guest → **LAN** (the network the stick itself sits on) | **blocked by default**: RFC1918 destinations (10/8, 172.16/12, 192.168/16) are dropped on FORWARD — a bench/lab LAN must not be reachable from inside a VM. To open it up for a specific deployment: `systemctl stop kali-live-kvm-firewall` and delete the matching DROP rule (the daemon re-adds rules while running — that is the point of it) |
+| Guest → **Internet** | allowed via libvirt's NAT — a guest can still fetch packages. This is what makes "run build jobs" work out of the box |
 | Guest → **guests** | separated by libvirt's bridge + firewalld/iptables rules (standard libvirt behavior) |
 | Full quarantine | if a workload must not reach anything, use virt-manager's "Isolated network" (or `virsh net-define` with no `<forward>`); the host shield above still applies |
 | Guest escape containment | guests run as confined `qemu` processes; no SELinux/AppArmor sVirt enforcement is guaranteed on the live session — treat the stick host as a disposable machine, which is the point |
@@ -319,6 +326,28 @@ Security model (be honest with yourself about each layer):
 The test suite asserts the stack: packages shipped, `libvirtd` enabled and
 reachable via `virsh` as the live user, host-shield service active
 (a guest VM with networking is not booted inside the QEMU test guest).
+On a real machine, `tools/hw-check.sh` additionally asserts the firewall
+*rules* and their *behaviour* (see below).
+
+#### How the guest firewall actually runs (the build #11 lesson)
+
+`kali-live-kvm-firewall` is a **daemon, not a oneshot**: `virbr0` can
+appear at any moment (libvirtd socket-activates; a user may start a
+network hours after boot), and libvirt (re)inserts its own chains at the
+**top** of the base chains whenever a network starts — shadowing any rule
+installed earlier. The daemon re-asserts the rules every 30 s:
+
+* INPUT on `virbr0`: allow DNS (53/udp) + DHCP (67/udp), drop the rest
+* FORWARD from `virbr0`: drop RFC1918 (10/8, 172.16/12, 192.168/16),
+  leave everything else to libvirt's NAT
+* rules always (re-)inserted at the top, above the libvirt jumps
+
+The first build that ships this correctly asserted `kvm-firewall` as
+"active" while installing **zero rules** — libvirt's default network had
+`Autostart: no` and never came up, so the old script waited 300 s and
+exited successfully. The image now autostarts the default network
+(chroot hook + `kali-live-kvm-enable`), and `tools/hw-check.sh` asserts
+the rules and their effect, never the service state alone.
 
 ## Security notes (audit)
 
@@ -380,6 +409,32 @@ disk (fast).
 **What QEMU cannot validate**: physical Wi-Fi radio/driver/firmware
 compatibility, real USB boot firmware quirks, and mDNS resolution on your
 LAN. The virtual NIC is ethernet. See the physical checklist below.
+
+### Deployed-device smoketest: `tools/hw-check.sh`
+
+The suite proves the *image*; `tools/hw-check.sh` proves the *deployed
+stick on real hardware*, over SSH, from the same `./config`:
+
+```console
+$ tools/hw-check.sh --host <ip-or-mdns-name>            # everything below
+$ tools/hw-check.sh --host <ip> --expect-npub npub1...  # identity stable across a reboot
+$ tools/hw-check.sh --host <ip> --no-mesh               # stick deliberately dd-flashed
+```
+
+It asserts what the QEMU suite asserts (sshd effective config, key-only
+auth, provisioning, watchdog, Wi-Fi on the real radio) **plus the things
+only a deployed device can show**: mesh identity provisioned and matching
+the `KLHCONFIG` partition (public `npub` only — the `nsec` is never
+read), the guest-firewall **rules** (not just the service state) and
+their **behaviour** — a simulated guest bridged into `virbr0` (netns +
+veth, the same FORWARD/NAT path a real guest takes) must NOT reach the
+LAN or the host's sshd, must resolve DNS via the host dnsmasq, and still
+egress to the internet. Every "blocked" assertion has a host-side
+positive control first, so an unreachable target can't fake a pass.
+
+Verdict + evidence land in `output/hw-check-*.log` and `output/hw-<ts>/`
+(gitignored) — record PASS in `BUILDS.md` and the ISO archive's
+`INDEX.md`.
 
 ### Physical hardware test checklist (not yet performed — do these first run)
 
