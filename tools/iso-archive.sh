@@ -78,9 +78,13 @@ else
   klh_info "marker: build $BUILD (commit $(sed -n 's/^commit=//p' "$MARKER"))"
 fi
 
+# Variants/arches produce different image names: archive — and link the slot —
+# under the name that was actually built.
+ISO_NAME=$(basename "$SRC")
+SLOT="$OUT_DIR/$ISO_NAME"
+
 DEST_DIR="$OUT_DIR/iso-build$BUILD"
 DEST="$DEST_DIR/$ISO_NAME"
-
 # ------------------------------------------------------------ safety guards
 # The source must never *be* an existing archive: if it resolves into an
 # iso-buildN/ directory, something wrote through the slot symlink (upstream
