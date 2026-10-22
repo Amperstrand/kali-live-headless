@@ -137,6 +137,10 @@ rm -f /out/fs.orig.sq
 
 step "apply overlay runtime files"
 rsync -a /overlay/kali-config/common/includes.chroot/ /out/rootfs/
+# Enforce the same modes the chroot hook enforces (zz-headless-configure):
+# rsync copies the git worktree's modes, which differ (sudoers 0644 in git vs
+# 0440 required — sudo IGNORES a bad-mode sudoers file, which would silently
+# kill passwordless sudo; found by the #13 gate, 2026-10-22).
 if [ "$KVM" != true ]; then
   rm -f /out/rootfs/etc/systemd/system/kali-live-kvm-enable.service \
         /out/rootfs/etc/systemd/system/kali-live-kvm-firewall.service \
@@ -144,7 +148,12 @@ if [ "$KVM" != true ]; then
         /out/rootfs/usr/local/sbin/kali-live-kvm-firewall \
         /out/rootfs/etc/modprobe.d/klh-kvm-nested.conf
 fi
-chmod 0755 /out/rootfs/usr/local/sbin/kali-live-*
+for f in /out/rootfs/usr/local/sbin/kali-live-*; do
+    [ -e "$f" ] && chmod 0755 "$f"
+done
+chown root:root /out/rootfs/etc/sudoers.d/kali-live-headless 2>/dev/null || true
+chmod 0440 /out/rootfs/etc/sudoers.d/kali-live-headless 2>/dev/null || true
+mkdir -p /out/rootfs/etc/issue.d; chmod 0755 /out/rootfs/etc/issue.d
 
 step "mksquashfs (compression matched to parent)"
 mksquashfs /out/rootfs /out/fs.new.sq -comp "$COMP" -b "$BS" -noappend \
@@ -198,6 +207,13 @@ while IFS= read -r f; do
     echo "  MISMATCH: $f"; FAIL=1
   fi
 done < /out/scope.txt
+# mode-sensitive files: content equal is NOT enough (the #13 sudoers lesson)
+[ "$(stat -c %a /out/check/etc/sudoers.d/kali-live-headless 2>/dev/null)" = "440" ] \
+  || { echo "  MODE MISMATCH: sudoers not 0440 in the new ISO"; FAIL=1; }
+for f in /out/check/usr/local/sbin/kali-live-*; do
+  [ -e "$f" ] || continue
+  [ "$(stat -c %a "$f")" = "755" ] || { echo "  MODE MISMATCH: $f not 0755"; FAIL=1; }
+done
 [ "$FAIL" -eq 0 ] || { echo "verification FAILED"; exit 1; }
 echo "  all $(wc -l < /out/scope.txt) scoped files verified inside the new ISO"
 
