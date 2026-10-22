@@ -97,7 +97,7 @@ for b in "${candidates[@]}"; do
   fi
   printf ' would delete #%s (%-8s) %s\n' "$b" "$(du -sh "$d" 2>/dev/null | cut -f1)" "$state"
 done
-total=$(du -sc "${candidates[@]/#/$OUT_DIR/iso-build}" 2>/dev/null | tail -1 | cut -f1)
+total=$(du -sc -B1 "${candidates[@]/#/$OUT_DIR/iso-build}" 2>/dev/null | tail -1 | cut -f1)
 echo
 klh_info "keeping #$newest${KEEP:+ and:$KEEP}"
 klh_info "reclaimable: $(numfmt --to=iec "${total:-0}")"
