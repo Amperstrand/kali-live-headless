@@ -18,8 +18,12 @@
 # QEMU tests use virtual ETHERNET. Physical Wi-Fi hardware compatibility is
 # NOT covered here — see README.md "Physical hardware tests".
 #
-# Usage: ./test.sh [--level static|content|boot] [--skip-qemu] [--only-static]
-#                  [--no-uefi] [--no-forensic] [--iso PATH] [--ssh-key PATH]
+# Usage: ./test.sh [--level static|content|boot] [--stage bios|override|uefi|forensic]
+#                  [--skip-qemu] [--only-static] [--no-uefi] [--no-forensic]
+#                  [--iso PATH] [--ssh-key PATH]
+#
+# --stage runs exactly ONE QEMU boot stage (a cheap boot gate for a
+# hotpatched build: ~10 min instead of ~45 for the full suite).
 
 set -uo pipefail
 
@@ -30,7 +34,7 @@ source "$REPO_DIR/lib/common.sh"
 SCRATCH="$REPO_DIR/test/scratch"
 mkdir -p "$SCRATCH"
 
-RUN_QEMU=true RUN_UEFI=true RUN_FORENSIC=true
+RUN_QEMU=true RUN_BIOS=true RUN_OVERRIDE=true RUN_UEFI=true RUN_FORENSIC=true
 ONLY_STATIC=false
 LEVEL="full"
 ISO_ARG="" SSH_KEY_ARG=""
@@ -38,6 +42,7 @@ ISO_ARG="" SSH_KEY_ARG=""
 [ $# -eq 0 ] || while [ $# -gt 0 ]; do
   case "$1" in
     --skip-qemu)   RUN_QEMU=false; shift ;;
+    --stage)       STAGE=${2:?}; shift 2 ;;
     --only-static) ONLY_STATIC=true; shift ;;
     --level)       LEVEL=${2:?}; shift 2 ;;
     --no-uefi)     RUN_UEFI=false; shift ;;
@@ -52,11 +57,18 @@ done
 # Test depth, for iteration speed. Small changes (a hook tweak, a docs/packaging
 # edit) usually only need `static` or `content`; the boot suite is the gate for
 # anything that ships.
+STAGE="${STAGE:-}"
+[ -n "$STAGE" ] && [ "$STAGE" != full ] && LEVEL=$STAGE
 case "$LEVEL" in
   static)      ONLY_STATIC=true; RUN_QEMU=false ;;
+  # --stage: run ONE boot stage (cheap boot gate for hotpatched builds).
+  bios)        RUN_OVERRIDE=false; RUN_UEFI=false; RUN_FORENSIC=false ;;
+  override)    RUN_BIOS=false;     RUN_UEFI=false; RUN_FORENSIC=false ;;
+  uefi)        RUN_BIOS=false; RUN_OVERRIDE=false; RUN_FORENSIC=false ;;
+  forensic)    RUN_BIOS=false; RUN_OVERRIDE=false; RUN_UEFI=false ;;
   content)     RUN_QEMU=false ;;
   boot|full)   : ;;
-  *) klh_die "unknown --level '$LEVEL' (static | content | boot)" ;;
+  *) klh_die "unknown --level/--stage '$LEVEL' (static | content | bios | override | uefi | forensic | boot)" ;;
 esac
 klh_info "level: $LEVEL (static = no VM, content = + ISO inspection, boot = + QEMU boots)"
 
@@ -605,6 +617,7 @@ else
     }
 
     # ---- C: BIOS
+    if [ "$RUN_BIOS" = true ]; then
     truncate -s 64M "$SCRATCH/witness.img"
     WITNESS_MD5=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
     QPID=$(boot_qemu bios)
@@ -621,7 +634,9 @@ else
       kill_qemu bios
     fi
 
+    fi
     # ---- C2: credential override from a KLHCONFIG partition (no rebuild)
+    if [ "$RUN_OVERRIDE" = true ] && [ "$KERN_OK" = true ]; then
     # Boots with a second disk labeled KLHCONFIG carrying headless-wifi.conf
     # with DIFFERENT credentials; asserts the provisioner regenerated the
     # NM profile from it (this is the "password change without rebuild" path).
@@ -676,6 +691,7 @@ else
     else
       record skip "config override" "no mkfs.vfat/mke2fs on host"
     fi
+    fi   # RUN_OVERRIDE gate
 
     # ---- D: UEFI
     OVMF_CODE=""; OVMF_VARS=""
