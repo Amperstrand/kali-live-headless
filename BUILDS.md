@@ -83,7 +83,7 @@ Explicit `--iso` is still the gold standard for gating a specific build.
 | #13 | 2026-10-22 16:44 | `e2fba5cca92b` | `d99ad01` (hotpatch of #12) | yes | live, autoboot 5 s | content 96/4 (all 4 = build-time-only gaps: WG package/staging, timer enablement) + BIOS boots (El Torito fix ✓) but **sudo dead** — rsync leaked uid-1000 onto /etc/sudoers.d (fixed 3040beb, not re-cut: #14 supersedes) | *(pruned 2026-10-22 — defective; see above)* |
 | #14 | 2026-10-22 16:34 | `9b488573dd0c` | `55c96cc` (clean build) | yes | live, autoboot 5 s | **182 pass / 0 fail** + hardware run #1: provision/npub/keygen green on bare metal; **WG derivation bug found live** (5-octet addr, fixed 4fb79f7) then **hub handshake completed** after hot-fix | `output/iso-build14/` ⭐ |
 
-| #15 | 2026-10-22 23:14 | `2b00dc55bbf6` | `6f5a7ca` (hotpatch of #14) | yes | live, autoboot 5 s | **content 101/0 + override boot 107/0** incl. the new wg0-with-valid-address assert — the flash-and-forget WireGuard image | `output/iso-build15/` ⭐ |
+| #15 | 2026-10-22 23:14 | `2b00dc55bbf6` | `6f5a7ca` (hotpatch of #14) | yes | live, autoboot 5 s | **content 101/0 + override 107/0 + BIOS 128/0** (CD-ROM boot too) incl. the new wg0-with-valid-address assert — the flash-and-forget WireGuard image | `output/iso-build15/` ⭐ |
 
 ### Build #11 detail (2026-10-22)
 
