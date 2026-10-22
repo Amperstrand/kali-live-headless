@@ -45,16 +45,16 @@ Explicit `--iso` is still the gold standard for gating a specific build.
   `cleanup_fs force` at stage [1/4] and wipes `chroot/`, `cache/` and
   `config/` on every run, so `-k/--keep` cannot reuse a chroot. Anyone
   promising a "cached build" flag is lying to you.
-- **apt-cacher-ng on `127.0.0.1:3142`** (docker container `apt-cacher-ng`,
-  `--restart unless-stopped`, volume `apt-cacher-ng`; image recipe kept in
-  `tools/apt-cacher-image-Dockerfile`) — upstream autodetects it and exports
-  `http_proxy` for the whole build (the build container runs
-  `--network host`). Every clean build after the first reuses the package
-  cache. **The image strips acng's `Remap-*` lines**: its virtual-host
-  normalization conflated `dists/<suite>/main` and `/contrib` URLs into one
-  cache entry and served wrong bytes to apt (2026-10-22 — caught because a
-  unit test's apt failed hash checks; verified fixed with distinct
-  main/contrib/non-free fetches, identical on cache hits).
+- **DO NOT run an apt-cacher-ng on :3142** (2026-10-22 postmortem): upstream
+  autodetects it and would route the whole build through it — but acng
+  conflated `dists/<suite>/main` and `/contrib` URLs into one cache entry and
+  served WRONG BYTES to apt (caught by apt's own hash checks; persisted even
+  with `Remap-*` stripped and a wiped volume, i.e. a live keep-alive bug, not
+  stale data). A proxy that feeds apt wrong bytes is worse than no proxy, so
+  the container was removed — `tools/apt-cacher-image-Dockerfile` is kept as
+  the negative evidence. Downloads are only ~3 min of a ~3h build anyway
+  (profiled 2026-10-22); if that ever matters, snapshot live-build's own
+  `cache/packages*` between builds instead of using a proxy.
 - **`tools/iso-hotpatch.sh`** — overlay-only changes (a script, a unit, the
   sshd drop-in) repack an archived ISO in ~30 min instead of ~3h. Scoped to
   `includes.chroot` runtime files; anything else needs a clean build.
