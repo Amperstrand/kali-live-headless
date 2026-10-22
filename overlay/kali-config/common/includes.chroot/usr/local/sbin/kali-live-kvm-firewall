@@ -66,10 +66,17 @@ forward_rules_ok() {
 }
 
 install_input() {
+    # Stateful: replies of flows the HOST initiates into the guest net
+    # (virt-manager, virsh, ssh into a VM, the hw-check VM test) arrive
+    # on INPUT -i virbr0 too — a stateless drop broke them all (found on
+    # real hardware 2026-10-22: stick->VM ssh timed out with the shield
+    # up; the QEMU suite never covers host->guest flows). ESTABLISHED
+    # first, then the dnsmasq services, then drop NEW inbound.
     iptables -D INPUT -i virbr0 -j DROP >/dev/null 2>&1
     iptables -I INPUT -i virbr0 -j DROP
     iptables -I INPUT -i virbr0 -p udp --dport 67 -j ACCEPT   # DHCP (dnsmasq)
     iptables -I INPUT -i virbr0 -p udp --dport 53 -j ACCEPT   # DNS  (dnsmasq)
+    iptables -I INPUT -i virbr0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 }
 
 install_forward() {
@@ -100,7 +107,8 @@ while :; do
         # re-ordered, rebuild.
         first=$(iptables -S INPUT 2>/dev/null | sed -n '2p')
         case "$first" in
-            *"-p udp --dport 53 -j ACCEPT"*) : ;;
+            *"-m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"*|\
+            *"-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"*) : ;;
             *) install_input; changed=1 ;;
         esac
     fi
