@@ -939,31 +939,33 @@ DOCKERFILE
             [ "$v" = "$VM_MARK1/$VM_MARK2" ] && record pass "vmstore: marker files readable + intact (in-guest)" || record fail "vmstore: marker files in-guest ($v)"
 
             # image lifecycle through the real tools as the live user
-            if guest 'kali-live-vm-create --id suite-smoke --cores 1 --ram-gb 1 --disk-gb 1' >/dev/null 2>&1; then
+            # (absolute paths: the ssh non-login shell PATH must not be
+            # load-bearing for /usr/local/sbin)
+            if guest '/usr/local/sbin/kali-live-vm-create --id suite-smoke --cores 1 --ram-gb 1 --disk-gb 1' >/dev/null 2>&1; then
               record pass "vmstore: vm-create made suite-smoke (1G raw, sparse)"
             else
               record fail "vmstore: vm-create made suite-smoke"
             fi
             v=$(guest 'test -f /mnt/klh-vmstore/vms/suite-smoke.image -a -f /mnt/klh-vmstore/vms/suite-smoke.meta && echo ok')
             [ "$v" = ok ] && record pass "vmstore: <id>.image + .meta visible in C:\\vms" || record fail "vmstore: image/meta files visible"
-            if guest 'kali-live-vm-create --id suite-smoke --cores 1 --ram-gb 1 --disk-gb 1' >/dev/null 2>&1; then
+            if guest '/usr/local/sbin/kali-live-vm-create --id suite-smoke --cores 1 --ram-gb 1 --disk-gb 1' >/dev/null 2>&1; then
               record fail "vmstore: duplicate id refused"
             else
               record pass "vmstore: duplicate id refused"
             fi
-            if guest 'kali-live-vm-create --id too-big --cores 1 --ram-gb 1 --disk-gb 900' >/dev/null 2>&1; then
+            if guest '/usr/local/sbin/kali-live-vm-create --id too-big --cores 1 --ram-gb 1 --disk-gb 900' >/dev/null 2>&1; then
               record fail "vmstore: oversized image refused (headroom guard)"
             else
               record pass "vmstore: oversized image refused (headroom guard)"
             fi
-            if guest 'kali-live-vm-rm --id suite-smoke' >/dev/null 2>&1; then
+            if guest '/usr/local/sbin/kali-live-vm-rm --id suite-smoke' >/dev/null 2>&1; then
               record pass "vmstore: vm-rm removed suite-smoke"
             else
               record fail "vmstore: vm-rm removed suite-smoke"
             fi
             v=$(guest 'test ! -e /mnt/klh-vmstore/vms/suite-smoke.image && echo gone')
             [ "$v" = gone ] && record pass "vmstore: image file deleted from the store" || record fail "vmstore: image file deletion"
-            v=$(guest 'kali-live-vm-rm --stale 2>/dev/null | tail -1')
+            v=$(guest '/usr/local/sbin/kali-live-vm-rm --stale 2>/dev/null | tail -1')
             case "$v" in removed*) record pass "vmstore: --stale sweep runs clean ($v)" ;; *) record fail "vmstore: --stale sweep ($v)" ;; esac
 
             guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu vmstore-live
