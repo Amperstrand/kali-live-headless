@@ -174,6 +174,21 @@ xorriso -indev "$SRC" -outdev "$OUT_ISO" \
   -map /out/filesystem.size /live/filesystem.size \
   ${MD5_ARGS[@]+"${MD5_ARGS[@]}"} >/out/xorriso-remux.log 2>&1
 
+step "pad to the parent's size (isohybrid MBR geometry stays valid)"
+# The parent's MBR partition entries describe the PARENT's extents. A smaller
+# remux leaves them pointing past EOF (libburn SORRY, and a stick dd would
+# carry an out-of-range partition table). Padding to the exact parent size
+# keeps every byte of the parent's boot geometry valid; readers ignore the
+# trailing zero padding.
+PSIZE=$(stat -c %s "$SRC")
+NSIZE=$(stat -c %s "$OUT_ISO")
+if [ "$NSIZE" -lt "$PSIZE" ]; then
+  truncate -s "$PSIZE" "$OUT_ISO"
+  echo "  padded $(( PSIZE - NSIZE )) bytes (new squashfs recompressed smaller)"
+elif [ "$NSIZE" -gt "$PSIZE" ]; then
+  echo "  WARNING: new ISO is $(( NSIZE - PSIZE )) bytes LARGER than the parent — its MBR partition entries now undershoot; boot-test before trusting"
+fi
+
 step "verify: read every scoped file back out of the NEW ISO and compare"
 xorriso -osirrox on -indev "$OUT_ISO" -extract /live/filesystem.squashfs /out/fs.check.sq >/dev/null 2>&1
 unsquashfs -no-progress -d /out/check /out/fs.check.sq $(cat /out/scope.txt) >/out/unsquashfs-check.log 2>&1
