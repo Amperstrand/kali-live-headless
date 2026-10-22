@@ -13,10 +13,30 @@
 #   3. Stage generated secrets (NetworkManager profile with the Wi-Fi PSK,
 #      authorized_keys, hostname, regdom defaults) into the same tree.
 #   4. Run upstream ./build.sh (host) or ./build-in-container.sh (Docker).
+#   5. Archive the ISO into output/iso-build<N>/ (checksums + provenance,
+#      see BUILDS.md) and point the output/kali-*.iso slot symlink at it.
+#
+# Two build ways, and which one to use:
+#   ./build.sh                 full pipeline (debootstrap + every package).
+#                              Required for release builds, pin bumps and any
+#                              package-list change. ~3h.
+#   tools/iso-hotpatch.sh      repack an existing ISO's squashfs with new
+#                              overlay files (scripts/units/config), no apt, no
+#                              debootstrap. ~30 min. Only for overlay-only
+#                              changes — never for package changes.
+#
+# There is no "cached chroot" build: upstream's build.sh calls
+# cleanup_fs force at stage [1/4] and wipes chroot/, cache/ and config/
+# unconditionally, so `-k/--keep` only preserves artifacts *after* a build
+# (still useful for debugging a failure, see --keep-artifacts).
 #
 # Secrets are staged only for the duration of the build and scrubbed
 # afterwards (disable with --keep-secrets). ./config keeps the only other
 # copy (chmod 600, git-ignored).
+#
+# The build runs under a lock (one build per output dir) and the ISO is
+# written to a staging dir first, so a failed build can never destroy the
+# previous archive (build #9 was lost that way).
 
 set -euo pipefail
 
@@ -34,7 +54,9 @@ OVERLAY_DIR="$REPO_DIR/overlay/kali-config/common"
 KEEP_SECRETS=false
 FORCE_RECLONE=false
 DRY_RUN=false
-OPT_OUT="" OPT_VARIANT="" OPT_ARCH="" OPT_BRANCH="" OPT_REF=""
+KEEP_ARTIFACTS=false
+ARCHIVE=true
+OPT_OUT="" OPT_VARIANT="" OPT_ARCH="" OPT_BRANCH="" OPT_REF="" OPT_NUMBER=""
 
 usage() {
   cat <<EOF
@@ -46,10 +68,20 @@ Options:
   -a, --arch A         Architecture (default: amd64)
   -b, --branch B       Kali branch (default: kali-rolling)
   -R, --ref REF        Pin upstream kali-live git ref (commit or branch)
+      --keep-artifacts Keep the chroot/binary tree after the build (upstream
+                       -k) — for debugging a failed run, not for speed
+      --number N       Archive this build as output/iso-buildN/
+                       (default: next free number)
+      --no-archive     Leave the ISO in the output dir, do not archive it
       --keep-secrets   Keep staged secrets in build/ after the build
       --force-reclone  Discard and re-clone the upstream tree
       --dry-run        Stage and validate only, do not build
   -h, --help           This help
+
+Examples:
+  ./build.sh                        # full build (release; ~3h)
+  tools/iso-hotpatch.sh --build 11  # overlay-only repack (~30 min)
+  ./test.sh --level static  # 17s: syntax/config/units, no ISO, no VM
 EOF
   exit 0
 }
@@ -61,6 +93,9 @@ EOF
     -a|--arch)         OPT_ARCH=${2:?}; shift 2 ;;
     -b|--branch)       OPT_BRANCH=${2:?}; shift 2 ;;
     -R|--ref)          OPT_REF=${2:?}; shift 2 ;;
+    --keep-artifacts)  KEEP_ARTIFACTS=true; shift ;;
+    --number)          OPT_NUMBER=${2:?}; shift 2 ;;
+    --no-archive)      ARCHIVE=false; shift ;;
     --keep-secrets)    KEEP_SECRETS=true; shift ;;
     --force-reclone)   FORCE_RECLONE=true; shift ;;
     --dry-run)         DRY_RUN=true; shift ;;
@@ -81,6 +116,27 @@ klh_check_config_perms "$CONFIG_FILE"
 OUT_DIR="${OUT_DIR:-$REPO_DIR/output}"
 mkdir -p "$OUT_DIR"
 OUT_DIR=$(realpath "$OUT_DIR")
+
+# ------------------------------------------------------- one build at a time
+# Two concurrent runs share build/kali-live (the chroot) and silently produce
+# garbage; killed drivers used to leave orphaned clients spinning for days
+# (2026-10-22, ~1.3 CPU-days). A lock makes overlap impossible.
+klh_require_cmd flock
+LOCK_FILE="$OUT_DIR/.build.lock"
+exec 9>>"$LOCK_FILE"
+if ! flock -n 9; then
+  klh_die "another build already holds $LOCK_FILE ($(cat "$LOCK_FILE" 2>/dev/null || echo 'no holder info')) — wait for it, or delete the lock file if it is stale"
+fi
+printf 'pid=%s started=%s\n' "$$" "$(date -Is)" > "$LOCK_FILE"
+
+next_build_number() {
+  local last
+  last=$(find "$OUT_DIR" -maxdepth 1 -type d -name 'iso-build*' 2>/dev/null \
+    | sed 's/.*iso-build//' | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
+  echo $(( ${last:-0} + 1 ))
+}
+BUILD_NUM=${OPT_NUMBER:-$(next_build_number)}
+STAGE_OUT="$OUT_DIR/.stage-$BUILD_NUM"
 
 SSH_PUBKEY_PATH=$(klh_expand_tilde "$SSH_PUBKEY_PATH")
 [ -f "$SSH_PUBKEY_PATH" ] || klh_die "SSH public key not found: $SSH_PUBKEY_PATH (re-run ./configure.sh)"
@@ -253,8 +309,13 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 # ------------------------------------------------------------------ build
-BUILD_ARGS=(-a "$ARCH" -b "$BRANCH" -v "$VARIANT" -H "$HOSTNAME" -o "$OUT_DIR")
+# The ISO is written to a staging dir, never straight into the output dir:
+# archiving then moves it into output/iso-buildN/, so a failed or concurrent
+# build cannot destroy the previous image.
+mkdir -p "$STAGE_OUT"
+BUILD_ARGS=(-a "$ARCH" -b "$BRANCH" -v "$VARIANT" -H "$HOSTNAME" -o "$STAGE_OUT")
 [ -n "${BUILD_MIRROR:-}" ] && BUILD_ARGS+=(-m "$BUILD_MIRROR")
+[ "$KEEP_ARTIFACTS" = true ] && BUILD_ARGS+=(-k)
 
 RC=0
 run_upstream() { # $@ = args (no exec: the EXIT trap must still scrub secrets)
@@ -277,8 +338,31 @@ run_upstream() { # $@ = args (no exec: the EXIT trap must still scrub secrets)
   klh_die "no build engine: install docker, or run on a Debian/Kali host with live-build"
 }
 
-klh_info "starting upstream build (this takes 30-90+ min and ~20G of disk)"
-run_upstream "${BUILD_ARGS[@]}"
+# Kill our build children on Ctrl-C/SIGTERM: a killed wrapper must not leave an
+# orphaned `docker run` client behind (that class burned ~1.3 CPU-days before
+# anyone noticed, because nothing was holding the container).
+BUILD_PID=""
+stop_build_children() {
+  klh_warn "interrupted — stopping the build"
+  if [ -n "$BUILD_PID" ] && kill -0 "$BUILD_PID" 2>/dev/null; then
+    kill -TERM "$BUILD_PID" 2>/dev/null || true
+  fi
+  local ids
+  ids=$( { docker ps -q --filter ancestor=kali-build/kali-live 2>/dev/null \
+           || sudo -n docker ps -q --filter ancestor=kali-build/kali-live 2>/dev/null; } | tr '\n' ' ' ) || true
+  if [ -n "$ids" ]; then
+    docker kill $ids 2>/dev/null || sudo -n docker kill $ids 2>/dev/null || true
+  fi
+  exit 130
+}
+trap stop_build_children INT TERM
+
+klh_info "starting upstream build (this takes 2-4h and ~20G of disk)"
+run_upstream "${BUILD_ARGS[@]}" & BUILD_PID=$!
+RC=0
+wait "$BUILD_PID" || RC=$?
+BUILD_PID=""
+trap - INT TERM
 
 # Re-assert defaults AFTER the long build call: bash reads scripts
 # incrementally, so if this file (or lib/common.sh) is edited while the
@@ -287,13 +371,34 @@ run_upstream "${BUILD_ARGS[@]}"
 # exactly this AFTER a successful 4-hour build — rc must reflect the
 # build, not a wrapper edit. (Rule stands: don't edit scripts mid-run.)
 : "${BOOT_DEFAULT:=live}" "${LIVE_PASSWORD_MODE:=random}" \
-  "${WITH_KVM:=true}" "${HOSTNAME:=kali-live}" "${OUT_DIR:?}"
+  "${WITH_KVM:=true}" "${HOSTNAME:=kali-live}" "${OUT_DIR:?}" \
+  "${KEEP_ARTIFACTS:=false}" "${ARCHIVE:=true}" "${BUILD_NUM:=?}" "${STAGE_OUT:?}"
 
 if [ "$RC" -ne 0 ]; then
   klh_die "upstream build failed (rc=$RC) — see the log in $OUT_DIR; staged secrets were scrubbed, partial chroot copies may remain under build/kali-live until the next run cleans them"
 fi
 
-echo
-klh_ok "build finished — artifacts in $OUT_DIR:"
-ls -lh "$OUT_DIR" | tail -n +2 || true
-klh_info "next: ./flash.sh   (then boot the USB and: ssh kali@${HOSTNAME}.local)"
+# ------------------------------------------------------------- archive
+STAGE_ISO=$(find "$STAGE_OUT" -maxdepth 1 -name '*.iso' -print -quit 2>/dev/null || true)
+[ -n "$STAGE_ISO" ] || klh_die "build reported success (rc=0) but no ISO in $STAGE_OUT"
+
+if [ "$ARCHIVE" = true ]; then
+  # Marker lets a manual `tools/iso-archive.sh` (no args) archive this build.
+  printf 'build=%s\ncommit=%s\nthis-branch\n' \
+    "$BUILD_NUM" "$(git -C "$REPO_DIR" rev-parse --short HEAD)" > "$OUT_DIR/.build-current"
+  "$REPO_DIR/tools/iso-archive.sh" --iso "$STAGE_ISO" --build "$BUILD_NUM"
+  rm -rf "$STAGE_OUT"
+  echo
+  klh_ok "build #$BUILD_NUM ready: $OUT_DIR/iso-build$BUILD_NUM/$(basename "$STAGE_ISO")"
+  klh_info "gate it:  ./test.sh --iso $OUT_DIR/iso-build$BUILD_NUM/$(basename "$STAGE_ISO")"
+  klh_info "flash it: ./flash.sh --build $BUILD_NUM"
+else
+  mv -f "$STAGE_ISO" "$OUT_DIR/"
+  [ -f "${STAGE_ISO}.sha512sum" ] && mv -f "${STAGE_ISO}.sha512sum" "$OUT_DIR/"
+  [ -f "${STAGE_ISO}.log" ] && mv -f "${STAGE_ISO}.log" "$OUT_DIR/"
+  rmdir "$STAGE_OUT" 2>/dev/null || true
+  echo
+  klh_ok "build finished — artifacts in $OUT_DIR:"
+  ls -lh "$OUT_DIR" | tail -n +2 || true
+fi
+klh_info "next: boot it / ssh kali@${HOSTNAME}.local"
