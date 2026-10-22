@@ -80,7 +80,8 @@ Explicit `--iso` is still the gold standard for gating a specific build.
 | #10 | 2026-10-21 18:15 | `e832c080d3f1` | `e53dae7` | yes | live, autoboot 5 s | Stage A+B 81 pass / **2 real fail** + 4 false fail (see below) | `output/iso-build10/` |
 | #11 | 2026-10-22 07:20 | `63483c55f779` | `fd8abd3` | yes | live, autoboot 5 s | 150 pass / **14 fail** — one root cause (see below); **not shippable** | `output/iso-build11/` |
 | #12 | 2026-10-22 11:59 | `8cfac3d2a559` | `fc52f39` | yes | live, autoboot 5 s | BIOS gate 119 pass / 7 fail — **all 7 expected** (6 features added after #12 started: WG package/staging/scripts, vm-forward; + old firewall oneshot still in it). Provision fixed, boots, virsh OK | `output/iso-build12/` |
-| #13 | 2026-10-22 16:44 | `e2fba5cca92b` | `d99ad01` (hotpatch of #12) | yes | live, autoboot 5 s | gates pending — carries provision fix + firewall daemon + vm-forward (timer unenabled: build-time) | `output/iso-build13/` |
+| #13 | 2026-10-22 16:44 | `e2fba5cca92b` | `d99ad01` (hotpatch of #12) | yes | live, autoboot 5 s | content 96/4 (all 4 = build-time-only gaps: WG package/staging, timer enablement) + BIOS boots (El Torito fix ✓) but **sudo dead** — rsync leaked uid-1000 onto /etc/sudoers.d (fixed 3040beb, not re-cut: #14 supersedes) | `output/iso-build13/` (**defective — do not flash**) |
+| #14 | 2026-10-22 16:34 | `9b488573dd0c` | `55c96cc` (clean build) | yes | live, autoboot 5 s | **182 pass / 0 fail — first fully green build** (all four boot stages, WG staging, vm-forward, firewall daemon) | `output/iso-build14/` ⭐ |
 
 ### Build #11 detail (2026-10-22)
 
