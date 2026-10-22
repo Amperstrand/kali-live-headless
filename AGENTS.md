@@ -39,6 +39,11 @@ drift is absorbed by bumping the pin, nothing else.
    lowercase — normalize case before exact-match greps; and newer
    NetworkManager dropped `connection.id` from `nmcli -g` fields — use
    `-g NAME`. Guest assertions must tolerate both old and new output.
+   Third case (2026-10-23, vm-store M1): `mount -t fuseblk -o uid=...`
+   dies on the new mount API (`fsconfig(): fuseblk: Unknown parameter
+   'uid'`) — FUSE option-bearing mounts must go through the helper
+   (`mount -t ntfs-3g`), which routes options to the userspace driver;
+   /proc/mounts still reports `fuseblk`.
 6. **QEMU suite environment**: `-cdrom` vs virtio-blk boot quirks are
    firmware-dependent (SeaBIOS refuses virtio firmware-boot of this ISO);
    re-verify stage layout if QEMU/SeaBIOS/OVMF updates change behavior.
@@ -49,7 +54,8 @@ drift is absorbed by bumping the pin, nothing else.
    onto image dirs and sudo dies). Never bypass them; always boot-gate a
    hotpatched build (`./test.sh --stage bios`) before flashing — three
    defective #13s were caught exactly there, and each lesson is asserted by
-   the tool now.
+   the tool now. It also recreates hook-owned unit enablement symlinks —
+   extend that list when adding units the chroot hook enables.
 8. **Orphaned build clients burn CPU silently** (found 2026-10-22): when the
    tmux that drives a build dies, the root-owned
    `sudo -E build-in-container.sh → sudo → docker run` chain can survive with
