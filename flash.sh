@@ -26,6 +26,7 @@ DEVICE=""
 ASSUME_YES=false
 LIST_ONLY=false
 DRY_RUN=false
+VERIFY_ONLY=false
 ORIG_ARGS=("$@")   # preserved across the sudo re-exec below
 
 usage() {
@@ -39,6 +40,8 @@ Usage: ./flash.sh [--build N | --iso PATH] [--device PATH] [--yes] [--dry-run] [
   --yes          Skip the typed confirmation (scripted use — dangerous)
   --dry-run      Check ISO, devices and target, then stop before writing
                  (runs unprivileged; use it to convince yourself first)
+  --verify-only  Finish an interrupted flash: verify what dd already wrote
+                 and add the KLHCONFIG partition. No write to the stick.
 
 If no removable USB device is found, manual flashing instructions are
 printed instead.
@@ -54,6 +57,7 @@ EOF
     --device)  DEVICE=${2:?}; shift 2 ;;
     --yes)     ASSUME_YES=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
+    --verify-only) VERIFY_ONLY=true; shift ;;
     -h|--help) usage ;;
     *) klh_die "unknown option: $1 (see --help)" ;;
   esac
@@ -66,6 +70,13 @@ fi
 
 # A dry run touches nothing, so it does not need (or ask for) root.
 [ "$DRY_RUN" = true ] || [ "$(id -u)" -eq 0 ] || exec sudo "$0" "${ORIG_ARGS[@]}"
+
+# bash reads scripts incrementally. If flash.sh is edited while a run is in
+# flight (dd alone runs ~16 min), bash resumes at a byte offset in the NEW
+# file and dies mid-token or silently skips whatever follows — 2026-10-22:
+# a mid-run edit cost a whole run its verification + config partition. The
+# stamp below lets the post-write guard detect that and stop loudly.
+SELF_STAMP=$(stat -c '%s %Y' "$0" 2>/dev/null || echo unknown)
 
 # ---------------------------------------------------------------- find ISO
 NAMED=""
@@ -221,18 +232,26 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 # --------------------------------------------------------------- write
-klh_info "unmounting any partitions on $DEVPATH (best effort)"
-lsblk -rn -o NAME,MOUNTPOINTS "$DEVPATH" | awk 'NF==2 {print $2}' | while read -r m; do
-  umount "$m" 2>/dev/null || true
-done
-blockdev --rereadpt "$DEVPATH" 2>/dev/null || true
+if [ "$VERIFY_ONLY" = true ]; then
+  klh_info "verify-only: not writing — checking what is already on $DEVPATH"
+else
+  klh_info "unmounting any partitions on $DEVPATH (best effort)"
+  lsblk -rn -o NAME,MOUNTPOINTS "$DEVPATH" | awk 'NF==2 {print $2}' | while read -r m; do
+    umount "$m" 2>/dev/null || true
+  done
+  blockdev --rereadpt "$DEVPATH" 2>/dev/null || true
 
-klh_info "writing ISO to $DEVPATH (this can take several minutes)"
-if ! dd if="$ISO" of="$DEVPATH" bs=4M iflag=fullblock conv=fsync status=progress; then
-  klh_die "dd failed — the device may be unusable/removed; do not boot from it"
+  klh_info "writing ISO to $DEVPATH (this can take several minutes)"
+  if ! dd if="$ISO" of="$DEVPATH" bs=4M iflag=fullblock conv=fsync status=progress; then
+    klh_die "dd failed — the device may be unusable/removed; do not boot from it"
+  fi
+  sync
+  blockdev --rereadpt "$DEVPATH" 2>/dev/null || true
+
+  # Was flash.sh edited while this run was in flight? (See SELF_STAMP above.)
+  now=$(stat -c '%s %Y' "$0" 2>/dev/null || echo changed)
+  [ "$now" = "$SELF_STAMP" ] || klh_die "flash.sh changed on disk DURING the write — it was edited while this run was in flight and bash's read position is now unreliable, so verification and the config partition were NOT done. Finish with: ./flash.sh --verify-only --device $DEVPATH --yes"
 fi
-sync
-blockdev --rereadpt "$DEVPATH" 2>/dev/null || true
 
 # -------------------------------------------------------------- verify
 klh_info "verifying written data (hashing ${DEVPATH} up to ISO size — can take a while)"

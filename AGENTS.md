@@ -60,9 +60,16 @@ drift is absorbed by bumping the pin, nothing else.
 - Builds run inside **tmux** with plain `> file 2>&1` redirect — never a
   pane-level `| tee` (pipe backpressure wedged three builds; see README
   "Rebuilding / long runs").
-- **Never edit `build.sh`, `test.sh`, or `lib/` while a run is in flight** —
-  bash reads incrementally; build #8 (2026-10-21) exited rc=1 *after a
-  successful 4h build* because the wrapper was edited mid-run.
+- **Never edit a script while one of its runs is in flight — `build.sh`,
+  `test.sh`, `flash.sh`, `lib/`, or anything under `tools/`**: bash reads
+  incrementally, and a 4h build or a 16-min `dd` gives it a huge window to
+  resume at a stale byte offset in the *new* file. Build #8 (2026-10-21)
+  exited rc=1 *after a successful 4h build* because the wrapper was edited
+  mid-run; 2026-10-22 the same thing hit a user's flash: the edit landed
+  during `dd`, and when it finished the run died with a bogus syntax error —
+  silently skipping verification and the KLHCONFIG partition. flash.sh now
+  self-detects a mid-run edit (stamp check after the write) and tells the
+  operator to finish with `--verify-only`.
 - A build needs ≥30G free under the repo; `output/` holds multi-GB ISOs —
   preserve known-good ones under `output/iso-build<N>/` before a risky build.
 - Secrets: `./config` holds the Wi-Fi PSK in plaintext **by design** (see
