@@ -213,10 +213,16 @@ fi
 # Default ntfs-3g (safety, research §1). ntfs3 only when explicitly chosen
 # AND the kernel module exists — build #14's kernel (7.1.5+kali) does not
 # ship it.
+# MOUNT TYPE NOTE: mounting FUSE via `mount -t fuseblk -o uid=...` fails on
+# the new mount API — util-linux passes 'uid' to fsconfig() and the kernel
+# fuseblk parser rejects it ("Unknown parameter 'uid'", seen live on the
+# #901 stage run). Mounting via the ntfs-3g HELPER (`mount -t ntfs-3g`)
+# routes the options to the userspace driver, which owns uid/gid/umask;
+# /proc/mounts still reports fuseblk.
 MOUNT_TYPE=""
 if [ "$DRIVER" = "ntfs-3g" ]; then
     if command -v ntfs-3g >/dev/null 2>&1; then
-        MOUNT_TYPE=fuseblk   # mount(8) resolves ntfs-3g via fuseblk
+        MOUNT_TYPE=ntfs-3g
     else
         log "ERROR: driver=ntfs-3g but ntfs-3g is not installed — refusing (install ntfs-3g or choose ntfs3 deliberately)"
         rm -f "$CONFFILE" 2>/dev/null || true
