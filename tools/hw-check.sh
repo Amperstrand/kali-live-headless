@@ -27,7 +27,7 @@ source "$REPO_DIR/lib/common.sh"
 
 klh_load_config "$REPO_DIR/config"
 
-HOST_ARG="" MODE="hw" TIMEOUT=300 EXPECT_NPUB="" NO_MESH=false EXPECT_WG="" NO_WG=false
+HOST_ARG="" MODE="hw" TIMEOUT=300 EXPECT_NPUB="" NO_MESH=false EXPECT_WG="" NO_WG=false TEST_VMFORWARD=false
 usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 [ $# -eq 0 ] || while [ $# -gt 0 ]; do
@@ -39,6 +39,7 @@ usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
     --no-mesh)     NO_MESH=true; shift ;;
     --expect-wg)   EXPECT_WG=${2:?}; shift 2 ;;
     --no-wg)       NO_WG=true; shift ;;
+    --vm-forward)  TEST_VMFORWARD=true; shift ;;
     -h|--help) usage ;;
     *) klh_die "unknown option: $1" ;;
   esac
@@ -290,6 +291,45 @@ REMOTE
   fi
 else
   record info "KVM stack not baked into this image"
+fi
+
+section "vm-forward behavioural test (one inbound port into the guest net)"
+if [ "$TEST_VMFORWARD" = true ]; then
+  LAN_IP=$(guest 'ip -4 addr show scope global | grep -oE "(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]+\.[0-9]+" | head -1')
+  if [ -z "$LAN_IP" ]; then
+    record fail "vm-forward" "stick has no LAN address to dial in on"
+  elif ! guest 'virsh -c qemu:///system net-info default 2>/dev/null | grep -q "Active:.*yes"' \
+       && ! guest_sudo 'virsh -c qemu:///system net-start default >/dev/null 2>&1'; then
+    record fail "vm-forward" "libvirt default network not available (virsh broken?)"
+  else
+    # stand-in "guest service": an alias IP on virbr0 with an HTTP listener.
+    guest_sudo 'ip addr add 192.168.122.250/24 dev virbr0 2>/dev/null; systemctl is-active --quiet libvirtd || true'
+    if guest 'command -v python3 >/dev/null'; then
+      guest_sudo 'nohup python3 -m http.server 2222 --bind 192.168.122.250 >/tmp/vmfw-test.log 2>&1 & echo $! > /run/vmfw-test.pid' >/dev/null 2>&1
+      sleep 2
+      if guest_sudo '/usr/local/sbin/kali-live-vm-forward add hwtest 192.168.122.250 2222 2222 >/dev/null 2>&1'; then
+        EXT_IF=$(guest 'ip -4 route get 192.168.122.250 2>/dev/null | grep -oE "dev [a-z0-9]+" | cut -d" " -f2')
+        # NOTE: this dials in over the LAN from THIS workstation — exactly the
+        # traffic the DNAT is designed to catch (PREROUTING, not OUTPUT).
+        code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 8 "http://$LAN_IP:2222/" || echo 000)
+        if [ "$code" = "200" ]; then
+          record pass "vm-forward: LAN:$LAN_IP:2222 reached the guest-net service" "through $EXT_IF DNAT + FORWARD"
+        else
+          record fail "vm-forward: inbound port" "HTTP $code from http://$LAN_IP:2222/ (want 200); check iptables -t nat -S PREROUTING on the stick"
+        fi
+        guest_sudo '/usr/local/sbin/kali-live-vm-forward remove hwtest >/dev/null 2>&1' || true
+        code2=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://$LAN_IP:2222/" || echo 000)
+        [ "$code2" = "000" ] && record pass "vm-forward: port closed again after remove" || record fail "vm-forward: port still open after remove (HTTP $code2)"
+      else
+        record fail "vm-forward" "kali-live-vm-forward add failed (shipped in this image?)"
+      fi
+      guest_sudo 'kill "$(cat /run/vmfw-test.pid 2>/dev/null)" 2>/dev/null; rm -f /run/vmfw-test.pid; ip addr del 192.168.122.250/24 dev virbr0 2>/dev/null' >/dev/null 2>&1 || true
+    else
+      record skip "vm-forward" "no python3 in the image for the stand-in listener"
+    fi
+  fi
+else
+  record info "vm-forward test skipped (pass --vm-forward to run it)"
 fi
 
 section "hardware health"
