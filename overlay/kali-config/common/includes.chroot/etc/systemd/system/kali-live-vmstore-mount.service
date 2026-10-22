@@ -1,0 +1,18 @@
+[Unit]
+Description=kali-live-headless: opt-in NTFS VM store mount + libvirt pool (KLHCONFIG vm-store.conf)
+# Design + safety gates: docs/vm-store-ntfs-research.md in the source repo
+After=local-fs.target libvirtd.service
+Wants=libvirtd.service
+ConditionPathExists=/usr/local/sbin/kali-live-vmstore-mount
+
+[Service]
+# Oneshot: mounts the NTFS partition (default: nothing to do — the feature
+# ships disabled and the script no-ops with success when KLHCONFIG carries
+# no vm-store.conf). RemainAfterExit so `is-active` reflects the mount for
+# the whole session.
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/kali-live-vmstore-mount
+
+[Install]
+WantedBy=multi-user.target

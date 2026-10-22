@@ -1,0 +1,338 @@
+#!/bin/sh
+# kali-live-vmstore-mount — opt-in NTFS VM store: mount + libvirt pool.
+#
+# Milestone M1 of docs/vm-store-ntfs-research.md. When the boot medium's
+# KLHCONFIG partition carries a valid vm-store.conf, this finds the NTFS
+# partition (e.g. the gaming PC's Windows C:), mounts it read-write with
+# ntfs-3g, ensures the configured folder (default C:\vms) exists, and
+# defines a libvirt directory storage pool over it. VM images then live
+# in a file on the NTFS disk instead of RAM.
+#
+# GATES (research doc §2 — each is a hard precondition, not advice):
+#   * forensic boot (kernel cmdline 'noautomount')  -> never mount
+#   * BitLocker-encrypted partition (FSTYPE BitLocker) -> refuse
+#   * hibernated / Fast-Startup volume              -> ntfs-3g mount fails;
+#     we surface the remediation (disable Fast Startup in Windows) and
+#     NEVER use remove_hiberfile/force
+#   * no vm-store.conf / enabled!=true              -> quiet no-op (exit 0)
+#
+# The Windows install is inside the live host's blast radius while this
+# mount exists: the feature ships DISABLED and only ever mounts RW when
+# explicitly configured (same trust decision as the Wi-Fi PSK, see README
+# "Threat model").
+#
+# Testability: --dry-run parses the config and resolves the plan (device,
+# options, pool target) WITHOUT mounting — driven by env overrides
+# KLH_VMSTORE_CONF / KLH_PROC_CMDLINE / KLH_LSBLK_FILE so the suite can
+# unit-test every gate as a non-root user.
+#
+# POSIX sh only — dash parses this file; no bashisms (build #11 lesson).
+
+set -u
+
+TAG=kali-live-vmstore
+MNT=/mnt/klh-vmstore
+POOL=klh-vmstore
+ENVFILE=/run/kali-live-vmstore.env
+DRY_RUN=false
+
+log() {
+    logger -t "$TAG" -- "$*" 2>/dev/null || true
+    # console copy: only when writable (non-root dry-runs would otherwise
+    # spray redirect errors)
+    if [ -w /dev/console ]; then
+        printf '[%s] %s\n' "$TAG" "$*" > /dev/console 2>/dev/null || true
+    fi
+}
+
+# ------------------------------------------------------------- config input
+# KLHCONFIG partition (same discovery as kali-live-headless-provision)
+CONF_SOURCE=""
+if [ -n "${KLH_VMSTORE_CONF:-}" ]; then
+    CONF_SOURCE=$KLH_VMSTORE_CONF          # unit tests: config from a file
+elif [ -b /dev/disk/by-label/KLHCONFIG ]; then
+    CONF_SOURCE=/dev/disk/by-label/KLHCONFIG
+else
+    CONF_SOURCE=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2 == "KLHCONFIG" { print "/dev/" $1; exit }')
+fi
+
+CMDLINE=/proc/cmdline
+[ -n "${KLH_PROC_CMDLINE:-}" ] && CMDLINE=$KLH_PROC_CMDLINE
+
+# lsblk source: real block devices, or a fixture file for --dry-run tests
+lsblk_rows() {
+    if [ -n "${KLH_LSBLK_FILE:-}" ]; then
+        cat "$KLH_LSBLK_FILE"
+    else
+        lsblk -rno NAME,FSTYPE,LABEL,SIZE,PARTUUID 2>/dev/null
+    fi
+}
+
+conf_value() { # $1=file $2=KEY -> first plain KEY=value value
+    [ -r "$1" ] || return 1
+    sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n 1
+}
+
+valid_dirname() { # single path component, Windows-legal
+    printf '%s' "$1" | grep -Eq '^[A-Za-z0-9._-]{1,32}$'
+}
+
+valid_driver() {
+    [ "$1" = "ntfs-3g" ] || [ "$1" = "ntfs3" ]
+}
+
+# read config from the KLHCONFIG partition (mounted ro, then released)
+read_conf() { # -> echoes the conf file to stdout
+    [ -n "$CONF_SOURCE" ] || return 1
+    if [ -f "$CONF_SOURCE" ]; then
+        cat "$CONF_SOURCE" 2>/dev/null
+        return 0
+    fi
+    [ -b "$CONF_SOURCE" ] || return 1
+    tmp=$(mktemp -d /run/kali-live-vmstore-conf.XXXXXX 2>/dev/null) || return 1
+    if mount -o ro "$CONF_SOURCE" "$tmp" 2>/dev/null; then
+        cat "$tmp/vm-store.conf" 2>/dev/null
+        umount "$tmp" 2>/dev/null || true
+    fi
+    rmdir "$tmp" 2>/dev/null || true
+    return 0
+}
+
+CONF=$(read_conf) || CONF=""
+if [ -z "$CONF" ]; then
+    # quiet no-op: feature ships disabled, absent config is normal
+    log "no vm-store.conf on KLHCONFIG — VM store not configured (no-op)"
+    exit 0
+fi
+CONFFILE=$(mktemp /tmp/vmstore-conf.XXXXXX 2>/dev/null || echo /dev/null)
+printf '%s\n' "$CONF" > "$CONFFILE" 2>/dev/null || true
+
+ENABLED=$(conf_value "$CONFFILE" enabled)
+PARTITION=$(conf_value "$CONFFILE" partition)
+DIR=$(conf_value "$CONFFILE" dir)
+DRIVER=$(conf_value "$CONFFILE" driver)
+RESERVED=$(conf_value "$CONFFILE" reserved_free_mb)
+
+# ------------------------------------------------------------- gates
+if [ "$ENABLED" != "true" ]; then
+    log "vm-store.conf present but enabled!=true — VM store stays off"
+    rm -f "$CONFFILE" 2>/dev/null || true
+    exit 0
+fi
+
+if grep -qw noautomount "$CMDLINE" 2>/dev/null; then
+    log "forensic boot (noautomount) — VM store deliberately NOT mounted"
+    rm -f "$CONFFILE" 2>/dev/null || true
+    exit 0
+fi
+
+[ -n "$PARTITION" ] || PARTITION=auto
+[ -n "$DIR" ] || DIR=vms
+[ -n "$DRIVER" ] || DRIVER=ntfs-3g
+[ -n "$RESERVED" ] || RESERVED=20480
+if ! valid_dirname "$DIR"; then
+    log "ERROR: vm-store.conf 'dir' must be one Windows-legal path component (got invalid value) — refusing"
+    rm -f "$CONFFILE" 2>/dev/null || true
+    exit 1
+fi
+if ! valid_driver "$DRIVER"; then
+    log "ERROR: vm-store.conf 'driver' must be ntfs-3g or ntfs3 — refusing"
+    rm -f "$CONFFILE" 2>/dev/null || true
+    exit 1
+fi
+case "$RESERVED" in
+    ''|*[!0-9]*) log "ERROR: vm-store.conf 'reserved_free_mb' must be a positive integer — refusing"; rm -f "$CONFFILE" 2>/dev/null || true; exit 1 ;;
+esac
+
+# ------------------------------------------------------------- partition pick
+# rows: NAME FSTYPE LABEL SIZE PARTUUID  (SIZE like 123.4G/512M for lsblk;
+# fixtures may use plain MB numbers — both sort fine with sort -g on the
+# numeric prefix)
+pick_device() {
+    case "$PARTITION" in
+        /dev/*)
+            lsblk_rows | awk -v d="${PARTITION#/dev/}" '$1 == d {print "/dev/" $1; exit}'
+            ;;
+        LABEL:*)
+            lsblk_rows | awk -v l="${PARTITION#LABEL:}" '$3 == l && $2 == "ntfs" {print "/dev/" $1; exit}'
+            ;;
+        PARTUUID:*)
+            lsblk_rows | awk -v u="${PARTITION#PARTUUID:}" '$5 == u && $2 == "ntfs" {print "/dev/" $1; exit}'
+            ;;
+        auto)
+            # largest NTFS partition (the Windows system disk on the target
+            # machines) — sizes must be normalized to MB BEFORE sorting:
+            # lsblk prints unit-suffixed strings ("500G" vs "1.5T") and a
+            # plain numeric sort picks 500 > 1.5. BitLocker volumes are
+            # excluded by the FSTYPE filter and get their own refusal below
+            # when they are the only candidate.
+            lsblk_rows | awk '
+                function mb(s,  u, v) {
+                    u = substr(s, length(s), 1)
+                    if (u !~ /[KMGTPE]/) return s + 0
+                    v = substr(s, 1, length(s) - 1) + 0
+                    if (u == "K") return v / 1024
+                    if (u == "M") return v
+                    if (u == "G") return v * 1024
+                    if (u == "T") return v * 1048576
+                    if (u == "P") return v * 1073741824
+                    return v * 1099511627776
+                }
+                $2 == "ntfs" { printf "%.0f /dev/%s\n", mb($4), $1 }
+            ' | sort -rn | head -n 1 | cut -d' ' -f2-
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+# BitLocker probe: any BitLocker partition matching the selector means the
+# store target is encrypted and unattended mounting is refused by design
+# (the recovery key would have to live in plaintext on the stick).
+bitlocker_candidate() {
+    case "$PARTITION" in
+        LABEL:*|PARTUUID:*) return 1 ;; # explicit selectors demand ntfs anyway
+    esac
+    lsblk_rows | grep -qi 'bitlocker' && return 0
+    return 1
+}
+
+DEVICE=$(pick_device)
+if [ -z "$DEVICE" ]; then
+    if bitlocker_candidate; then
+        log "ERROR: NTFS partition not mountable and BitLocker volumes are present — C: is likely BitLocker-encrypted; vm-store refuses to proceed (see docs/vm-store-ntfs-research.md §2)"
+    else
+        log "ERROR: no NTFS partition matches partition='$PARTITION' — VM store not mounted"
+    fi
+    rm -f "$CONFFILE" 2>/dev/null || true
+    exit 1
+fi
+
+# ------------------------------------------------------------- driver pick
+# Default ntfs-3g (safety, research §1). ntfs3 only when explicitly chosen
+# AND the kernel module exists — build #14's kernel (7.1.5+kali) does not
+# ship it.
+MOUNT_TYPE=""
+if [ "$DRIVER" = "ntfs-3g" ]; then
+    if command -v ntfs-3g >/dev/null 2>&1; then
+        MOUNT_TYPE=fuseblk   # mount(8) resolves ntfs-3g via fuseblk
+    else
+        log "ERROR: driver=ntfs-3g but ntfs-3g is not installed — refusing (install ntfs-3g or choose ntfs3 deliberately)"
+        rm -f "$CONFFILE" 2>/dev/null || true
+        exit 1
+    fi
+else # ntfs3
+    if modprobe ntfs3 >/dev/null 2>&1 || grep -qw ntfs3 /proc/filesystems 2>/dev/null; then
+        MOUNT_TYPE=ntfs3
+    else
+        log "ERROR: driver=ntfs3 but the kernel has no ntfs3 module — refusing"
+        rm -f "$CONFFILE" 2>/dev/null || true
+        exit 1
+    fi
+fi
+
+# uid/gid mapping: every file on the mount appears owned by the qemu
+# runtime user (libvirt chowns image files to it at domain start; on a
+# uid-mapped ntfs mount that chown is the no-op success it needs to be).
+# group kvm: the live user is a member (provisioner) and can manage images.
+QEMU_UID=""; QEMU_GID=""
+if QEMU_USER=$(getent passwd libvirt-qemu 2>/dev/null | cut -d: -f1) && [ -n "$QEMU_USER" ]; then
+    QEMU_UID=$(id -u "$QEMU_USER" 2>/dev/null || echo "")
+    QEMU_GID=$(getent group kvm 2>/dev/null | cut -d: -f3 || echo "")
+    [ -n "$QEMU_GID" ] || QEMU_GID=$(id -g "$QEMU_USER" 2>/dev/null || echo "")
+fi
+if [ -z "$QEMU_UID" ] || [ -z "$QEMU_GID" ]; then
+    log "ERROR: libvirt runtime user/group not found (libvirt-daemon-system missing?) — refusing to mount without usable ownership mapping"
+    rm -f "$CONFFILE" 2>/dev/null || true
+    exit 1
+fi
+MOUNT_OPTS="uid=$QEMU_UID,gid=$QEMU_GID,umask=007,windows_names"
+
+# ------------------------------------------------------------- dry run plan
+plan() {
+    [ "$DRY_RUN" = true ] || return 0
+    printf 'plan device=%s\n' "$DEVICE"
+    printf 'plan fstype=%s\n' "$(lsblk_rows | awk -v d="${DEVICE#/dev/}" '$1 == d {print $2; exit}')"
+    printf 'plan type=%s\n' "$MOUNT_TYPE"
+    printf 'plan options=%s\n' "$MOUNT_OPTS"
+    printf 'plan target=%s\n' "$MNT"
+    printf 'plan store_dir=%s\n' "$MNT/$DIR"
+    printf 'plan pool=%s\n' "$POOL"
+    printf 'plan reserved_free_mb=%s\n' "$RESERVED"
+}
+
+# ------------------------------------------------------------- mount + pool
+do_mount() {
+    if mountpoint -q "$MNT" 2>/dev/null; then
+        log "$MNT already mounted — reusing"
+        return 0
+    fi
+    mkdir -p "$MNT" || { log "ERROR: cannot create $MNT"; exit 1; }
+    if ! mount -t "$MOUNT_TYPE" -o "$MOUNT_OPTS" "$DEVICE" "$MNT" 2>/tmp/vmstore-mount.err; then
+        ERR=$(cat /tmp/vmstore-mount.err 2>/dev/null || echo unknown)
+        rm -f /tmp/vmstore-mount.err
+        case "$ERR" in
+            *hibernat*|*Hibernat*)
+                log "ERROR: $DEVICE is hibernated (Windows Fast Startup?) — refusing RW mount. Boot Windows, run 'powercfg /h off', shut down FULLY, then reboot the stick (never use remove_hiberfile)"
+                ;;
+            *dirty*|*unclean*)
+                log "ERROR: $DEVICE is marked dirty and was not mounted: $ERR"
+                ;;
+            *)
+                log "ERROR: mount of $DEVICE failed: $ERR"
+                ;;
+        esac
+        exit 1
+    fi
+    log "mounted $DEVICE at $MNT (type $MOUNT_TYPE, opts $MOUNT_OPTS)"
+}
+
+do_pool() {
+    STORE_DIR="$MNT/$DIR"
+    mkdir -p "$STORE_DIR" || { log "ERROR: cannot create store dir $STORE_DIR"; exit 1; }
+
+    # free-space warning (kali-live-vm-create enforces reserved_free_mb)
+    AVAIL_MB=$(df -Pm "$STORE_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
+    if [ -n "$AVAIL_MB" ] && [ "$AVAIL_MB" -lt "$RESERVED" ] 2>/dev/null; then
+        log "WARNING: store free space ${AVAIL_MB}MB is below reserved_free_mb=${RESERVED}MB — image creation will be refused until space frees up"
+    fi
+
+    # libvirt dir pool over the store (idempotent)
+    if virsh -c qemu:///system pool-info "$POOL" >/dev/null 2>&1; then
+        virsh -c qemu:///system pool-refresh "$POOL" >/dev/null 2>&1 || true
+        log "libvirt pool $POOL refreshed at $STORE_DIR"
+    else
+        if virsh -c qemu:///system pool-define-as "$POOL" dir --target "$STORE_DIR" >/dev/null 2>&1 \
+           && virsh -c qemu:///system pool-start "$POOL" >/dev/null 2>&1; then
+            log "libvirt pool $POOL defined+started at $STORE_DIR"
+        else
+            log "ERROR: could not define/start libvirt pool $POOL at $STORE_DIR"
+            exit 1
+        fi
+    fi
+
+    # facts for kali-live-vm-create / -rm (no secrets)
+    cat > "$ENVFILE" <<EOF
+KLH_VMSTORE_DEVICE=$DEVICE
+KLH_VMSTORE_MOUNT=$MNT
+KLH_VMSTORE_DIR=$STORE_DIR
+KLH_VMSTORE_POOL=$POOL
+KLH_VMSTORE_RESERVED_MB=$RESERVED
+EOF
+    chmod 0644 "$ENVFILE"
+    log "VM store ready: $STORE_DIR (pool $POOL, reserved ${RESERVED}MB)"
+}
+
+if [ "${1:-}" = "--dry-run" ]; then
+    DRY_RUN=true
+    plan
+    printf 'plan result=ok\n'
+    rm -f "$CONFFILE" 2>/dev/null || true
+    exit 0
+fi
+
+do_mount
+do_pool
+rm -f "$CONFFILE" 2>/dev/null || true
+exit 0

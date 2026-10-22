@@ -1,0 +1,94 @@
+#!/bin/sh
+# kali-live-vm-rm — remove a VM image (and its domain, if defined) from the
+# NTFS store. This is the deletion path the M1 cleanup job calls when a VM
+# is no longer active: going through libvirt keeps pool state consistent
+# (no dangling domains referencing deleted files).
+#
+# Usage:
+#   kali-live-vm-rm --id NAME         remove one VM image (+ domain if any)
+#   kali-live-vm-rm --stale           remove ALL images whose domain is not
+#                                     running (the cleanup-job sweep)
+#
+# POSIX sh only — dash parses this file; no bashisms (build #11 lesson).
+
+set -u
+
+TAG=kali-live-vmstore
+ENVFILE=/run/kali-live-vmstore.env
+
+usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+[ $# -ge 1 ] || usage
+
+ID="" STALE=false
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --id)    ID=${2:?}; shift 2 ;;
+        --stale) STALE=true; shift ;;
+        -h|--help) usage ;;
+        *) echo "kali-live-vm-rm: unknown option: $1" >&2; usage ;;
+    esac
+done
+
+log() { logger -t "$TAG" -- "$*" 2>/dev/null || true; }
+die() { log "ERROR: $*"; echo "kali-live-vm-rm: $*" >&2; exit 1; }
+
+if [ "$STALE" = true ] && [ -n "$ID" ]; then
+    die "--id and --stale are mutually exclusive"
+fi
+[ -n "$ID" ] || [ "$STALE" = true ] || die "need --id NAME or --stale"
+
+if [ -r "$ENVFILE" ]; then
+    # shellcheck disable=SC1090
+    . "$ENVFILE"
+    POOL=${KLH_VMSTORE_POOL:-klh-vmstore}
+    STORE_DIR=${KLH_VMSTORE_DIR:-}
+else
+    # allow forced removal even when the store is not mounted (e.g. after a
+    # failed boot) — but only by exact id, never the --stale sweep
+    [ "$STALE" = true ] && die "store not mounted — --stale refuses to run blind"
+    POOL=klh-vmstore
+    STORE_DIR=""
+fi
+
+VIRSH="virsh -c qemu:///system"
+
+remove_one() { # $1 = vm id (<id>; the volume file is <id>.image); 0 = removed
+    vmid=$1
+    volid="$vmid.image"
+    # domain referencing it? best-effort undefine by the same name
+    if $VIRSH dominfo "$vmid" >/dev/null 2>&1; then
+        $VIRSH destroy "$vmid" >/dev/null 2>&1 || true
+        $VIRSH undefine "$vmid" --nvram >/dev/null 2>&1 || $VIRSH undefine "$vmid" >/dev/null 2>&1 || true
+        log "domain '$vmid' undefined"
+    fi
+    if $VIRSH vol-delete "$volid" --pool "$POOL" >/dev/null 2>&1; then
+        [ -n "$STORE_DIR" ] && rm -f "$STORE_DIR/$vmid.meta" 2>/dev/null || true
+        log "volume '$volid' deleted from pool $POOL"
+        return 0
+    fi
+    return 1
+}
+
+if [ "$STALE" = true ]; then
+    # sweep: every volume whose same-named domain is not RUNNING
+    removed=0
+    for vol in $($VIRSH vol-list "$POOL" 2>/dev/null | awk 'NR>2 && NF>=2 {print $1}' | grep -Ev '^-+$' || true); do
+        vmid=${vol%.image}
+        state=$($VIRSH domstate "$vmid" 2>/dev/null || echo "no-domain")
+        if [ "$state" = "running" ]; then
+            log "skip '$vol' (domain running)"
+            continue
+        fi
+        if remove_one "$vmid"; then removed=$((removed + 1)); fi
+    done
+    $VIRSH pool-refresh "$POOL" >/dev/null 2>&1 || true
+    echo "removed $removed stale volume(s) from pool $POOL"
+    exit 0
+fi
+
+if remove_one "$ID"; then
+    $VIRSH pool-refresh "$POOL" >/dev/null 2>&1 || true
+    echo "removed '$ID'"
+    exit 0
+fi
+die "no volume '$ID' in pool $POOL (already gone? refresh with: virsh pool-refresh $POOL)"

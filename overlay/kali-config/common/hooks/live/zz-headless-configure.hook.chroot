@@ -31,6 +31,10 @@ systemctl enable libvirtd.service 2>&1 || true
 systemctl enable virtlogd.socket 2>&1 || true
 systemctl enable kali-live-kvm-enable.service 2>&1 || true
 systemctl enable kali-live-kvm-firewall.service 2>&1 || true
+# Opt-in NTFS VM store: enabled unconditionally on WITH_KVM builds; the
+# mount script itself no-ops (success) unless KLHCONFIG carries a valid
+# vm-store.conf — the feature ships disabled by design.
+systemctl enable kali-live-vmstore-mount.service 2>&1 || true
 
 # Deterministic virbr0: autostart the default network (kali-live-kvm-enable
 # also tries at runtime — socket-activation makes that work even when

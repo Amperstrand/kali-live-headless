@@ -14,11 +14,16 @@
 #   E. qemu-forensic— boot the forensic boot-menu entry's kernel cmdline
 #                     directly; assert headless features + no swap +
 #                     witness disk untouched
+#   F. qemu-vmstore— boot with KLHCONFIG vm-store.conf + an NTFS witness:
+#                     assert mount + libvirt pool + image create/delete via
+#                     kali-live-vm-create/-rm, witness files outside \vms
+#                     untouched, and the forensic noautomount gate (second
+#                     boot) never mounts
 #
 # QEMU tests use virtual ETHERNET. Physical Wi-Fi hardware compatibility is
 # NOT covered here — see README.md "Physical hardware tests".
 #
-# Usage: ./test.sh [--level static|content|boot] [--stage bios|override|uefi|forensic]
+# Usage: ./test.sh [--level static|content|boot] [--stage bios|override|uefi|forensic|vmstore]
 #                  [--skip-qemu] [--only-static] [--no-uefi] [--no-forensic]
 #                  [--iso PATH] [--ssh-key PATH]
 #
@@ -34,7 +39,7 @@ source "$REPO_DIR/lib/common.sh"
 SCRATCH="$REPO_DIR/test/scratch"
 mkdir -p "$SCRATCH"
 
-RUN_QEMU=true RUN_BIOS=true RUN_OVERRIDE=true RUN_UEFI=true RUN_FORENSIC=true
+RUN_QEMU=true RUN_BIOS=true RUN_OVERRIDE=true RUN_UEFI=true RUN_FORENSIC=true RUN_VMSTORE=true
 ONLY_STATIC=false
 LEVEL="full"
 ISO_ARG="" SSH_KEY_ARG=""
@@ -62,13 +67,14 @@ STAGE="${STAGE:-}"
 case "$LEVEL" in
   static)      ONLY_STATIC=true; RUN_QEMU=false ;;
   # --stage: run ONE boot stage (cheap boot gate for hotpatched builds).
-  bios)        RUN_OVERRIDE=false; RUN_UEFI=false; RUN_FORENSIC=false ;;
-  override)    RUN_BIOS=false;     RUN_UEFI=false; RUN_FORENSIC=false ;;
-  uefi)        RUN_BIOS=false; RUN_OVERRIDE=false; RUN_FORENSIC=false ;;
-  forensic)    RUN_BIOS=false; RUN_OVERRIDE=false; RUN_UEFI=false ;;
+  bios)        RUN_OVERRIDE=false; RUN_UEFI=false; RUN_FORENSIC=false; RUN_VMSTORE=false ;;
+  override)    RUN_BIOS=false;     RUN_UEFI=false; RUN_FORENSIC=false; RUN_VMSTORE=false ;;
+  uefi)        RUN_BIOS=false; RUN_OVERRIDE=false; RUN_FORENSIC=false; RUN_VMSTORE=false ;;
+  forensic)    RUN_BIOS=false; RUN_OVERRIDE=false; RUN_UEFI=false; RUN_VMSTORE=false ;;
+  vmstore)     RUN_BIOS=false; RUN_OVERRIDE=false; RUN_UEFI=false; RUN_FORENSIC=false ;;
   content)     RUN_QEMU=false ;;
   boot|full)   : ;;
-  *) klh_die "unknown --level/--stage '$LEVEL' (static | content | bios | override | uefi | forensic | boot)" ;;
+  *) klh_die "unknown --level/--stage '$LEVEL' (static | content | bios | override | uefi | forensic | vmstore | boot)" ;;
 esac
 klh_info "level: $LEVEL (static = no VM, content = + ISO inspection, boot = + QEMU boots)"
 
@@ -246,6 +252,87 @@ for u in "${UNITS[@]}"; do
   fi
 done
 
+# vm-store unit structure (KVM-gated feature; the generic UNITS list above
+# must stay build-agnostic)
+vmu="$REPO_DIR/overlay/kali-config/common/includes.chroot/etc/systemd/system/kali-live-vmstore-mount.service"
+if grep -q '^RemainAfterExit=yes' "$vmu" && grep -q '^ExecStart=/usr/local/sbin/kali-live-vmstore-mount' "$vmu"; then
+  record pass "unit kali-live-vmstore-mount (oneshot structure)"
+else
+  record fail "unit kali-live-vmstore-mount (oneshot structure)"
+fi
+
+# ---- vm-store decision-logic unit tests (M1) -------------------------------
+# kali-live-vmstore-mount --dry-run + fixtures exercise every gate as a
+# non-root user: PATH stubs stand in for ntfs-3g/libvirt (real binaries are
+# exercised by the qemu-vmstore boot stage inside the built image).
+# rc-capture discipline: assignment first, $? read on the NEXT line.
+VMSTORE="$REPO_DIR/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-vmstore-mount"
+VMCREATE="$REPO_DIR/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-vm-create"
+VMRM="$REPO_DIR/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-vm-rm"
+FIX="$REPO_DIR/test/fixtures/vm-store"
+if [ -x "$VMSTORE" ] && [ -d "$FIX" ]; then
+  vmrun() { # conf lsblk [cmdline] -> stdout; rc follows
+    ( PATH="$FIX/bin:$PATH" KLH_VMSTORE_CONF="$FIX/$1" KLH_LSBLK_FILE="$FIX/$2" \
+      KLH_PROC_CMDLINE="$FIX/${3:-cmdline-live}" "$VMSTORE" --dry-run 2>&1 )
+  }
+  vm_assert() { # expect_rc conf lsblk [cmdline] description [grep-pattern]
+    local expect=$1 conf=$2 lsblk=$3 cmdline=${4:-cmdline-live} desc=$5 pat=${6:-}
+    local out rc
+    out=$(vmrun "$conf" "$lsblk" "$cmdline")
+    rc=$?
+    if [ "$expect" = 0 ] && [ "$rc" -ne 0 ]; then record fail "vmstore: $desc" "rc=$rc (want 0)"; return; fi
+    if [ "$expect" = 1 ] && [ "$rc" -eq 0 ]; then record fail "vmstore: $desc" "rc=0 (want failure)"; return; fi
+    if [ -n "$pat" ] && ! printf '%s' "$out" | grep -q "$pat"; then
+      record fail "vmstore: $desc" "plan output missing: $pat"
+      return
+    fi
+    record pass "vmstore: $desc"
+  }
+  vm_assert 0 ok.conf      lsblk-normal cmdline-live "auto picks the LARGEST ntfs (1.5T, not 500G)" '^plan device=/dev/sda3$'
+  vm_assert 0 ok.conf      lsblk-normal cmdline-live "default driver resolves to fuseblk (ntfs-3g)" '^plan type=fuseblk$'
+  vm_assert 0 ok.conf      lsblk-normal cmdline-live "store dir under the mount"               '^plan store_dir=/mnt/klh-vmstore/vms$'
+  vm_assert 0 ok.conf      lsblk-normal cmdline-live "uid mapping for the qemu runtime user"    'uid=64055,gid=108,umask=007,windows_names'
+  vm_assert 0 label.conf   lsblk-normal cmdline-live "LABEL: selector"                          '^plan device=/dev/sda3$'
+  vm_assert 0 uuid.conf    lsblk-normal cmdline-live "PARTUUID: selector"                       '^plan device=/dev/sdb1$'
+  vm_assert 0 disabled.conf lsblk-normal cmdline-live "enabled!=true is a quiet no-op"
+  vm_assert 0 ok.conf      lsblk-normal cmdline-forensic "forensic boot (noautomount) never mounts"
+  vm_assert 1 baddriver.conf lsblk-normal cmdline-live "unknown driver refused"
+  vm_assert 1 baddir.conf    lsblk-normal cmdline-live "non-Windows-legal dir refused"
+  vm_assert 1 badreserved.conf lsblk-normal cmdline-live "non-numeric reserved_free_mb refused"
+  vm_assert 1 ok.conf      lsblk-bitlocker-only cmdline-live "BitLocker-only system refused"
+  vm_assert 1 ok.conf      lsblk-none cmdline-live "no NTFS candidate refused"
+  if grep -qw ntfs3 /proc/filesystems 2>/dev/null; then
+    vm_assert 0 ntfs3.conf  lsblk-normal cmdline-live "explicit ntfs3 driver resolves when the kernel has it" '^plan type=ntfs3$'
+  else
+    record skip "vmstore: explicit ntfs3 driver" "host kernel has no ntfs3 (assert would be the refusal path)"
+    vm_assert 1 ntfs3.conf lsblk-normal cmdline-live "ntfs3 refused when the kernel lacks the module"
+  fi
+
+  # vm-create / -rm argument + state guards (host, no store present)
+  if "$VMCREATE" --id 'Bad/Name' --cores 1 --ram-gb 1 --disk-gb 1 >/dev/null 2>&1; then
+    record fail "vm-create: refuses non-[a-z0-9-] id"
+  else
+    record pass "vm-create: refuses non-[a-z0-9-] id"
+  fi
+  out=$("$VMCREATE" --id goodvm --cores 1 --ram-gb 1 --disk-gb 1 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'not mounted' \
+    && record pass "vm-create: refuses without an active store" \
+    || record fail "vm-create: refuses without an active store" "rc=$rc out=$out"
+  if "$VMRM" --id x --stale >/dev/null 2>&1; then
+    record fail "vm-rm: --id + --stale are mutually exclusive"
+  else
+    record pass "vm-rm: --id + --stale are mutually exclusive"
+  fi
+  out=$("$VMRM" --stale 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'not mounted' \
+    && record pass "vm-rm: --stale refuses to run without the store" \
+    || record fail "vm-rm: --stale refuses to run without the store" "rc=$rc out=$out"
+else
+  record skip "vmstore unit tests" "script/fixtures missing"
+fi
+
 [ "$ONLY_STATIC" = true ] && { section "summary"; printf 'pass=%d fail=%d skip=%d\n' "$PASS" "$FAIL" "$SKIP"; [ "$FAIL" -eq 0 ]; exit $?; }
 
 # ============================================================= Stage B
@@ -328,12 +415,12 @@ else
       sudo test -L "$SQ_MNT/etc/systemd/system/multi-user.target.wants/$u.service" && record pass "enabled: $u" || record fail "enabled: $u"
     done
     if [ "$WITH_KVM_EXPECTED" = true ]; then
-      for u in libvirtd kali-live-kvm-enable kali-live-kvm-firewall; do
+      for u in libvirtd kali-live-kvm-enable kali-live-kvm-firewall kali-live-vmstore-mount; do
         sudo test -L "$SQ_MNT/etc/systemd/system/multi-user.target.wants/$u.service" && record pass "enabled: $u" || record fail "enabled: $u"
       done
       sudo test -L "$SQ_MNT/etc/systemd/system/timers.target.wants/kali-live-vm-forward-reassert.timer" && record pass "enabled: vm-forward-reassert.timer" || record fail "enabled: vm-forward-reassert.timer"
     fi
-    for s in kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-headless-wifi-gen kali-live-kvm-enable kali-live-kvm-firewall kali-live-wireguard-init kali-live-vm-forward; do
+    for s in kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-headless-wifi-gen kali-live-kvm-enable kali-live-kvm-firewall kali-live-wireguard-init kali-live-vm-forward kali-live-vmstore-mount kali-live-vm-create kali-live-vm-rm; do
       sudo test -x "$SQ_MNT/usr/local/sbin/$s" && record pass "script executable: $s" || record fail "script executable: $s"
     done
     # WireGuard M1: package installed in the image, and the /etc/default
@@ -416,7 +503,7 @@ PKGS
 
     # KVM stack
     if [ "$WITH_KVM_EXPECTED" = true ]; then
-      for pkg in qemu-system-x86 libvirt-daemon-system libvirt-clients; do
+      for pkg in qemu-system-x86 libvirt-daemon-system libvirt-clients ntfs-3g; do
         if sudo grep -A1 "^Package: $pkg$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "Status: install ok installed"; then
           record pass "package: $pkg"
         else
@@ -425,7 +512,7 @@ PKGS
       done
       sudo test -f "$SQ_MNT/etc/modprobe.d/klh-kvm-nested.conf" && record pass "kvm: nested-virt modprobe conf" || record fail "kvm: nested-virt modprobe conf"
     else
-      sudo test ! -e "$SQ_MNT/usr/local/sbin/kali-live-kvm-firewall" && record pass "kvm: correctly omitted" || record fail "kvm: files shipped despite WITH_KVM=false"
+      sudo test ! -e "$SQ_MNT/usr/local/sbin/kali-live-kvm-firewall" && sudo test ! -e "$SQ_MNT/usr/local/sbin/kali-live-vmstore-mount" && record pass "kvm: correctly omitted" || record fail "kvm: files shipped despite WITH_KVM=false"
     fi
 
     umount_all; trap - EXIT
@@ -768,6 +855,156 @@ else
             record fail "forensic: booted to SSH" "timeout after ${BOOT_TIMEOUT}s — see $SCRATCH/serial-forensic.log"
             kill_qemu forensic
           fi
+    fi
+
+    # ---- F: NTFS VM store (M1, docs/vm-store-ntfs-research.md)
+    # Boot 1 (live cmdline): KLHCONFIG carries an enabled vm-store.conf and a
+    # second disk is a real NTFS filesystem with marker files outside \vms —
+    # assert mount + pool + full image lifecycle, then verify host-side that
+    # nothing outside \vms changed. Boot 2 (forensic cmdline, same disks):
+    # the noautomount gate must keep the store unmounted.
+    if [ "$RUN_VMSTORE" = true ] && [ "$KERN_OK" = true ] && [ "${WITH_KVM_EXPECTED}" = true ]; then
+      # fixture needs: mkfs.ntfs (host binary, or a cached container image)
+      # and a kernel ntfs3 mount to place/verify marker files.
+      NTFS_MKFS=""
+      if command -v mkfs.ntfs >/dev/null 2>&1; then
+        NTFS_MKFS=host
+      elif command -v docker >/dev/null 2>&1 && (docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1); then
+        docker info >/dev/null 2>&1 && DK="docker" || DK="sudo docker"
+        if ! $DK image inspect kali-build/vmstore-test >/dev/null 2>&1; then
+          $DK build -q -t kali-build/vmstore-test - <<'DOCKERFILE' >/dev/null 2>&1 \
+            && record pass "vmstore: mkfs.ntfs container image built" \
+            || record fail "vmstore: mkfs.ntfs container image built"
+FROM debian:stable-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ntfs-3g && rm -rf /var/lib/apt/lists/*
+DOCKERFILE
+        fi
+        $DK image inspect kali-build/vmstore-test >/dev/null 2>&1 && NTFS_MKFS=$DK
+      fi
+      sudo modprobe ntfs3 >/dev/null 2>&1 || true
+      if [ -n "$NTFS_MKFS" ] && grep -qw ntfs3 /proc/filesystems 2>/dev/null; then
+        VMW="$SCRATCH/vmstore.img"
+        truncate -s 2G "$VMW"
+        if [ "$NTFS_MKFS" = host ]; then
+          mkfs.ntfs --quick --label VMSTORE "$VMW" >/dev/null 2>&1
+        else
+          $NTFS_MKFS run --rm -v "$SCRATCH:/w:rw" --entrypoint mkfs.ntfs kali-build/vmstore-test --quick --label VMSTORE /w/vmstore.img >/dev/null 2>&1
+        fi
+        VM_MNT="$SCRATCH/vmstore-mnt"; mkdir -p "$VM_MNT"
+        if sudo mount -o loop,uid="$(id -u)" -t ntfs3 "$VMW" "$VM_MNT" 2>/dev/null; then
+          mkdir -p "$VM_MNT/vms" "$VM_MNT/other"
+          printf 'untouched-marker\n' > "$VM_MNT/do-not-touch.txt"
+          printf 'inner-marker\n'   > "$VM_MNT/other/inner.txt"
+          VM_MARK1=$(md5sum "$VM_MNT/do-not-touch.txt" | awk '{print $1}')
+          VM_MARK2=$(md5sum "$VM_MNT/other/inner.txt" | awk '{print $1}')
+          sudo umount "$VM_MNT"
+          # KLHCONFIG disk with an ENABLED vm-store.conf (partition=auto finds
+          # the only NTFS volume = the witness; reserved is tiny so image
+          # creation passes the headroom check on a 2G witness)
+          truncate -s 32M "$SCRATCH/vmcfg.img"
+          mkfs.vfat -n KLHCONFIG "$SCRATCH/vmcfg.img" >/dev/null 2>&1
+          if sudo mount -o loop "$SCRATCH/vmcfg.img" "$VM_MNT" 2>/dev/null; then
+            printf 'enabled=true\npartition=auto\ndir=vms\ndriver=ntfs-3g\nreserved_free_mb=8\n' \
+              | sudo tee "$VM_MNT/vm-store.conf" >/dev/null
+            sudo umount "$VM_MNT"
+          fi
+
+          vmstore_boot() { # tag extra-append -> boots, echoes pid
+            local tag=$1; shift
+            local pidfile="$SCRATCH/qemu-vmstore-$tag.pid"
+            rm -f "$pidfile"
+            "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" \
+              -kernel "$SCRATCH/vmlinuz" -initrd "$SCRATCH/initrd" \
+              -append "boot=live username=kali hostname=kali console=ttyS0,115200 $*" \
+              -drive file="$ISO",format=raw,if=virtio,media=disk,readonly=on \
+              -device virtio-net-pci,netdev=net0 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$PORT-:22 \
+              -drive file="$SCRATCH/vmcfg.img",format=raw,if=virtio \
+              -drive file="$VMW",format=raw,if=virtio \
+              -display none -monitor none -serial "file:$SCRATCH/serial-vmstore-$tag.log" \
+              -daemonize -pidfile "$pidfile" >/dev/null 2>&1
+            cat "$pidfile" 2>/dev/null || true
+          }
+
+          # ---- boot 1: live cmdline, store must come up
+          QPID=$(vmstore_boot live "")
+          if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
+            record pass "vmstore: booted to SSH (live cmdline)"
+            v=$(guest 'systemctl is-active kali-live-vmstore-mount')
+            [ "$v" = active ] && record pass "vmstore: mount service active" || record fail "vmstore: mount service ($v)"
+            v=$(guest 'mount | grep " /mnt/klh-vmstore " | head -1')
+            case "$v" in *fuseblk*|*ntfs*) record pass "vmstore: NTFS mounted at /mnt/klh-vmstore" ;; *) record fail "vmstore: NTFS mounted (got: $v)" ;; esac
+            v=$(guest 'virsh -c qemu:///system pool-list --all 2>/dev/null | awk "\$1==\"klh-vmstore\"{print \$2}"')
+            [ "$v" = active ] && record pass "vmstore: libvirt pool klh-vmstore active" || record fail "vmstore: libvirt pool ($v)"
+            v=$(guest "md5sum /mnt/klh-vmstore/do-not-touch.txt /mnt/klh-vmstore/other/inner.txt 2>/dev/null | awk '{print \$1}' | paste -sd/")
+            [ "$v" = "$VM_MARK1/$VM_MARK2" ] && record pass "vmstore: marker files readable + intact (in-guest)" || record fail "vmstore: marker files in-guest ($v)"
+
+            # image lifecycle through the real tools as the live user
+            if guest 'kali-live-vm-create --id suite-smoke --cores 1 --ram-gb 1 --disk-gb 1' >/dev/null 2>&1; then
+              record pass "vmstore: vm-create made suite-smoke (1G raw, sparse)"
+            else
+              record fail "vmstore: vm-create made suite-smoke"
+            fi
+            v=$(guest 'test -f /mnt/klh-vmstore/vms/suite-smoke.image -a -f /mnt/klh-vmstore/vms/suite-smoke.meta && echo ok')
+            [ "$v" = ok ] && record pass "vmstore: <id>.image + .meta visible in C:\\vms" || record fail "vmstore: image/meta files visible"
+            if guest 'kali-live-vm-create --id suite-smoke --cores 1 --ram-gb 1 --disk-gb 1' >/dev/null 2>&1; then
+              record fail "vmstore: duplicate id refused"
+            else
+              record pass "vmstore: duplicate id refused"
+            fi
+            if guest 'kali-live-vm-create --id too-big --cores 1 --ram-gb 1 --disk-gb 900' >/dev/null 2>&1; then
+              record fail "vmstore: oversized image refused (headroom guard)"
+            else
+              record pass "vmstore: oversized image refused (headroom guard)"
+            fi
+            if guest 'kali-live-vm-rm --id suite-smoke' >/dev/null 2>&1; then
+              record pass "vmstore: vm-rm removed suite-smoke"
+            else
+              record fail "vmstore: vm-rm removed suite-smoke"
+            fi
+            v=$(guest 'test ! -e /mnt/klh-vmstore/vms/suite-smoke.image && echo gone')
+            [ "$v" = gone ] && record pass "vmstore: image file deleted from the store" || record fail "vmstore: image file deletion"
+            v=$(guest 'kali-live-vm-rm --stale 2>/dev/null | tail -1')
+            case "$v" in removed*) record pass "vmstore: --stale sweep runs clean ($v)" ;; *) record fail "vmstore: --stale sweep ($v)" ;; esac
+
+            guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu vmstore-live
+            for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
+            kill -9 "$QPID" 2>/dev/null || true
+
+            # host-side: only \vms may have changed
+            if sudo mount -o ro,loop -t ntfs3 "$VMW" "$VM_MNT" 2>/dev/null; then
+              v=$(md5sum "$VM_MNT/do-not-touch.txt" "$VM_MNT/other/inner.txt" 2>/dev/null | awk '{print $1}' | paste -sd/ -)
+              [ "$v" = "$VM_MARK1/$VM_MARK2" ] && record pass "vmstore: witness outside \\vms byte-identical (host-verified)" || record fail "vmstore: witness files OUTSIDE \\vms were modified"
+              v=$(ls -A "$VM_MNT/vms" 2>/dev/null | paste -sd, -)
+              [ -z "$v" ] && record pass "vmstore: teardown left \\vms empty" || record fail "vmstore: leftovers in \\vms ($v)"
+              sudo umount "$VM_MNT"
+            else
+              record skip "vmstore: host-side witness verification" "ntfs3 ro mount failed"
+            fi
+          else
+            record fail "vmstore: booted to SSH" "timeout after ${BOOT_TIMEOUT}s — see $SCRATCH/serial-vmstore-live.log"
+            kill_qemu vmstore-live
+          fi
+
+          # ---- boot 2: forensic cmdline (same disks) — the gate must hold
+          QPID=$(vmstore_boot forensic "systemd.swap=no noautomount")
+          if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
+            v=$(guest 'mount | grep -c " /mnt/klh-vmstore " || true')
+            [ "$v" = "0" ] && record pass "vmstore: forensic gate kept the NTFS volume unmounted" || record fail "vmstore: forensic gate FAILED — NTFS mounted under noautomount"
+            v=$(guest 'virsh -c qemu:///system pool-list --all 2>/dev/null | grep -c klh-vmstore || true')
+            [ "$v" = "0" ] && record pass "vmstore: no pool defined under forensic boot" || record fail "vmstore: pool exists under forensic boot"
+            guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu vmstore-forensic
+            for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
+            kill -9 "$QPID" 2>/dev/null || true
+          else
+            record fail "vmstore: forensic-gate boot to SSH" "timeout — see $SCRATCH/serial-vmstore-forensic.log"
+            kill_qemu vmstore-forensic
+          fi
+        else
+          record skip "vmstore" "could not populate NTFS fixture (ntfs3 mount failed)"
+        fi
+      else
+        record skip "vmstore" "needs mkfs.ntfs (host or docker) + kernel ntfs3 for fixture prep"
+      fi
     fi
   elif [ "$PORT_OK" != true ]; then
     : # already recorded as a failure in the port preflight above — do not
