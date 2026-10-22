@@ -27,7 +27,7 @@ output/test-run-<N>.log                         # suite verdict for build N
 with the highest N), falling back to the slot only when nothing is archived.
 Explicit `--iso` is still the gold standard for gating a specific build.
 
-## Adding an entry
+## Workflow (build → gate → record → prune)
 
 1. Build (`./build.sh > output/build-console-<N>.log 2>&1` in tmux — the
    wrapper locks against concurrent builds, stages the ISO and archives it
@@ -38,6 +38,25 @@ Explicit `--iso` is still the gold standard for gating a specific build.
 3. Record the verdict here and in the archive's `INDEX.md`.
 4. Reclaim: `tools/iso-prune.sh` (dry-run by default; `--keep N` for the
    fallback, `--yes` to delete). Flash a specific build: `./flash.sh --build N`.
+
+## Build speed (what actually helps, and what doesn't)
+
+- **There is no incremental live-build.** Upstream's `build.sh` calls
+  `cleanup_fs force` at stage [1/4] and wipes `chroot/`, `cache/` and
+  `config/` on every run, so `-k/--keep` cannot reuse a chroot. Anyone
+  promising a "cached build" flag is lying to you.
+- **apt-cacher-ng on `127.0.0.1:3142`** (docker container `apt-cacher-ng`,
+  `--restart unless-stopped`, volume `apt-cacher-ng`, `PassThroughPattern: .*`)
+  — upstream autodetects it and exports `http_proxy` for the whole build
+  (the build container runs `--network host`). Every clean build after the
+  first reuses the package cache instead of re-downloading ~2-3G.
+- **`tools/iso-hotpatch.sh`** — overlay-only changes (a script, a unit, the
+  sshd drop-in) repack an archived ISO in ~30 min instead of ~3h. Scoped to
+  `includes.chroot` runtime files; anything else needs a clean build.
+- **`./test.sh --level static`** (~18 s, 30 checks, no VM) catches syntax,
+  POSIX-sh and config regressions before any build — it would have caught
+  the #11 provision bashism.
+- Measured times land in each build's `INDEX.md` / the console log.
 
 ## Retention rule
 
