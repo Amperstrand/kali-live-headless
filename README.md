@@ -346,6 +346,14 @@ Credential model — the important part:
 
       wg set wg0 peer <stick-pubkey> allowed-ips <stick-tunnel-ip>/32
 
+  or, on a hub with the helper installed (inr2 carries
+  `tools/hub-enroll-stick.sh` at `/root/enroll-stick.sh` — it derives the
+  same deterministic address from the pubkey, collision-checks existing
+  peers, applies `wg set`, and persists the peer for reboots):
+
+      enroll-stick.sh <stick-pubkey>      # prints the address, then:
+      ssh kali@10.66.x.y                  # ssh over wireguard, no LAN exposure
+
 * Leave `--wg-endpoint` empty and the whole feature is dormant — the runtime
   init is a no-op and `hw-check` reports it as off (`--no-wg` silences it).
 
