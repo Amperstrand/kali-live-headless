@@ -5,9 +5,9 @@
 #         enroll-stick.sh --print-ip <pubkey>        # show the derived IP only
 # Derivation MUST match the stick's kali-live-wireguard-init:
 #   sha256(pubkey) -> first two hex byte pairs -> X %250+1, Y %250+1,
-#   address = 10.66.X.Y  (sticks live on 10.66.0.0/24; this hub is 10.99.0.1)
+#   address = 10.66.X.Y  (sticks live on 10.66.0.0/16; this hub is 10.99.0.1)
 set -u
-TUNNET=10.66.0
+TUNNET=10.66
 WG_IF=wg0
 
 derive_ip() {

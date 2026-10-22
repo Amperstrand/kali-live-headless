@@ -29,9 +29,14 @@ cfg_get() { # var -> value from /etc/default/kali-live-headless (quotes stripped
 
 ENDPOINT=$(cfg_get WG_ENDPOINT)
 PEER=$(cfg_get WG_PEER_PUBKEY)
-TUNNET=$(cfg_get WG_TUNNET);  [ -n "$TUNNET" ] || TUNNET=10.66.0
+TUNNET=$(cfg_get WG_TUNNET);  [ -n "$TUNNET" ] || TUNNET=10.66
 HUBADDR=$(cfg_get WG_HUB_ADDR)
 PORT=$(cfg_get WG_PORT);      [ -n "$PORT" ]   || PORT=51820
+# TUNNET is the FIRST TWO octets of the tunnel /16 (e.g. "10.66"): stick
+# addresses are $TUNNET.X.Y with X,Y derived from the public key. (The
+# first cut appended two derived octets to a THREE-octet base and produced
+# 5-octet addresses like 10.66.0.164.194, which `ip addr add` rejects —
+# caught live on the first hardware boot of build #14, 2026-10-22.)
 
 [ -n "$ENDPOINT" ] || { echo "wireguard: off (WG_ENDPOINT not configured)" >&2; exit 0; }
 [ -n "$PEER" ]     || { echo "wireguard: WG_ENDPOINT set but WG_PEER_PUBKEY missing — refusing to bring up an unauthenticated tunnel" >&2; exit 0; }
@@ -70,21 +75,21 @@ umask 077
 mkdir -p /etc/wireguard
 {
     printf '[Interface]\n'
-    printf 'Address = %s/24\n' "$TUNIP"
+    printf 'Address = %s/16\n' "$TUNIP"
     printf 'PrivateKey = %s\n' "$PRIV"
     printf '\n[Peer]\n'
     printf 'PublicKey = %s\n' "$PEER"
     printf 'Endpoint = %s:%s\n' "$ENDPOINT" "$PORT"
     # Route the tunnel network through the hub (peer-to-peer between peers of
     # the same hub), plus the hub's own tunnel address when it lives OUTSIDE
-    # the tunnel network (e.g. sticks on 10.66.0.0/24 joining a hub at
+    # the tunnel network (e.g. sticks on 10.66.0.0/16 joining a hub at
     # 10.99.0.1) — without it, replies to the hub would leave via the
     # default route and the handshake would never complete. The stick keeps
     # its own default route (Wi-Fi/LAN) for everything else.
     if [ -n "$HUBADDR" ]; then
-        printf 'AllowedIPs = %s.0/24, %s\n' "$TUNNET" "$HUBADDR"
+        printf 'AllowedIPs = %s.0.0/16, %s\n' "$TUNNET" "$HUBADDR"
     else
-        printf 'AllowedIPs = %s.0/24\n' "$TUNNET"
+        printf 'AllowedIPs = %s.0.0/16\n' "$TUNNET"
     fi
     printf 'PersistentKeepalive = 25\n'
 } > /etc/wireguard/wg0.conf

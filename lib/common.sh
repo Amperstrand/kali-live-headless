@@ -104,7 +104,7 @@ klh_load_config() {
   : "${WITH_KVM:=true}"
   : "${WG_ENDPOINT:=}"
   : "${WG_PEER_PUBKEY:=}"
-  : "${WG_TUNNET:=10.66.0}"
+  : "${WG_TUNNET:=10.66}"
   : "${WG_HUB_ADDR:=}"
   : "${WG_PORT:=51820}"
 
@@ -120,7 +120,7 @@ klh_load_config() {
   # WireGuard M1 (all non-secret; the private key is generated on the stick):
   #   WG_ENDPOINT    hub, e.g. inr2.example.com (no port) — empty = feature off
   #   WG_PEER_PUBKEY hub's PUBLIC key (base64, 44 chars, '=' last)
-  #   WG_TUNNET      tunnel /24 first three octets (default 10.66.0)
+  #   WG_TUNNET      tunnel /16 first two octets (default 10.66)
   #   WG_PORT        hub UDP port (default 51820)
   [ -n "$WG_ENDPOINT" ] || [ -z "$WG_PEER_PUBKEY" ] \
     || klh_die "WG_PEER_PUBKEY set but WG_ENDPOINT empty in $f — configure both or neither"
@@ -129,8 +129,8 @@ klh_load_config() {
       || klh_die "invalid WG_ENDPOINT '$WG_ENDPOINT' (host or host:port)"
     printf '%s' "$WG_PEER_PUBKEY" | grep -Eq '^[A-Za-z0-9+/]{43}=$' \
       || klh_die "invalid WG_PEER_PUBKEY (want the hub's 44-char base64 public key from 'wg pubkey')"
-    printf '%s' "$WG_TUNNET" | grep -Eq '^(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}$' \
-      || klh_die "invalid WG_TUNNET '$WG_TUNNET' (want RFC1918 /24 like 10.66.0)"
+    printf '%s' "$WG_TUNNET" | grep -Eq '^(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}$' \
+      || klh_die "invalid WG_TUNNET '$WG_TUNNET' (want the first TWO octets of an RFC1918 /16, like 10.66)"
     printf '%s' "$WG_PORT" | grep -Eq '^[0-9]{1,5}$' || klh_die "invalid WG_PORT '$WG_PORT'"
     # optional: the hub's own tunnel address when it lives outside WG_TUNNET
     [ -z "$WG_HUB_ADDR" ] || printf '%s' "$WG_HUB_ADDR" | grep -Eq '^(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3})(/32)?$' \
