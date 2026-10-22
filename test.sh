@@ -1001,6 +1001,36 @@ DOCKERFILE
             record fail "vmstore: forensic-gate boot to SSH" "timeout — see $SCRATCH/serial-vmstore-forensic.log"
             kill_qemu vmstore-forensic
           fi
+
+          # ---- boot 3: NTFS present but NO KLHCONFIG vm-store.conf — the
+          # feature must stay completely off (default-off guarantee; the
+          # unit battery covers the parser, this proves the boot behavior
+          # with a real NTFS volume sitting right there)
+          pidfile3="$SCRATCH/qemu-vmstore-noconf.pid"
+          rm -f "$pidfile3"
+          "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" \
+            -kernel "$SCRATCH/vmlinuz" -initrd "$SCRATCH/initrd" \
+            -append "boot=live username=kali hostname=kali console=ttyS0,115200" \
+            -drive file="$ISO",format=raw,if=virtio,media=disk,readonly=on \
+            -device virtio-net-pci,netdev=net0 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$PORT-:22 \
+            -drive file="$VMW",format=raw,if=virtio \
+            -display none -monitor none -serial "file:$SCRATCH/serial-vmstore-noconf.log" \
+            -daemonize -pidfile "$pidfile3" >/dev/null 2>&1
+          QPID=$(cat "$pidfile3" 2>/dev/null || true)
+          if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
+            v=$(guest 'systemctl is-active kali-live-vmstore-mount')
+            [ "$v" = active ] && record pass "vmstore: no-config boot keeps the unit a clean no-op" || record fail "vmstore: no-config unit state ($v)"
+            v=$(guest 'mount | grep -c " /mnt/klh-vmstore " || true')
+            [ "$v" = "0" ] && record pass "vmstore: no-config boot mounts nothing" || record fail "vmstore: NTFS mounted WITHOUT vm-store.conf"
+            v=$(guest 'virsh -c qemu:///system pool-list --all 2>/dev/null | grep -c klh-vmstore || true')
+            [ "$v" = "0" ] && record pass "vmstore: no-config boot defines no pool" || record fail "vmstore: pool defined without vm-store.conf"
+            guest_sudo 'poweroff' >/dev/null 2>&1
+            for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
+            kill -9 "$QPID" 2>/dev/null || true
+          else
+            record fail "vmstore: no-config boot to SSH" "timeout — see $SCRATCH/serial-vmstore-noconf.log"
+            kill -9 "$QPID" 2>/dev/null || true
+          fi
         else
           record skip "vmstore" "could not populate NTFS fixture (ntfs3 mount failed)"
         fi
