@@ -42,7 +42,15 @@ drift is absorbed by bumping the pin, nothing else.
 6. **QEMU suite environment**: `-cdrom` vs virtio-blk boot quirks are
    firmware-dependent (SeaBIOS refuses virtio firmware-boot of this ISO);
    re-verify stage layout if QEMU/SeaBIOS/OVMF updates change behavior.
-7. **Orphaned build clients burn CPU silently** (found 2026-10-22): when the
+7. **`tools/iso-hotpatch.sh` carries five hard-won guards** (docker `-i`
+   artifact check, mksquashfs `-noappend`, hook-equivalent modes incl.
+   sudoers 0440, `-boot_image any replay` or the remux drops El Torito,
+   `--no-owner --no-group` + `-all-root` or the worktree's uid-1000 leaks
+   onto image dirs and sudo dies). Never bypass them; always boot-gate a
+   hotpatched build (`./test.sh --stage bios`) before flashing — three
+   defective #13s were caught exactly there, and each lesson is asserted by
+   the tool now.
+8. **Orphaned build clients burn CPU silently** (found 2026-10-22): when the
    tmux that drives a build dies, the root-owned
    `sudo -E build-in-container.sh → sudo → docker run` chain can survive with
    no container behind it and spin ~1.4 cores each forever (three chains from
