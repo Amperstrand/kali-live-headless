@@ -198,12 +198,60 @@ which is why the launcher takes `--format` from day one.
 ## 8. Open items (owner decisions/checks)
 
 1. **BitLocker status of the gaming PC's C:** — gates everything (§2.2).
+   **BLOCKED on owner** (physical check `manage-bde -status c:` from
+   Windows); the feature refuses BitLocker volumes by design, so an
+   encrypted C: simply keeps it off — no workaround until decided.
 2. **Fast Startup** — must be disabled from Windows once (§2.1).
-3. Guest OS provisioning source for the launcher default (`--cloud-init`
-   seed image vs ISO install) — depends on what the build farm's VMs
-   actually run; the vps-on-demand pilot's rootfs images are the natural
-   first consumer and need neither.
+   **BLOCKED on owner** (`powercfg /h off`, then a full shutdown); until
+   then every stick boot logs the hibernation refusal with the remediation.
+3. ~~Guest OS provisioning source~~ — decided for M1, see §8.1: prebuilt
+   golden rootfs + `virt-install --import` is the primary path; cloud-init
+   is the customization layer for M2; ISO installs are only for golden
+   image creation.
 4. ntfs3 benchmark result on target HW (optional, informational only).
+
+### 8.1 Guest provisioning source (the M1 fold-in research)
+
+Three viable sources for a VM whose root fs is a store volume, ranked for
+ephemeral build-VM usage:
+
+| Source | Bring-up | Cost | Verdict |
+|---|---|---|---|
+| **Prebuilt golden rootfs + `virt-install --import`** | seconds (no install step — boot the image) | needs a golden-image pipeline (build once, copy into `C:\vms` per VM) | **primary** — matches the vps-on-demand/Firecracker pilot's model; `kali-live-vm-create` already prints this line |
+| **Cloud image + cloud-init (NoCloud seed)** | ~30–60 s first-boot config | needs a cloud image + `cloud-localds`/genisoimage on the host (new packages ⇒ next full build) | **customization layer for M2** — per-VM ssh keys/packages without touching goldens |
+| **ISO install (virt-install + d-i/preseed)** | minutes per VM | heavyweight | only for (re)building golden images, never per-ephemeral-VM |
+
+Consequence for M1: the store's `<id>.image` slot is the VM's working copy;
+golden images live wherever the build pipeline keeps them and are copied (or
+qcow2-cloned with a backing file — deferred; backing chains across
+filesystems invite surprises) into the store at create time.
+
+## 9. M1 implementation status (2026-10-22/23, branch `vm-store-m1`)
+
+Shipped in the overlay (all WITH_KVM-gated, feature OFF by default):
+
+* `kali-live-vmstore-mount` (+ `.service`, enabled by the chroot hook):
+  KLHCONFIG `vm-store.conf` → gated RW ntfs-3g mount at
+  `/mnt/klh-vmstore` + libvirt dir pool `klh-vmstore`. Gates: forensic
+  cmdline, BitLocker FSTYPE, hibernated/dirty volume (ntfs-3g mount
+  failure surfaced with remediation), bad config values. `--dry-run`
+  emits a machine-readable plan for the unit-test battery.
+* `kali-live-vm-create` / `kali-live-vm-rm`: `<id>.image` volume lifecycle
+  via libvirt (`raw`/`qcow2`, sparse default, `--prealloc`), headroom guard
+  vs `reserved_free_mb`, `.meta` sidecar (M2 groundwork), `--stale` sweep
+  for the cleanup job. Domain define/start stays with the operator in M1
+  (the printed `virt-install --import` line); guests only ever receive
+  pool volumes — never raw devices (§6 invariant).
+* `ntfs-3g` pinned in the KVM package list (already installed transitively
+  in build #14 — the pin survives metapackage churn).
+* `tools/iso-hotpatch.sh` now recreates hook-owned unit enablement
+  symlinks in repacked images (hotpatch cannot run the chroot hook).
+* Tests: 16-case `--dry-run` fixture battery + tool guard units in
+  `test.sh` Stage A (non-root, PATH stubs); Stage B content asserts; new
+  Stage F `qemu-vmstore` (NTFS witness + enabled vm-store.conf: mount,
+  pool, create/duplicate/headroom/delete/`--stale`, host-verified markers
+  outside `\vms`, plus a second forensic-cmdline boot proving the
+  noautomount gate holds with the store explicitly ENABLED).
 
 ---
 

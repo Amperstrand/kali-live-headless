@@ -399,6 +399,43 @@ Security model (be honest with yourself about each layer):
 The test suite asserts the stack: packages shipped, `libvirtd` enabled and
 reachable via `virsh` as the live user, host-shield service active
 (a guest VM with networking is not booted inside the QEMU test guest).
+
+### VM store on the internal NTFS disk (opt-in, M1)
+
+`WITH_KVM=true` builds also ship an **opt-in** disk-backed VM store: VM
+root-filesystem images as files in a folder on the machine's NTFS-formatted
+Windows partition (e.g. `C:\vms\<vm-id>.image`), instead of RAM-only guests.
+Full design + safety research: `docs/vm-store-ntfs-research.md`.
+
+* **Disabled by default.** Put `vm-store.conf` on the stick's `KLHCONFIG`
+  partition to enable (same mechanism as `headless-wifi.conf`):
+
+  ```ini
+  enabled=true
+  partition=auto        # or LABEL:<label> | PARTUUID:<uuid> | /dev/sdXN
+  dir=vms               # the folder created on the NTFS volume
+  driver=ntfs-3g        # kernel ntfs3 is absent on the live kernel
+  reserved_free_mb=20480
+  ```
+
+* Boot mounts it at `/mnt/klh-vmstore` and defines libvirt pool
+  `klh-vmstore` over the folder; `kali-live-vm-create --id foo --cores 4
+  --ram-gb 8 --disk-gb 40` creates `C:\vms\foo.image` (sparse raw or
+  `--format qcow2`), `kali-live-vm-rm --id foo` (or `--stale` for the
+  cleanup sweep) removes it through libvirt.
+* Hard gates, each of which keeps the store OFF rather than risking the
+  Windows install: **forensic boot never mounts** (`noautomount`),
+  **BitLocker volumes are refused** (unattended mounting would need the
+  recovery key on the stick), **hibernated / Fast-Startup volumes are
+  refused** (disable Fast Startup in Windows once: `powercfg /h off`), and
+  image creation stops when free space would drop below
+  `reserved_free_mb`.
+* Security delta vs the table above: while enabled, the live host holds
+  **read-write access to the Windows system partition** — a compromised
+  host can then modify Windows itself. That is the explicit trade this
+  feature makes (the host is a disposable build host; the Windows install
+  on a build-slave gaming PC is not precious). Guests still only ever see
+  their own image file, never the partition.
 On a real machine, `tools/hw-check.sh` additionally asserts the firewall
 *rules* and their *behaviour* (see below).
 
