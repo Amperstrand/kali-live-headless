@@ -19,6 +19,12 @@ systemctl enable kali-live-headless-provision.service 2>&1 || true
 systemctl enable kali-live-console-banner.service 2>&1 || true
 systemctl enable kali-live-wifi-watchdog.service 2>&1 || true
 
+# DEFENSE: enforce exec bits on every shipped script — a git mode mishap
+# once shipped 0644 units (203/EXEC) twice; never again (test.sh also asserts)
+for f in /usr/local/sbin/kali-live-*; do
+    [ -e "$f" ] && chmod 0755 "$f"
+done
+
 # KVM/libvirt stack (packages present only on WITH_KVM builds)
 systemctl enable libvirtd.service 2>&1 || true
 systemctl enable virtlogd.socket 2>&1 || true
