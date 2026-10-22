@@ -1,0 +1,14 @@
+# Pure passthrough caching proxy for ./build.sh (upstream autodetects :3142).
+# No Remap-* virtual hosts: acng's remap normalization conflated
+# dists/<suite>/main vs /contrib URLs into one cache entry (2026-10-22) and
+# served wrong bytes to apt. Cache keying is strictly by full URL here.
+FROM debian:bookworm-slim
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends apt-cacher-ng \
+ && grep -v '^Remap-' /etc/apt-cacher-ng/acng.conf > /etc/apt-cacher-ng/acng.conf.new \
+ && mv /etc/apt-cacher-ng/acng.conf.new /etc/apt-cacher-ng/acng.conf \
+ && printf 'BindAddress: 0.0.0.0\nPassThroughPattern: .*\n' >> /etc/apt-cacher-ng/acng.conf \
+ && rm -rf /var/lib/apt/lists/*
+VOLUME /var/cache/apt-cacher-ng
+EXPOSE 3142
+CMD ["/usr/sbin/apt-cacher-ng", "Foreground=1"]
