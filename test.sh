@@ -411,6 +411,41 @@ SCCFG
   rc=$?
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then record pass "stick-conf --vm-store rejects garbage config"; else record fail "stick-conf --vm-store rejects garbage config" "rc=$rc"; fi
 
+# tools regression: iso-prune's reclaimable-total must count BYTES (fixed in
+# dd76fd8). du's default output unit is KiB while numfmt --to=iec expects
+# bytes, so the pre-fix dry run printed a ~22G reclaimable set as "22M". Fake
+# two archives (candidate 3 MiB with sidecars, kept-newest 5 MiB deliberately
+# PARTIAL — no sidecars), dry-run the real script against them, and require:
+# the run to complete (a sidecar-less archive used to kill the table silently
+# under set -e), and the printed total to be the candidate's byte count — the
+# KiB-units bug lands 1024x below the floor, and counting kept archives too
+# lands above the ceiling.
+if command -v numfmt >/dev/null 2>&1; then
+  prune_dir="$SCRATCH/prune-regr"
+  prune_iso="kali-linux-rolling-live-amd64.iso"
+  mkdir -p "$prune_dir/iso-build1" "$prune_dir/iso-build2"
+  head -c 3145728 /dev/urandom >"$prune_dir/iso-build1/$prune_iso"
+  head -c 5242880 /dev/urandom >"$prune_dir/iso-build2/$prune_iso"
+  ( cd "$prune_dir/iso-build1" && sha512sum "$prune_iso" >"$prune_iso.sha512sum" )
+  printf '## Verdict\n\nfixture, not a real build\n' >"$prune_dir/iso-build1/INDEX.md"
+  prune_rc=0
+  prune_out=$(OUT_DIR="$prune_dir" "$REPO_DIR/tools/iso-prune.sh" 2>&1) || prune_rc=$?
+  if [ "$prune_rc" -eq 0 ]; then
+    record pass "iso-prune: dry run completes" "partial (sidecar-less) newest archive tolerated"
+  else
+    record fail "iso-prune: dry run completes" "rc=$prune_rc — partial archive kills the table under set -e; last line: $(printf '%s' "$prune_out" | tail -1)"
+  fi
+  prune_got=$(printf '%s\n' "$prune_out" | sed -n 's/^ \* reclaimable: //p' | tail -1)
+  prune_b=$(numfmt --from=iec "${prune_got:-0}" 2>/dev/null) || prune_b=0
+  if [ "${prune_b:-0}" -ge 2831155 ] && [ "${prune_b:-0}" -le 6291456 ]; then
+    record pass "iso-prune: reclaimable-total counts bytes" "dry-run printed '$prune_got' (3 MiB candidate; the 5 MiB newest archive is kept, not counted)"
+  else
+    record fail "iso-prune: reclaimable-total counts bytes" "printed '${prune_got:-nothing}' (${prune_b:-0} B parsed) — want ≈3.1M; the pre-dd76fd8 du-units bug prints 3.0K here"
+  fi
+else
+  record skip "iso-prune: reclaimable-total counts bytes" "numfmt not available"
+fi
+
 [ "$ONLY_STATIC" = true ] && { section "summary"; printf 'pass=%d fail=%d skip=%d\n' "$PASS" "$FAIL" "$SKIP"; [ "$FAIL" -eq 0 ]; exit $?; }
 
 # ============================================================= Stage B
