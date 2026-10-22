@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""kali-live-wg-enroll — one-shot stick-side hub enrollment (WG M1).
+
+Publishes a signed Nostr enrollment request so the hub (inr2) can add
+this stick's WireGuard peer WITHOUT a human reading the console banner:
+the request carries the stick's WG public key + its derived tunnel
+address, signed with the stick's persistent mesh identity (the FIPS
+nsec on KLHCONFIG). The hub side is tools/hub-enroll-fetch.py +
+tools/hub-enroll-stick.sh — see docs/wireguard-m1-enrollment.md.
+
+What this is NOT: this is not authorization. The signature proves the
+request came from the mesh identity; the WireGuard handshake (knowledge
+of the WG private key) is and remains the actual gate (SECURITY.md).
+
+Config (all in /etc/default/kali-live-headless, staged by configure.sh):
+  WG_ENROLL_HUB_NPUB   hub's mesh npub (the p-tag / addressee)
+  WG_ENROLL_RELAYS     space-separated wss:// relay URLs
+Both empty (default) = feature off: print what would be sent, exit 0
+(same convention as kali-live-wireguard-init).
+
+Usage: kali-live-wg-enroll [--config-mount-dir DIR] [--dry-run]
+  --config-mount-dir   where wireguard.conf + host-role.conf live
+                       (default: probe /run/kali-live-headless-config)
+  --dry-run            print the event, skip relay publish
+
+Exit 0 published (or dry-run) / 1 misconfiguration or relay rejection.
+"""
+import argparse
+import os
+import sys
+
+sys.path.insert(0, "/usr/local/lib/kali-live-headless")
+try:
+    import wg_enroll_lib as W
+except ImportError:  # repo checkout (tests): resolve relative to this file
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "lib", "kali-live-headless"))
+    import wg_enroll_lib as W
+
+ETC_DEFAULT = os.environ.get("KLH_ETC_DEFAULT",
+                             "/etc/default/kali-live-headless")
+
+
+def cfg_get(key, path=ETC_DEFAULT):
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.startswith(key + "="):
+                    return line.split("=", 1)[1].strip().strip("'\"")
+    except OSError:
+        pass
+    return ""
+
+
+def kv_get(path, key):
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.startswith(key + "="):
+                    return line.split("=", 1)[1].strip().strip("'\"")
+    except OSError:
+        pass
+    return ""
+
+
+def nsec_to_int(nsec):
+    # bech32 decode works identically for nsec (the hrp only affects the
+    # checksum, which we strip along with the rest of the tail)
+    data = [W.CHARSET.index(c) for c in nsec[6:]]
+    decoded = W._convertbits(data[:-6], 5, 8, pad=False)
+    return int.from_bytes(bytes(decoded), "big")
+
+
+def main():
+    ap = argparse.ArgumentParser(add_help=True)
+    ap.add_argument("--config-mount-dir",
+                    default="/run/kali-live-headless-config")
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+
+    mnt = args.config_mount_dir
+    wg_pub = kv_get(os.path.join(mnt, "wireguard.conf"), "PUBKEY")
+    nsec = kv_get(os.path.join(mnt, "host-role.conf"), "FIPS_NSEC")
+    tunnet = cfg_get("WG_TUNNET") or "10.66"
+    hub_npub = cfg_get("WG_ENROLL_HUB_NPUB")
+    relays = cfg_get("WG_ENROLL_RELAYS").split()
+
+    if not wg_pub:
+        print("wg-enroll: no wireguard.conf in %s — run provision first "
+              "(or pass --config-mount-dir)" % mnt, file=sys.stderr)
+        return 1
+    if not nsec:
+        print("wg-enroll: no FIPS_NSEC in host-role.conf — mesh identity "
+              "missing; enrollment needs the stick's own identity", file=sys.stderr)
+        return 1
+    if not hub_npub or not relays:
+        ip = W.derive_tunnel_ip(wg_pub, tunnet)
+        print(f"wg-enroll: WG_ENROLL_HUB_NPUB/WG_ENROLL_RELAYS unset — "
+              f"feature off. This stick would enroll as:\n  {wg_pub} -> {ip}")
+        return 0
+
+    ev = W.make_enroll_event(nsec_to_int(nsec), wg_pub, tunnet, hub_npub)
+    ip = W.derive_tunnel_ip(wg_pub, tunnet)
+    print(f"wg-enroll: {wg_pub} -> {ip}")
+    print(f"  event {ev['id']} (kind {ev['kind']}, p-tag {hub_npub})")
+    if args.dry_run:
+        print("  dry-run: not publishing")
+        return 0
+
+    ok = False
+    for relay in relays:
+        try:
+            resp = W.ws_publish(relay, ev)
+        except Exception as e:  # noqa: BLE001 — report every relay, keep going
+            print(f"  {relay}: {e}", file=sys.stderr)
+            continue
+        good = isinstance(resp, list) and len(resp) >= 3 and resp[2] is True
+        print(f"  {relay}: {'OK' if good else resp}")
+        ok = ok or good
+    if not ok:
+        print("wg-enroll: no relay accepted the event", file=sys.stderr)
+        return 1
+    print("wg-enroll: published — the hub applies it per "
+          "docs/wireguard-m1-enrollment.md (handshake within ~25 s of "
+          "enrollment; this stick keepalives every 25 s)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
