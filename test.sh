@@ -174,12 +174,12 @@ fi
 
 # load config values if available (non-fatal)
 HOSTNAME_EXPECTED="kali-live" WIFI_SSID_EXPECTED="" PUBKEY_FP_EXPECTED="" SSH_KEY=""
-BOOT_DEFAULT_EXPECTED="live" LIVE_PASSWORD_MODE_EXPECTED="random" WITH_KVM_EXPECTED="true" WG_ENDPOINT_EXPECTED=""
+BOOT_DEFAULT_EXPECTED="live" LIVE_PASSWORD_MODE_EXPECTED="random" WITH_KVM_EXPECTED="true" WG_ENDPOINT_EXPECTED="" VARIANT_EXPECTED="minimal" TORAM_EXPECTED="true"
 if [ -r "$REPO_DIR/config" ]; then
   rm -f "$SCRATCH/env" "$SCRATCH/pubkeypath"
   # shellcheck disable=SC1091
   ( set -a; source "$REPO_DIR/lib/common.sh"; klh_load_config "$REPO_DIR/config"; \
-    printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$HOSTNAME" "$WIFI_SSID" "$BOOT_DEFAULT" "$LIVE_PASSWORD_MODE" "$WITH_KVM" "${WG_ENDPOINT:-}" > "$SCRATCH/env"; \
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$HOSTNAME" "$WIFI_SSID" "$BOOT_DEFAULT" "$LIVE_PASSWORD_MODE" "$WITH_KVM" "${WG_ENDPOINT:-}" "$VARIANT" "$TORAM_ENTRY" > "$SCRATCH/env"; \
     printf '%s\n' "$(klh_expand_tilde "$SSH_PUBKEY_PATH")" > "$SCRATCH/pubkeypath" )
   HOSTNAME_EXPECTED=$(sed -n 1p "$SCRATCH/env")
   WIFI_SSID_EXPECTED=$(sed -n 2p "$SCRATCH/env")
@@ -187,6 +187,8 @@ if [ -r "$REPO_DIR/config" ]; then
   LIVE_PASSWORD_MODE_EXPECTED=$(sed -n 4p "$SCRATCH/env")
   WITH_KVM_EXPECTED=$(sed -n 5p "$SCRATCH/env")
   WG_ENDPOINT_EXPECTED=$(sed -n 6p "$SCRATCH/env")
+  VARIANT_EXPECTED=$(sed -n 7p "$SCRATCH/env")
+  TORAM_EXPECTED=$(sed -n 8p "$SCRATCH/env")
   PUBKEY_PATH=$(cat "$SCRATCH/pubkeypath")
   if [ -r "$PUBKEY_PATH" ] && command -v ssh-keygen >/dev/null; then
     if PUBKEY_FP_EXPECTED=$(ssh-keygen -lf "$PUBKEY_PATH" 2>/dev/null | sed 's/^ *[0-9]* //'); then
@@ -514,6 +516,23 @@ PKGS
     # Kali boot menu preserved (forensic + persistence entries intact)
     sudo test -f "$ISO_MNT/boot/grub/grub.cfg" && sudo grep -q "forensic mode" "$ISO_MNT/boot/grub/grub.cfg" && record pass "grub: forensic entry preserved" || record skip "grub: forensic entry preserved" "no grub.cfg?"
     sudo grep -rq "forensic" "$ISO_MNT/isolinux/" 2>/dev/null && record pass "isolinux: forensic entry preserved" || record skip "isolinux: forensic entry preserved" "no isolinux dir"
+    # variant: the metapackage set must MATCH the configured flavour — a
+    # minimal build carrying kali-linux-default (or vice versa) is a
+    # misconfiguration that silently quadruples the image
+    if [ "$VARIANT_EXPECTED" = minimal ]; then
+      if sudo grep -A1 "^Package: kali-linux-default$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "install ok installed"; then
+        record fail "variant minimal ships no kali-linux-default" "found it installed — check ./config VARIANT"
+      else
+        record pass "variant minimal: kali-linux-default absent"
+      fi
+      sudo grep -A1 "^Package: kali-linux-core$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "install ok installed" \
+        && record pass "variant minimal: kali-linux-core base present" || record fail "variant minimal: kali-linux-core base present"
+    fi
+    # toram boot entry
+    if [ "$TORAM_EXPECTED" = true ]; then
+      sudo grep -rq "toram" "$ISO_MNT/isolinux/" 2>/dev/null && record pass "isolinux: toram entry present" || record fail "isolinux: toram entry present"
+      sudo grep -q "toram" "$ISO_MNT/boot/grub/grub.cfg" 2>/dev/null && record pass "grub: toram entry present" || record fail "grub: toram entry present"
+    fi
 
     # Auto-boot timeouts (live-build's default timeout 0 would hang unattended boots)
     sudo grep -q '^timeout 50$' "$ISO_MNT/isolinux/isolinux.cfg" 2>/dev/null && record pass "isolinux: auto-boot timeout (5s)" || record fail "isolinux: auto-boot timeout (5s)"

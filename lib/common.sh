@@ -94,7 +94,7 @@ klh_load_config() {
   : "${WIFI_REGDOM:=}"
   : "${SSH_EXTRA_PUBKEYS:=}"
   : "${KALI_LIVE_REF:=$KLH_DEFAULT_KALI_LIVE_REF}"
-  : "${VARIANT:=default}"
+  : "${VARIANT:=minimal}"
   : "${ARCH:=amd64}"
   : "${BRANCH:=kali-rolling}"
   : "${BUILD_MIRROR:=}"
@@ -108,6 +108,7 @@ klh_load_config() {
   : "${WG_HUB_ADDR:=}"
   : "${WG_PORT:=51820}"
   : "${VMSTORE_BITLOCKER:=off}"
+  : "${TORAM_ENTRY:=true}"
 
   klh_validate_hostname "$HOSTNAME"     || klh_die "invalid HOSTNAME '$HOSTNAME' in $f"
   klh_validate_ssid "$WIFI_SSID"        || klh_die "invalid WIFI_SSID in $f (1-32 chars, no control chars, no leading/trailing whitespace)"
@@ -139,6 +140,9 @@ klh_load_config() {
   fi
   printf '%s' "$VMSTORE_BITLOCKER" | grep -Eq '^(off|try)$' \
     || klh_die "invalid VMSTORE_BITLOCKER '$VMSTORE_BITLOCKER' (off|try)"
+  printf '%s' "$VARIANT" | grep -Eq '^(minimal|default|light)$' \
+    || klh_die "invalid VARIANT '$VARIANT' (minimal | default | light)"
+  klh_validate_bool "$TORAM_ENTRY" || klh_die "invalid TORAM_ENTRY (true|false)"
   [ -n "${WIFI_PSK:-}" ] || klh_die "WIFI_PSK not set in $f"
 }
 

@@ -50,6 +50,11 @@ Options:
       --wg-hub-addr A     Hub's own tunnel address if outside the tunnel net
                           (e.g. 10.99.0.1 when joining an existing hub)
       --wg-port PORT      Hub UDP port (default: 51820)
+  -v, --variant V         Image flavour: minimal (default — appliance: our
+                          headless/KVM stack only), default (kali-linux-default
+                          incl. metasploit/gvm/texlive, ~4x bigger), light
+                          (core + Xfce desktop, for virt-manager GUI use)
+      --toram-entry B     Ship a "Live (load to RAM)" boot entry (default true)
   -y, --assume-yes        Overwrite an existing ./config without asking
   -h, --help              This help
 
@@ -77,6 +82,8 @@ EOF
     --wg-hub-addr)       OPT_WG_HUB=${2:?}; shift 2 ;;
     --wg-port)           OPT_WG_PORT=${2:?}; shift 2 ;;
     --bitlocker-unlock) OPT_BITLOCKER=${2:?}; shift 2 ;;
+    -v|--variant)        OPT_VARIANT=${2:?}; shift 2 ;;
+    --toram-entry)       OPT_TORAM=${2:?}; shift 2 ;;
     --wg-enroll-hub)     OPT_WG_ENROLL_HUB=${2:?}; shift 2 ;;
     --wg-enroll-relays)  OPT_WG_ENROLL_RELAYS=${2:?}; shift 2 ;;
     -y|--assume-yes)     ASSUME_YES=true; shift ;;
@@ -194,6 +201,8 @@ klh_validate_password_mode "$LIVE_PASSWORD_MODE" || klh_die "password mode must 
 
 WITH_KVM=${OPT_KVM:-}
 if [ -z "$WITH_KVM" ]; then prompt_choice WITH_KVM "Bake in the KVM/libvirt stack?" "true" true false; fi
+VARIANT=${VARIANT:-minimal}
+[ -z "$TORAM_ENTRY" ] && TORAM_ENTRY=true
 klh_validate_bool "$WITH_KVM" || klh_die "--with-kvm must be true or false"
 
 # WireGuard access channel (non-interactive only: flags or environment; all
@@ -203,6 +212,8 @@ WG_ENDPOINT=${OPT_WG_ENDPOINT:-}
 WG_PEER_PUBKEY=${OPT_WG_PEER:-}
 WG_TUNNET=${OPT_WG_NET:-}
 WG_PORT=${OPT_WG_PORT:-}
+VARIANT=${OPT_VARIANT:-}
+TORAM_ENTRY=${OPT_TORAM:-}
 VMSTORE_BITLOCKER=${OPT_BITLOCKER:-}
 WG_HUB_ADDR=${OPT_WG_HUB:-}
 WG_ENROLL_HUB_NPUB=${OPT_WG_ENROLL_HUB:-}
@@ -234,6 +245,8 @@ TMP=$(mktemp)
   printf 'WG_TUNNET=%q\n' "$WG_TUNNET"
   printf 'WG_PORT=%q\n' "$WG_PORT"
   printf 'VMSTORE_BITLOCKER=%q\n' "$VMSTORE_BITLOCKER"
+  printf 'VARIANT=%q\n' "$VARIANT"
+  printf 'TORAM_ENTRY=%q\n' "$TORAM_ENTRY"
   printf 'WG_HUB_ADDR=%q\n' "$WG_HUB_ADDR"
   printf 'WG_ENROLL_HUB_NPUB=%q\n' "$WG_ENROLL_HUB_NPUB"
   printf 'WG_ENROLL_RELAYS=%q\n' "$WG_ENROLL_RELAYS"
@@ -252,6 +265,8 @@ klh_info "boot default    : $BOOT_DEFAULT (auto-boots after 5s)"
 klh_info "console password: $LIVE_PASSWORD_MODE"
 klh_info "wireguard       : ${WG_ENDPOINT:-off}${WG_TUNNET:+ ($WG_TUNNET.0/24 via $WG_TUNNET hub)}"
 [ -n "$WG_ENROLL_HUB_NPUB" ] && klh_info "wg enrollment   : via hub $WG_ENROLL_HUB_NPUB (${WG_ENROLL_RELAYS:-no relays!})"
+klh_info "variant         : $VARIANT"
+klh_info "toram boot entry: $TORAM_ENTRY"
 klh_info "KVM stack       : $WITH_KVM$( [ "$WITH_KVM" = true ] && echo ' (libvirtd + virt-manager, host shielded from guests)')"
 cat <<'EOF'
 
