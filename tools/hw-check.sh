@@ -216,6 +216,18 @@ if [ "$WITH_KVM" = true ]; then
 
   # bring the default net up if needed (kvm-enable should have), then
   # wait for the daemon's tick (30 s) to install the rules
+  # BOOT-PATH assert — BEFORE the wait loop below net-starts anything.
+  # hw-check must verify the PRODUCT brought virbr0 up at boot; a test
+  # that remediates first masks boot-path defects (the #14 kvm-enable
+  # early-exit was invisible in hardware runs for exactly this reason:
+  # this very loop started the net itself).
+  v=$(guest 'ip link show virbr0 >/dev/null 2>&1 && echo up || echo absent')
+  if [ "$v" = "up" ]; then
+    record pass "boot-path: virbr0 up without help (kvm-enable net bring-up works)"
+  else
+    record fail "boot-path: virbr0 up without help" "absent at hw-check time - the image's boot path (kvm-enable net-start/autostart) failed. hw-check will start it now for the remaining tests"
+  fi
+
   fw=""
   for _ in $(seq 1 15); do
     fw=$(guest_sudo 'sh -c "ip link show virbr0 >/dev/null 2>&1 || virsh -c qemu:///system net-start default >/dev/null 2>&1; iptables -C INPUT -i virbr0 -j DROP >/dev/null 2>&1 && iptables -C FORWARD -i virbr0 -d 192.168.0.0/16 -j DROP >/dev/null 2>&1 && echo yes && exit 0; echo no"')
