@@ -691,6 +691,19 @@ Still owed on hardware (each has a tool or a first-run caveat):
 
 ---
 
+## Rescue channel (v20, opt-in)
+
+The one sanctioned exception to "no cloud": `KLHCONFIG:/rescue.conf`
+with `RESCUE_ENABLED=true` arms `kali-live-rescue`, which opens a
+Cloudflare *quick tunnel* (`trycloudflare.com`) fronting a pure-stdlib
+WebSocket→TCP relay to sshd. SSH's own crypto runs end-to-end; the CDN
+sees framed bytes; **key auth remains the only access gate**. The random
+URL prints on the console and lands in the journal; the flag is RAM-only
+(cleared on reboot unless the conf file persists it). The binary ships
+in the default flavour only, service never enabled without the flag.
+Operator side: any wstunnel-style ws→tcp client. See
+`docs/fips-optionality-and-rescue-channel.md` for the full design.
+
 ## Related projects
 
 This repo is packaging of [the official Kali live-build process](https://www.kali.org/docs/development/live-build-a-custom-kali-iso/)

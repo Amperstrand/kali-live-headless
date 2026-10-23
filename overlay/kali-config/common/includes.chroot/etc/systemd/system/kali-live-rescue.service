@@ -1,0 +1,18 @@
+[Unit]
+Description=kali-live-headless: opt-in SSH rescue channel (trycloudflare quick tunnel)
+Documentation=file:///usr/local/sbin/kali-live-rescue
+After=network-online.target ssh.service
+Wants=network-online.target
+# opt-in only: provision touches this flag when KLHCONFIG:/rescue.conf
+# carries RESCUE_ENABLED=true (RAM state - reboot clears it)
+ConditionPathExists=/run/kali-live-headless/rescue-enabled
+ConditionPathExists=/usr/local/bin/cloudflared
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/kali-live-rescue
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
