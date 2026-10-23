@@ -24,7 +24,7 @@ OUT=$("$S" mount "$A" /mnt/x 2>&1)
 if printf '%s' "$OUT" | grep -q "did not come up"; then PASS=$((PASS+1)); echo "  ok: clear key accepted + dislocker invoked (stub fails, as designed)"; else FAIL=$((FAIL+1)); echo "  FAIL clearkey: $OUT"; fi
 
 OUT=$("$S" try-mount /mnt/x 2>&1)
-if printf '%s' "$OUT" | grep -q "optimistic unlock disabled"; then PASS=$((PASS+1)); echo "  ok: try-mount refuses when VMSTORE_BITLOCKER != try"; else FAIL=$((FAIL+1)); echo "  FAIL gate: $OUT"; fi
+if printf '%s' "$OUT" | grep -q "optimistic unlock not consented"; then PASS=$((PASS+1)); echo "  ok: try-mount refuses when VMSTORE_BITLOCKER != try"; else FAIL=$((FAIL+1)); echo "  FAIL gate: $OUT"; fi
 
 echo "pass=$PASS fail=$FAIL"
 [ "$FAIL" = 0 ]
