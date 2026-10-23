@@ -140,7 +140,7 @@ if [ -n "$wgp" ]; then
   if [ -n "$EXPECT_WG" ]; then
     [ "$wgp" = "$EXPECT_WG" ] && record pass "wg pubkey stable across reboot" || record fail "wg pubkey stable across reboot (had $EXPECT_WG)"
   fi
-  record info "enroll on the hub: wg set wg0 peer $wgp allowed-ips $wg_ip/32"
+  [ -n "${wg_ip:-}" ] && record info "enroll on the hub: enroll-stick.sh $wgp (derives ${wg_ip}/32)"
 elif [ "$NO_WG" = true ]; then
   record info "wireguard off (--no-wg)"
 elif guest 'grep -q "^WG_ENDPOINT=" <(cat /etc/default/kali-live-headless) 2>/dev/null || grep -q "^WG_ENDPOINT=" /etc/default/kali-live-headless 2>/dev/null'; then
@@ -371,7 +371,10 @@ fi
 
 section "vm-forward behavioural test (one inbound port into the guest net)"
 if [ "$TEST_VMFORWARD" = true ]; then
-  LAN_IP=$(guest 'ip -4 addr show scope global | grep -oE "(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]+\.[0-9]+" | head -1')
+  # the LAN address is the one on the DEFAULT-ROUTE interface: a plain
+  # scope-global grep once grabbed virbr0's 192.168.122.1 (libvirt bridge,
+  # unreachable from off-box) and the inbound test curled a dead address.
+  LAN_IP=$(guest 'ip -4 route get 192.0.2.1 2>/dev/null | grep -oE "src [0-9.]+" | cut -d" " -f2')
   if [ -z "$LAN_IP" ]; then
     record fail "vm-forward" "stick has no LAN address to dial in on"
   elif ! guest 'virsh -c qemu:///system net-info default 2>/dev/null | grep -q "Active:.*yes"' \
@@ -381,24 +384,42 @@ if [ "$TEST_VMFORWARD" = true ]; then
     # stand-in "guest service": an alias IP on virbr0 with an HTTP listener.
     guest_sudo 'ip addr add 192.168.122.250/24 dev virbr0 2>/dev/null; systemctl is-active --quiet libvirtd || true'
     if guest 'command -v python3 >/dev/null'; then
-      guest_sudo 'nohup python3 -m http.server 2222 --bind 192.168.122.250 >/tmp/vmfw-test.log 2>&1 & echo $! > /run/vmfw-test.pid' >/dev/null 2>&1
-      sleep 2
-      if guest_sudo '/usr/local/sbin/kali-live-vm-forward add hwtest 192.168.122.250 2222 2222 >/dev/null 2>&1'; then
+      # Spawn the listener via a self-contained remote script: an inline
+      # 'nohup ... &' over plain ssh does not detach cleanly (the background
+      # process ties to the ssh session's stdio and dies with it — the same
+      # lesson as vm-egress-remote.sh's "ssh -n"). Proven working 2026-10-23.
+      printf '%s\n' '#!/bin/sh' 'pkill -f "[h]ttp.server 2222" 2>/dev/null' 'sleep 1' \
+        'rm -f /run/vmfw-test.log' \
+        'nohup python3 -m http.server 2222 --bind 192.168.122.250 >/run/vmfw-test.log 2>&1 &' \
+        'sleep 2' 'ss -tln | grep -c ":2222 "' > "$EVID/vmfw-remote.sh"
+      scp -F none -i "$SSH_KEY" -o UserKnownHostsFile="$EVID/known_hosts" -o StrictHostKeyChecking=accept-new \
+        "$EVID/vmfw-remote.sh" kali@"$HOST":/tmp/vmfw-remote.sh >/dev/null 2>&1
+      listener=$(ssh -n -F none -i "$SSH_KEY" -o UserKnownHostsFile="$EVID/known_hosts" \
+        -o StrictHostKeyChecking=accept-new kali@"$HOST" 'sudo -n sh /tmp/vmfw-remote.sh' 2>/dev/null || echo 0)
+      [ "$listener" = "1" ] || record fail "vm-forward: stand-in listener started" "ss reported '$listener' listeners on :2222"
+      # arrival interface = the default-route device (route get to a foreign
+      # address; a local address would answer 'lo'). Computed ONCE, passed to
+      # BOTH add and remove — a missing/empty value silently falls back to the
+      # script's wg0 default and the test curls a dead path (the 2026-10-23
+      # debugging session: three hours, four distinct harness bugs).
+      EXT_IF=$(guest 'ip -4 route get 192.0.2.1 2>/dev/null | grep -oE "dev [a-z0-9]+" | cut -d" " -f2')
+      [ -n "$EXT_IF" ] || record fail "vm-forward: arrival interface" "could not derive it from the route table"
+      if [ -n "$EXT_IF" ] && guest_sudo "KLH_VM_FORWARD_IFACES=$EXT_IF /usr/local/sbin/kali-live-vm-forward add hwtest 192.168.122.250 2222 2222" >/dev/null 2>&1; then
         # NOTE: this dials in over the LAN from THIS workstation — exactly the
         # traffic the DNAT is designed to catch (PREROUTING, not OUTPUT).
-        code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 8 "http://$LAN_IP:2222/")
+        code=$(curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 8 "http://$LAN_IP:2222/")
         if [ "$code" = "200" ]; then
           record pass "vm-forward: LAN:$LAN_IP:2222 reached the guest-net service" "through $EXT_IF DNAT + FORWARD"
         else
-          record fail "vm-forward: inbound port" "HTTP $code from http://$LAN_IP:2222/ (want 200); check iptables -t nat -S PREROUTING on the stick"
+          record fail "vm-forward: inbound port" "HTTP $code from http://$LAN_IP:2222/ (want 200); check /run/vmfw-test.log on the stick"
         fi
-        guest_sudo "KLH_VM_FORWARD_IFACES=\$EXT_IF /usr/local/sbin/kali-live-vm-forward remove hwtest >/dev/null 2>&1" || true
-        code2=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://$LAN_IP:2222/")
+        guest_sudo "KLH_VM_FORWARD_IFACES=$EXT_IF /usr/local/sbin/kali-live-vm-forward remove hwtest" >/dev/null 2>&1 || true
+        code2=$(curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 5 "http://$LAN_IP:2222/")
         [ "$code2" = "000" ] && record pass "vm-forward: port closed again after remove" || record fail "vm-forward: port still open after remove (HTTP $code2)"
       else
         record fail "vm-forward" "kali-live-vm-forward add failed (shipped in this image?)"
       fi
-      guest_sudo 'kill "$(cat /run/vmfw-test.pid 2>/dev/null)" 2>/dev/null; rm -f /run/vmfw-test.pid; ip addr del 192.168.122.250/24 dev virbr0 2>/dev/null' >/dev/null 2>&1 || true
+      ssh -n -F none -i "$SSH_KEY" -o UserKnownHostsFile="$EVID/known_hosts" -o StrictHostKeyChecking=accept-no         kali@"$HOST" 'sudo -n sh -c "pkill -f "[h]ttp.server 2222" 2>/dev/null; ip addr del 192.168.122.250/24 dev virbr0 2>/dev/null; true"' >/dev/null 2>&1 || true
     else
       record skip "vm-forward" "no python3 in the image for the stand-in listener"
     fi
