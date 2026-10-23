@@ -603,7 +603,15 @@ else
   # One QEMU hostfwd port per lane: concurrent suites in different worktrees
   # (this is a multi-agent repo now) must not fight over 2222 — and nobody
   # should ever need to kill another lane's QEMU to run their own gate.
-  PORT="${KLH_TEST_PORT:-2222}"
+  # Port policy: KLH_TEST_PORT wins; unset = auto-pick a free ephemeral port
+  # (recorded in the log so parallel lanes can see each other and nobody
+  # ever kills a "stale" listener that is another lane's live suite — the
+  # 2026-10-23 incident). Explicit 2222 still available if wanted.
+  PORT="${KLH_TEST_PORT:-}"
+  if [ -z "$PORT" ]; then
+    PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null || echo 2222)
+    klh_info "auto-picked hostfwd port $PORT (set KLH_TEST_PORT to pin)"
+  fi
   for _pf in "$SCRATCH"/qemu-*.pid; do
     [ -e "$_pf" ] || continue
     _p=$(cat "$_pf" 2>/dev/null || true)
