@@ -51,6 +51,19 @@ done
 if [ -n "$URL" ]; then
     echo "$URL" > "$RUN/rescue-url"
     log "rescue URL: $URL  (ssh via any wstunnel-style ws client; key auth only)"
+    # headless discovery: publish the URL as a signed kind-20267 event to
+    # public relays (world-readable by design; worthless without the SSH
+    # key). The nsec is read from a brief RO mount of the config partition.
+    KLHC=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2 == "KLHCONFIG" { print "/dev/" $1; exit }')
+    if [ -n "$KLHC" ] && mkdir -p /run/kali-live-headless-config-ro 2>/dev/null        && mount -o ro "$KLHC" /run/kali-live-headless-config-ro 2>/dev/null; then
+        python3 /usr/local/lib/kali-live-headless/rescue_publish.py \
+            --url "$URL" --config-mount-dir /run/kali-live-headless-config-ro \
+            2>/dev/null || log "WARNING: rescue URL publish failed (relay reachability?)"
+        umount /run/kali-live-headless-config-ro 2>/dev/null || true
+        rmdir /run/kali-live-headless-config-ro 2>/dev/null || true
+    else
+        log "WARNING: no KLHCONFIG to sign the rescue URL - console only"
+    fi
 else
     log "WARNING: no tunnel URL after 30 s — see journalctl -t kali-live-rescue / $RUN/rescue-tunnel.log"
 fi
