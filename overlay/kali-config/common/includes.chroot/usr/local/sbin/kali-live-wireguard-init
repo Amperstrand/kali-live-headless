@@ -64,6 +64,16 @@ if [ -r "$KV" ]; then
     TUNIP=$( sed -n 's/^TUNIP=//p'   "$KV" | head -n 1 | tr -d \'\")
 fi
 
+# Deterministic per-machine key: if the stick carries a master salt, the
+# key is DERIVED from (salt, this machine's fingerprint) — same stick on a
+# different machine gets a different key, and the operator can precompute
+# the pubkey before the machine ever boots (tools/derive-identities).
+SALT_FILE="$1/master.salt"
+if [ -z "$PRIV" ] && [ -r "$SALT_FILE" ] && [ -x /usr/local/lib/kali-live-headless/derive_identity.py ]; then
+    SALT=$(head -n1 "$SALT_FILE" | tr -d '"')
+    DERIVED=$(python3 /usr/local/lib/kali-live-headless/derive_identity.py "$SALT" --machine --purpose wireguard 2>/dev/null)         && [ -n "$DERIVED" ] && PRIV=$DERIVED         && PUB=$(printf '%s\n' "$PRIV" | wg pubkey)         && echo "wireguard: key derived from master salt (per-machine)" >&2
+fi
+
 if [ -z "$PRIV" ] || [ -z "$PUB" ]; then
     PRIV=$(wg genkey) || { echo "wireguard: wg genkey failed" >&2; exit 1; }
     PUB=$(printf '%s\n' "$PRIV" | wg pubkey) || { echo "wireguard: wg pubkey failed" >&2; exit 1; }

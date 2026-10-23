@@ -7,7 +7,7 @@ test, it is listed as **unproven** — do not trust it. Run:
     ./test.sh --iso output/iso-build<N>/kali-linux-rolling-live-amd64.iso   # suite
     tools/hw-check.sh                                                      # on hardware
 
-Last reviewed: 2026-10-22 (builds #11/#12 era).
+Last reviewed: 2026-10-23 (builds #17/#18 era; salt identities + BitLocker + FIPS daemon added).
 
 ## Access and authentication
 
@@ -32,9 +32,18 @@ Last reviewed: 2026-10-22 (builds #11/#12 era).
 Accepted, documented risks (see README for mitigations):
 
 * **Plaintext secrets on the boot medium.** The Wi-Fi PSK is baked into the
-  ISO; the FIPS `nsec` and the WireGuard private key live in plaintext on the
-  FAT32 `KLHCONFIG` partition. Threat model: physical access to the stick is
-  game over — rotate by deleting the file (WG/mesh) or rebuilding (PSK).
+  ISO; the per-machine WireGuard key and mesh `nsec` live in plaintext on the
+  FAT32 `KLHCONFIG` partition; the **master salt** (v19+) lives there too
+  and is the crown jewel: it deterministically derives EVERY identity of
+  EVERY machine the stick boots. Threat model: physical access to the stick
+  is game over — rotate by deleting the file (salt deletion re-keys all
+  identities; WG/mesh files rotate that machine) or rebuilding (PSK).
+* **BitLocker unlock is owner-consented and key-bounded.** Clear keys
+  (suspended protection) or owner-supplied recovery passwords only — no
+  TPM bypass exists or is attempted (sealed keys are unrecoverable from a
+  Linux boot by design). Read-only by default; hibernated Windows forces
+  read-only; consent is stick-level (`bitlocker=off` on KLHCONFIG vetoes a
+  staged `try`).
 * **The SSH key is the master credential** (passwordless sudo, key-only
   sshd). Lose the key ⇒ lose the stick; there is no second factor.
 * **sshd is reachable from the LAN** (publickey-only). M2 of the WireGuard
@@ -48,6 +57,8 @@ Accepted, documented risks (see README for mitigations):
 | Guest → LAN (RFC1918) blocked | same behavioural tests: a real VM could not reach the LAN gateway; internet egress still worked (NAT) | escape hatch documented in README (stop daemon + delete rule) |
 | Firewall cannot silently die at boot | the #11 hardware review found exactly that (oneshot exited 0 with zero rules); c8fd47c made it a daemon + hw-check asserts rules exist *after* boot | the suite also asserts the service is `active` |
 | Forensic boot touches nothing | suite E: no swap in use, witness disk byte-identical after boot | |
+| FIPS mesh daemon: identity derived from the master salt, dials only the staged peer | suite asserts the package + seeded `/etc/fips/fips.key`; hardware validation = the 2026-10-23 stick session (link to inr2, multi-hop probes, IPv6 ping) | egress-only dial-out; no inbound listening |
+| Derived identities are deterministic and precomputable | `test/derive-identity/` 10/10 incl. openssl DER round-trip + cross-machine divergence | operator holding the salt can derive all pubkeys BEFORE machines boot — treat the salt like a root password |
 | No sVirt (SELinux/AppArmor) confinement is guaranteed | **unproven / not claimed** — README states guests run as confined `qemu` users only; treat the stick host as disposable | |
 
 ## Supply chain / build integrity

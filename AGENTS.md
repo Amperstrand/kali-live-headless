@@ -43,7 +43,13 @@ drift is absorbed by bumping the pin, nothing else.
    dies on the new mount API (`fsconfig(): fuseblk: Unknown parameter
    'uid'`) — FUSE option-bearing mounts must go through the helper
    (`mount -t ntfs-3g`), which routes options to the userspace driver;
-   /proc/mounts still reports `fuseblk`.
+   /proc/mounts still reports `fuseblk`. Fourth case (2026-10-22,
+   firewall session): **iptables normalizes its own output** — inserted
+   `-i virbr0 -d CIDR` dumps as `-d CIDR -i virbr0`, and
+   `--ctstate ESTABLISHED,RELATED` dumps as `RELATED,ESTABLISHED`.
+   Fixed-string parses of command output are a recurring defect class:
+   match order- and case-insensitively, always. `tools/firewall-lab.sh`
+   doubles as the fixture for the iptables ones.
 6. **QEMU suite environment**: `-cdrom` vs virtio-blk boot quirks are
    firmware-dependent (SeaBIOS refuses virtio firmware-boot of this ISO);
    re-verify stage layout if QEMU/SeaBIOS/OVMF updates change behavior.
@@ -61,7 +67,40 @@ drift is absorbed by bumping the pin, nothing else.
    defective #13s were caught exactly there, and each lesson is asserted by
    the tool now. It also recreates hook-owned unit enablement symlinks —
    extend that list when adding units the chroot hook enables.
-8. **Orphaned build clients burn CPU silently** (found 2026-10-22): when the
+10. **Verdict capture: use `tools/run-logged.sh`, never
+   `echo "...rc=$?"` with a `$(date)` in the same string** — the command
+   substitution runs first and resets `$?`; chains have recorded rc=0
+   for FAILING runs TWICE (2026-10-22 CHAIN-STATUS, 2026-10-23
+   watch-16-17.log). The wrapper captures rc on the next line and
+   stamps correctly; the only real verdicts are `output/test-run*.log`
+   RESULT lines.
+11. **`tools/firewall-lab.sh` gates firewall changes** (30 s, docker):
+   runs the REAL kvm-firewall daemon + vm-forward in a NET_ADMIN
+   container at 1-second ticks and asserts the four hard-won
+   invariants (drops install; sanctioned exceptions tolerated — no
+   reassert race; libvirt-jump shadowing self-heals; INPUT shield is
+   STATEFUL). Run it after ANY edit to `kali-live-kvm-firewall` /
+   `kali-live-vm-forward` — the QEMU boot stages cannot see these
+   interplay bugs (they don't exercise host→guest flows, and take ~40
+   min each). Note its two negative controls: `docker run -i` (without
+   it the heredoc never arrives and the lab false-passes) and the
+   output-presence check (no `lab: pass=` line = transport bug, not a
+   pass). Both earned their keep within minutes of writing the tool.
+12. **A test that remediates before it asserts masks boot-path
+   defects**: hw-check's wait-loop used to `virsh net-start` the
+   default network itself, so the #14 kvm-enable early-exit (no virbr0
+   at boot on real hardware, QEMU suite 182/0 green) was invisible in
+   hardware runs too. hw-check now asserts "virbr0 up without help"
+   BEFORE remediating — keep that ordering, and apply the pattern:
+   *verify the product did X, then fix X for downstream tests*.
+8. **dd-ing an ISO onto a stick restores the ISO's own partition table** —
+   any partition appended afterwards (KLHCONFIG!) is orphaned even though
+   its sectors survive past the image. flash.sh detects and reuses a
+   surviving labeled partition (7ff7ef5); before that, every flash
+   silently dropped the stick's identities. Related: never write to a
+   device on a live stick without first matching it against the device
+   backing `/run/live/medium`.
+9. **Orphaned build clients burn CPU silently** (found 2026-10-22): when the
    tmux that drives a build dies, the root-owned
    `sudo -E build-in-container.sh → sudo → docker run` chain can survive with
    no container behind it and spin ~1.4 cores each forever (three chains from
@@ -117,6 +156,31 @@ drift is absorbed by bumping the pin, nothing else.
 - **One build at a time per output dir**: the slot path is shared, so starting
   build N+1 while N's ISO is still wanted silently destroys N. Preserve first,
   then build.
+
+## Improvements backlog (2026-10-23 review; ranked by leverage)
+
+- **zstd squashfs experiment** — the hotpatch's ~55 min is nearly all
+  xz recompression (full builds pay the same tax in their squashfs
+  phase). The kernel has supported zstd squashfs for years and
+  decompresses it as fast or faster. Recipe: one build with the
+  compressor switched, boot-gate BIOS+UEFI, compare `time mksquashfs`.
+  If green: hotpatch ~10 min, builds ~40 min shorter. Highest-leverage
+  single experiment available.
+- **Parallel boot stages** — `KLH_TEST_PORT` exists; stages still run
+  40–60 min apiece, serialized. Two concurrent stages on distinct ports
+  (or the suite on ai-legion) halves gate wall-clock. Watch CPU: 2×4
+  vcpu guests on an 8-core host is the practical ceiling.
+- **Mechanical verdict ledger** — test.sh should emit a machine-readable
+  verdict line that `iso-archive.sh`/BUILDS.md rows consume; several
+  rows were hand-typed and one chain lied (item 10). The ledger is only
+  as trustworthy as its least-typed row.
+- **Auto-pick `KLH_TEST_PORT`** (free ephemeral port + lock dir) instead
+  of a fixed default — eliminates the cross-lane "kill the stale
+  listener" incident class rather than documenting it.
+- **Mesh end-to-end campaign** — stick identity, enrollment, hub
+  handshake are proven; actual FIPS mesh traffic (rendezvous, peer
+  round-trip, socat forwards into a VM) is the last unproven README
+  claim. Lives in the private overlay's lane.
 
 ## Public-repo hygiene
 

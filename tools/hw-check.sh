@@ -216,6 +216,18 @@ if [ "$WITH_KVM" = true ]; then
 
   # bring the default net up if needed (kvm-enable should have), then
   # wait for the daemon's tick (30 s) to install the rules
+  # BOOT-PATH assert — BEFORE the wait loop below net-starts anything.
+  # hw-check must verify the PRODUCT brought virbr0 up at boot; a test
+  # that remediates first masks boot-path defects (the #14 kvm-enable
+  # early-exit was invisible in hardware runs for exactly this reason:
+  # this very loop started the net itself).
+  v=$(guest 'ip link show virbr0 >/dev/null 2>&1 && echo up || echo absent')
+  if [ "$v" = "up" ]; then
+    record pass "boot-path: virbr0 up without help (kvm-enable net bring-up works)"
+  else
+    record fail "boot-path: virbr0 up without help" "absent at hw-check time - the image's boot path (kvm-enable net-start/autostart) failed. hw-check will start it now for the remaining tests"
+  fi
+
   fw=""
   for _ in $(seq 1 15); do
     fw=$(guest_sudo 'sh -c "ip link show virbr0 >/dev/null 2>&1 || virsh -c qemu:///system net-start default >/dev/null 2>&1; iptables -C INPUT -i virbr0 -j DROP >/dev/null 2>&1 && iptables -C FORWARD -i virbr0 -d 192.168.0.0/16 -j DROP >/dev/null 2>&1 && echo yes && exit 0; echo no"')
@@ -440,6 +452,31 @@ if [ "$TEST_VMFORWARD" = true ]; then
   fi
 else
   record info "vm-forward test skipped (pass --vm-forward to run it)"
+fi
+
+section "FIPS mesh (derived identity, our exit node)"
+fipsd=$(guest 'systemctl is-active fips 2>/dev/null')
+if [ "$fipsd" = active ]; then
+  record pass "fips daemon active"
+  v=$(guest 'sudo -n fipsctl show links 2>/dev/null | grep -c \"state\": \"connected\"" || true')
+  [ "${v:-0}" -ge 1 ] 2>/dev/null && record pass "fips: at least one mesh link up" "$v link(s)" || record fail "fips: mesh link up" "0 connected links — check the peer/exit"
+  v=$(guest 'sudo -n cat /etc/fips/fips.pub 2>/dev/null || true')
+  if [ -n "$v" ]; then
+    record pass "fips identity present" "${v:0:16}…"
+    if [ -n "${EXPECT_NPUB:-}" ]; then
+      [ "$v" = "$EXPECT_NPUB" ] && record pass "fips npub stable across reboot" || record fail "fips npub stable across reboot (had $EXPECT_NPUB)"
+    fi
+    # derived-identity proof: the seeded key must match the derivation from
+    # the stick's own salt + THIS machine's fingerprint
+    der=$(guest 'sudo -n python3 /usr/local/lib/kali-live-headless/derive_identity.py "$(head -n1 $(ls /dev/disk/by-label/KLHCONFIG 2>/dev/null | head -1 | xargs -I{} mount -o ro {} /mnt 2>/dev/null && head -n1 /mnt/master.salt; umount /mnt 2>/dev/null) | tr -d \"\")" --machine --purpose fips 2>/dev/null | cut -f1' 2>/dev/null || true)
+    [ -n "$der" ] && [ "$der" = "$v" ] && record pass "fips identity matches the derivation (salt+fingerprint)" || record info "fips identity derivation cross-check: ${der:+mismatch — $der vs $v}${der:-not computable (no salt? random identity)}"
+  else
+    record fail "fips identity present" "no /etc/fips/fips.pub"
+  fi
+elif guest 'command -v fipsctl >/dev/null 2>&1'; then
+  record fail "fips daemon active" "$fipsd"
+else
+  record info "fips not shipped in this image (v19+ feature)"
 fi
 
 section "hardware health"

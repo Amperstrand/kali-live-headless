@@ -70,29 +70,67 @@ def bech32_encode(hrp, data5):
     return hrp + "1" + "".join([CHARSET[d] for d in combined])
 
 
+def bech32_decode(s):
+    """Minimal bech32 decode for our own hrps (nsec)."""
+    hrp, _, data = s.rpartition("1")
+    values = [CHARSET.index(c) for c in data]
+    # strip checksum (6 values)
+    payload = values[:-6]
+    # verify checksum
+    if bech32_polymod(bech32_hrp_expand(hrp) + values) != 1:
+        raise ValueError("bad bech32 checksum")
+    return payload
+
+
+def pubkey_xonly(scalar):
+    """SEC1 DER import via openssl (hand-built wrapper, same as
+    derive_identity) -> 32-byte x-only public key."""
+    der = (bytes.fromhex("302e0201010420") + scalar
+           + bytes.fromhex("a00706052b8104000a"))
+    pem = subprocess.run(
+        ["openssl", "ec", "-inform", "DER", "-outform", "PEM"],
+        input=der, capture_output=True, check=True).stdout
+    pub = subprocess.run(
+        ["openssl", "ec", "-in", "/dev/stdin", "-pubout", "-outform", "DER"],
+        input=pem, capture_output=True, check=True).stdout
+    tail = pub[-65:]
+    if len(pub) < 65 or tail[0:1] != b"\x04":
+        raise RuntimeError("unexpected public key DER")
+    return tail[1:33]
+
+
 def generate_identity():
     """Random secp256k1 keypair via openssl (no python deps) ->
     (nsec, npub). npub is the BIP340 x-only public key."""
     pem = subprocess.run(
         ["openssl", "ecparam", "-name", "secp256k1", "-genkey", "-noout"],
         capture_output=True, check=True).stdout
-    # private key: PEM DER, 32-byte scalar at a fixed offset in the SEC1 struct
+    # private key: SEC1 ECPrivateKey DER = SEQUENCE{ INTEGER 1,
+    #   OCTETSTRING(32) <scalar>, [0] OID, [1] BITSTRING 04||X||Y }.
+    # The scalar is at the 04 20 marker near the head — NOT der[-32:], which
+    # is the Y coordinate of the *embedded public key* (found 2026-10-23:
+    # every nsec persisted before this fix was Y-as-scalar, i.e. not the
+    # private key at all, and its npub could never match a signature).
     der = subprocess.run(
         ["openssl", "ec", "-in", "/dev/stdin", "-outform", "DER"],
         input=pem, capture_output=True, check=True).stdout
-    priv = der[-32:]  # SEC1 ECPrivateKey ends with the 32-byte scalar
-    if len(priv) != 32:
+    idx = der.find(b"\x04\x20")
+    if idx < 0 or len(der) < idx + 34:
         raise RuntimeError("unexpected DER from openssl")
+    priv = der[idx + 2:idx + 34]
     # public key: uncompressed point 04||X||Y -> x-only (nostr npub)
     pub = subprocess.run(
         ["openssl", "ec", "-in", "/dev/stdin", "-pubout", "-outform", "DER"],
         input=pem, capture_output=True, check=True).stdout
     # public key: SPKI DER ends with BITSTRING 00||04||X||Y — take the last
-    # 65 bytes and verify the uncompressed-point marker
+    # 65 bytes; BIP340 x-only is X = tail[1:33]. (The first cut took
+    # tail[1:] = X||Y, 64 bytes — a nonstandard npub nobody consumed until
+    # wg-enroll started signing events under it; found by the derive_identity
+    # DER round-trip test, 2026-10-23.)
     tail = pub[-65:]
     if len(pub) < 65 or tail[0:1] != b"\x04":
         raise RuntimeError("unexpected public key DER")
-    x_only = tail[1:]
+    x_only = tail[1:33]
     nsec = bech32_encode("nsec", convertbits(priv, 8, 5))
     npub = bech32_encode("npub", convertbits(x_only, 8, 5))
     return nsec, npub
@@ -111,6 +149,18 @@ def read_kv(path):
     return kv
 
 
+def npub_from_nsec(nsec):
+    """Recompute the BIP340 npub for a stored nsec (used to self-heal
+    identities persisted by the old nonstandard encoder)."""
+    try:
+        data5 = bech32_decode(nsec)
+        raw = convertbits(data5, 8, 5, pad=False)
+        x_only = pubkey_xonly(raw)
+        return bech32_encode("npub", convertbits(x_only, 8, 5))
+    except Exception:
+        return None
+
+
 def main():
     if len(sys.argv) != 2:
         print("usage: kali-live-host-role-init <config-mount-dir>", file=sys.stderr)
@@ -119,6 +169,22 @@ def main():
     path = os.path.join(mnt, HOST_ROLE_FILE)
     kv = read_kv(path)
     changed = False
+    # Self-heal: an npub is DERIVED data — if the stored one is stale or was
+    # written by the pre-2026-10-23 nonstandard encoder (X||Y, ~104 chars),
+    # recompute it from the stored nsec. Same identity, corrected encoding.
+    if kv.get("FIPS_NSEC", "").startswith("nsec1") and kv.get("FIPS_NPUB"):
+        true_npub = npub_from_nsec(kv["FIPS_NSEC"])
+        if true_npub and true_npub != kv["FIPS_NPUB"]:
+            kv["FIPS_NPUB"] = true_npub
+            changed = True
+    # Migration (2026-10-23): identities persisted before the scalar/x-only
+    # extraction fixes are cryptographically broken (nsec was Y-as-scalar,
+    # npub was X||Y — no signature could ever verify). npub length is the
+    # tell: proper bech32 x-only npubs are exactly 63 chars. Regenerate.
+    if kv.get("FIPS_NPUB") and kv.get("FIPS_NSEC") and len(kv["FIPS_NPUB"]) != 63:
+        kv = {k: v for k, v in kv.items()
+              if k not in ("FIPS_NSEC", "FIPS_NPUB", "FIPS_NAME")}
+        changed = True
     if not kv.get("FIPS_NSEC", "").startswith("nsec1"):
         nsec, npub = generate_identity()
         kv["FIPS_NSEC"] = nsec

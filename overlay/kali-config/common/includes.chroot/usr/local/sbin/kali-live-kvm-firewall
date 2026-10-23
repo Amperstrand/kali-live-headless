@@ -25,7 +25,9 @@
 
 set -u
 
-TICK=30
+# KALH_FW_TICK: override for tools/firewall-lab.sh (1-second lab ticks).
+# Production default 30 - do not ship a different value in the image.
+TICK=${KALH_FW_TICK:-30}
 
 # No iptables (package missing)? Do nothing rather than fail the boot.
 command -v iptables >/dev/null 2>&1 || exit 0
