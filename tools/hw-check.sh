@@ -413,8 +413,22 @@ if [ "$TEST_VMFORWARD" = true ]; then
         else
           record fail "vm-forward: inbound port" "HTTP $code from http://$LAN_IP:2222/ (want 200); check /run/vmfw-test.log on the stick"
         fi
+        # race regression: the kvm-firewall daemon re-asserts its FORWARD
+        # rules every 30s; the per-forward ESTABLISHED accept must stay
+        # ABOVE the RFC1918 drops or replies of allowed flows die (the
+        # 10/8-mesh-peer case). Wait one daemon tick and require the flow
+        # still works AND the order is right.
+        sleep 35
+        order=$(guest_sudo "iptables -S FORWARD | grep -nE -- '(RELATED,ESTABLISHED|ESTABLISHED,RELATED) -j ACCEPT|(-d 10.0.0.0/8 -i virbr0 -j DROP|-i virbr0 -d 10.0.0.0/8 -j DROP)' | head -2 | cut -d: -f2" | head -2)
+        est_line=$(printf '%s' "$order" | sed -n 1p); drop_line=$(printf '%s' "$order" | sed -n 2p)
+        case "$est_line$drop_line" in
+          *ESTABLISHED*DROP*) record pass "vm-forward: EST accept above the daemon's drops after a tick" ;;
+          *) record fail "vm-forward: EST accept above the drops" "order now: '$est_line' then '$drop_line' — the daemon demoted the sanctioned rules (race)" ;;
+        esac
+        code3=$(curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 8 "http://$LAN_IP:2222/" || echo 000)
+        [ "$code3" = "200" ] && record pass "vm-forward: flow survives a firewall-daemon reassert cycle" || record fail "vm-forward: flow died after a daemon tick (HTTP $code3 — the reply-path race)"
         guest_sudo "KLH_VM_FORWARD_IFACES=$EXT_IF /usr/local/sbin/kali-live-vm-forward remove hwtest" >/dev/null 2>&1 || true
-        code2=$(curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 5 "http://$LAN_IP:2222/")
+        code2=$(curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 5 "http://$LAN_IP:2222/" || echo 000)
         [ "$code2" = "000" ] && record pass "vm-forward: port closed again after remove" || record fail "vm-forward: port still open after remove (HTTP $code2)"
       else
         record fail "vm-forward" "kali-live-vm-forward add failed (shipped in this image?)"
