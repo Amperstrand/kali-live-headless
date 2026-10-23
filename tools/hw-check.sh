@@ -183,6 +183,24 @@ else
   fi
 fi
 
+section "fips optionality (v20)"
+fips_state=$(guest 'grep "^FIPS_ENABLED=" /etc/default/kali-live-headless 2>/dev/null | head -1')
+fips_state=${fips_state#FIPS_ENABLED=}; fips_state=${fips_state//\"/}; fips_state=${fips_state//\'/}
+if [ -z "$fips_state" ]; then
+  record info "FIPS_ENABLED knob absent (pre-v20 image) - optionality not wired"
+elif [ "$fips_state" = "false" ]; then
+  v=$(guest 'ip link show wg0 >/dev/null 2>&1 && echo up || echo absent')
+  if [ "$v" = "absent" ]; then
+    record pass "FIPS off: wire dormant (wg0 absent, identity kept)"
+  else
+    record fail "FIPS off: wire dormant" "wg0 exists with FIPS_ENABLED=false - the gate leaked"
+  fi
+else
+  v=$(guest 'grep "^WG_ENDPOINT=" /etc/default/kali-live-headless 2>/dev/null | head -1')
+  v=${v#WG_ENDPOINT=}
+  [ -n "$v" ] && record info "FIPS wire enabled (bridge staged)" || record info "FIPS wire enabled, no bridge staged (dormant until configured)"
+fi
+
 section "networking (the part a VM cannot prove)"
 v=$(guest 'nmcli -g NAME connection show | grep -c HEADLESS-WIFI || true')
 [ "${v:-0}" -ge 1 ] 2>/dev/null && record pass "NM profile loaded" || record fail "NM profile loaded"
