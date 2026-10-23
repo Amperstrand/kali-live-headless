@@ -25,6 +25,7 @@ OPT_HOSTNAME="" OPT_SSID="" OPT_KEYMGMT="" OPT_HIDDEN="" OPT_REGDOM=""
 OPT_PUBKEY="" OPT_EXTRA=""
 OPT_BOOTDEFAULT="" OPT_PASSMODE="" OPT_KVM=""
 OPT_WG_ENDPOINT="${WG_ENDPOINT:-}" OPT_WG_PEER="${WG_PEER_PUBKEY:-}" OPT_WG_NET="" OPT_WG_PORT="" OPT_WG_HUB="${WG_HUB_ADDR:-}"
+OPT_WG_ENROLL_HUB="${WG_ENROLL_HUB_NPUB:-}" OPT_WG_ENROLL_RELAYS="${WG_ENROLL_RELAYS:-}"
 
 usage() {
   cat <<EOF
@@ -75,6 +76,8 @@ EOF
     --wg-net)            OPT_WG_NET=${2:?}; shift 2 ;;
     --wg-hub-addr)       OPT_WG_HUB=${2:?}; shift 2 ;;
     --wg-port)           OPT_WG_PORT=${2:?}; shift 2 ;;
+    --wg-enroll-hub)     OPT_WG_ENROLL_HUB=${2:?}; shift 2 ;;
+    --wg-enroll-relays)  OPT_WG_ENROLL_RELAYS=${2:?}; shift 2 ;;
     -y|--assume-yes)     ASSUME_YES=true; shift ;;
     -h|--help)           usage ;;
     *) klh_die "unknown option: $1 (see --help)" ;;
@@ -200,6 +203,8 @@ WG_PEER_PUBKEY=${OPT_WG_PEER:-}
 WG_TUNNET=${OPT_WG_NET:-}
 WG_PORT=${OPT_WG_PORT:-}
 WG_HUB_ADDR=${OPT_WG_HUB:-}
+WG_ENROLL_HUB_NPUB=${OPT_WG_ENROLL_HUB:-}
+WG_ENROLL_RELAYS=${OPT_WG_ENROLL_RELAYS:-}
 
 # ------------------------------------------------------------------- write
 if [ -e "$CONFIG_FILE" ] && [ "$ASSUME_YES" != true ]; then
@@ -227,6 +232,8 @@ TMP=$(mktemp)
   printf 'WG_TUNNET=%q\n' "$WG_TUNNET"
   printf 'WG_PORT=%q\n' "$WG_PORT"
   printf 'WG_HUB_ADDR=%q\n' "$WG_HUB_ADDR"
+  printf 'WG_ENROLL_HUB_NPUB=%q\n' "$WG_ENROLL_HUB_NPUB"
+  printf 'WG_ENROLL_RELAYS=%q\n' "$WG_ENROLL_RELAYS"
 } > "$TMP"
 chmod 600 "$TMP"
 mv -f "$TMP" "$CONFIG_FILE"
@@ -241,6 +248,7 @@ klh_info "authorized key  : $PUBKEY_FP"
 klh_info "boot default    : $BOOT_DEFAULT (auto-boots after 5s)"
 klh_info "console password: $LIVE_PASSWORD_MODE"
 klh_info "wireguard       : ${WG_ENDPOINT:-off}${WG_TUNNET:+ ($WG_TUNNET.0/24 via $WG_TUNNET hub)}"
+[ -n "$WG_ENROLL_HUB_NPUB" ] && klh_info "wg enrollment   : via hub $WG_ENROLL_HUB_NPUB (${WG_ENROLL_RELAYS:-no relays!})"
 klh_info "KVM stack       : $WITH_KVM$( [ "$WITH_KVM" = true ] && echo ' (libvirtd + virt-manager, host shielded from guests)')"
 cat <<'EOF'
 
