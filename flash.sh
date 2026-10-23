@@ -272,6 +272,10 @@ fi
 # the credentials baked into the ISO.
 make_config_partition() {
   local start_mb stick_mb i mnt part newpart
+  # Loud summary contract: every path sets this; the final summary prints
+  # it. The 2026-10-23 stick shipped WITHOUT a config partition because the
+  # soft-skip warnings scroll past — the operator must SEE the outcome.
+  KLHCONFIG_STATUS="MISSING (see warnings above — no Wi-Fi override, no vm-store.conf, no identity persistence)"
   if ! command -v sfdisk >/dev/null 2>&1; then
     klh_warn "sfdisk not installed — skipping config partition (credential changes would need a rebuild)"
     return 0
@@ -328,11 +332,22 @@ make_config_partition() {
     return 0
   fi
   mnt=$(mktemp -d)
+  KLHCONFIG_STATUS="MISSING (mount failed — no Wi-Fi override, no vm-store.conf, no identity persistence)"
   if mount "$newpart" "$mnt" 2>/dev/null; then
+    KLHCONFIG_STATUS="written"
     "$REPO_DIR/scripts/stick-conf.sh" > "$mnt/headless-wifi.conf" 2>/dev/null \
       || klh_warn "could not generate headless-wifi.conf — fill it in on the stick (see README)"
+    # vm-store.conf: seeded only when VMSTORE_ENABLED=true in ./config
+    # (rc 3 = disabled = skip silently; anything else odd = warn and move on)
+    vmout=$("$REPO_DIR/scripts/stick-conf.sh" --vm-store 2>/dev/null)
+    vmrc=$?
+    case "$vmrc" in
+      0) printf '%s\n' "$vmout" > "$mnt/vm-store.conf" && KLHCONFIG_STATUS="written (+vm-store.conf — store enabled at boot)" ;;
+      3) : ;; # vm-store disabled in config — nothing to seed
+      *) klh_warn "stick-conf.sh --vm-store failed (rc=$vmrc) — vm-store.conf NOT written; check ./config VMSTORE_* keys" ;;
+    esac
     umount "$mnt" || true
-    klh_ok "config partition $part (label KLHCONFIG, headless-wifi.conf written)"
+    klh_ok "config partition $newpart (label KLHCONFIG, headless-wifi.conf written)"
   else
     klh_warn "could not mount $part to write headless-wifi.conf"
   fi
@@ -341,6 +356,7 @@ make_config_partition() {
 }
 make_config_partition
 
+klh_info "KLHCONFIG partition: ${KLHCONFIG_STATUS:-MISSING (unknown outcome — treat as missing)}"
 STICK_HOSTNAME=$( ( source "$REPO_DIR/lib/common.sh"; klh_load_config "$REPO_DIR/config" 2>/dev/null && echo "$HOSTNAME" ) || echo kali-live )
 cat <<EOF
 

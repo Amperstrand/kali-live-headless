@@ -368,6 +368,45 @@ else
   record skip "vmstore unit tests" "script/fixtures missing"
 fi
 
+  # stick-conf.sh --vm-store: the flash-time seeding contract (flash.sh
+  # writes vm-store.conf onto KLHCONFIG from this output)
+  SC="$REPO_DIR/scripts/stick-conf.sh"
+  cat > "$SCRATCH/vmstore-on.conf" <<'SCCFG'
+HOSTNAME=kali-live
+WIFI_SSID=SomeNet
+WIFI_PSK=SomePassphrase123
+WIFI_KEYMGMT=wpa-psk
+VMSTORE_ENABLED=true
+VMSTORE_PARTITION=PARTUUID:ec732c5b-3eed-409b-b0ef-ba6964f19af0
+VMSTORE_DIR=vms
+VMSTORE_RESERVED_MB=20480
+VMSTORE_BITLOCKER=try
+SCCFG
+  cat > "$SCRATCH/vmstore-off.conf" <<'SCCFG'
+HOSTNAME=kali-live
+WIFI_SSID=SomeNet
+WIFI_PSK=SomePassphrase123
+VMSTORE_ENABLED=false
+SCCFG
+  cat > "$SCRATCH/vmstore-bad.conf" <<'SCCFG'
+HOSTNAME=kali-live
+WIFI_SSID=SomeNet
+WIFI_PSK=SomePassphrase123
+VMSTORE_ENABLED=true
+VMSTORE_DIR=../etc
+SCCFG
+  out=$("$SC" --vm-store --config "$SCRATCH/vmstore-on.conf" 2>/dev/null)
+  rc=$?
+  [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^partition=PARTUUID:ec732c5b' && printf '%s' "$out" | grep -q '^bitlocker=try$' \
+    && record pass "stick-conf --vm-store renders the enabled store" \
+    || record fail "stick-conf --vm-store renders the enabled store" "rc=$rc"
+  "$SC" --vm-store --config "$SCRATCH/vmstore-off.conf" >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -eq 3 ] && record pass "stick-conf --vm-store exits 3 when disabled" || record fail "stick-conf --vm-store exits 3 when disabled" "rc=$rc"
+  "$SC" --vm-store --config "$SCRATCH/vmstore-bad.conf" >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then record pass "stick-conf --vm-store rejects garbage config"; else record fail "stick-conf --vm-store rejects garbage config" "rc=$rc"; fi
+
 [ "$ONLY_STATIC" = true ] && { section "summary"; printf 'pass=%d fail=%d skip=%d\n' "$PASS" "$FAIL" "$SKIP"; [ "$FAIL" -eq 0 ]; exit $?; }
 
 # ============================================================= Stage B
