@@ -320,12 +320,32 @@ WG_PORT="$WG_PORT"
 # "try" lets tooling (vmstore) mount a store on a locked volume when a key
 # is available (clear key or KLHCONFIG bitlocker.conf). Never a secret.
 VMSTORE_BITLOCKER="$VMSTORE_BITLOCKER"
+# FIPS mesh: the default peer (our exit node) — non-secret
+FIPS_PEER_ADDR="$FIPS_PEER_ADDR"
+FIPS_PEER_NPUB="$FIPS_PEER_NPUB"
 EOF
 install -D -m 0644 \
   "$OVERLAY_DIR/includes.chroot/etc/ssh/sshd_config.d/0000-kali-live-headless.conf" \
   "$STAGE_ETC/sshd_config.d/0000-kali-live-headless.conf"
 
 klh_ok "staged overlay + profile + keys into $UPSTREAM_DIR"
+
+# FIPS mesh daemon: pinned upstream .deb into live-build's local-packages
+# dir (config packages.chroot/*.deb are installed into the chroot as-is).
+FIPS_DEB="fips_${FIPS_VERSION}_amd64.deb"
+mkdir -p "$KLH_COMMON/packages.chroot"
+if [ -f "$REPO_DIR/build/pkg/$FIPS_DEB" ]; then
+    install -m 0644 "$REPO_DIR/build/pkg/$FIPS_DEB" "$KLH_COMMON/packages.chroot/$FIPS_DEB"
+else
+    klh_info "fetching FIPS $FIPS_VERSION (github release)"
+    curl -fsSL "https://github.com/jmcorgan/fips/releases/download/v${FIPS_VERSION}/${FIPS_DEB}" \
+        -o "$KLH_COMMON/packages.chroot/$FIPS_DEB" \
+        || klh_die "FIPS $FIPS_VERSION download failed (pin in lib/common.sh)"
+fi
+DEB_SHA=$(sha256sum "$KLH_COMMON/packages.chroot/$FIPS_DEB" | cut -d' ' -f1)
+[ "$DEB_SHA" = "$FIPS_SHA256" ] \
+    || klh_die "FIPS deb sha256 mismatch (got $DEB_SHA, want $FIPS_SHA256) — update the pin deliberately"
+klh_ok "FIPS $FIPS_VERSION staged (sha256 verified)"
 
 # -------------------------------------------------------------- manifest
 MANIFEST="$OUT_DIR/build-manifest-$(date -u '+%Y%m%dT%H%M%SZ').txt"

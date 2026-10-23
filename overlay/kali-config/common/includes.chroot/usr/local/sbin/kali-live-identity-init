@@ -1,0 +1,40 @@
+#!/bin/sh
+# kali-live-identity-init — the master-salt lifecycle for deterministic
+# per-machine identities (see derive_identity.py for the full design).
+#
+# ONE 256-bit salt is generated on the stick's FIRST boot and persisted to
+# the KLHCONFIG partition (master.salt, 0600, plaintext — same threat model
+# as the Wi-Fi PSK: physical access to the stick is game over; the salt is
+# the master secret for every identity of every machine this stick boots).
+# It is never rotated automatically; deleting it re-keys everything.
+#
+# This script only manages the salt. The consumers (wireguard-init,
+# host-role, fips seeding in provision) derive from it via
+# derive_identity.py — identities are NOT persisted (they're deterministic).
+#
+# Usage: kali-live-identity-init <config-mount-dir>
+# Prints: the salt hex on stdout (for provision's log — the salt IS the
+# secret, so provision must not log the value; this prints only a prefix).
+
+set -u
+
+MOD=/usr/local/lib/kali-live-headless/derive_identity.py
+
+[ $# -ge 1 ] && [ -d "$1" ] || { echo "identity: no config mount — salt not created" >&2; exit 1; }
+SALT_FILE="$1/master.salt"
+
+if [ -r "$SALT_FILE" ]; then
+    # existing salt: sanity-check shape, nothing to do
+    S=$(head -n1 "$SALT_FILE" | tr -d '"' )
+    printf '%s' "$S" | grep -qE '^[0-9a-fA-F]{64,}$' \
+        || { echo "identity: $SALT_FILE malformed (not >=64 hex chars) — refusing; delete it to re-key" >&2; exit 1; }
+    echo "salt-present"
+    exit 0
+fi
+
+# generate: 32 bytes from the CSPRNG, hex
+S=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+umask 077
+printf '%s\n' "$S" > "$SALT_FILE" || { echo "identity: cannot persist salt" >&2; exit 1; }
+echo "salt-created"
+exit 0
