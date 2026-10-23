@@ -27,6 +27,14 @@ cfg_get() { # var -> value from /etc/default/kali-live-headless (quotes stripped
     sed -n "s/^$1=//p" "$ETC_DEFAULT" 2>/dev/null | head -n 1 | tr -d \'\"
 }
 
+# FIPS optionality (v20): FIPS_ENABLED=false ships the wire dormant —
+# identity (npub, and any persisted wireguard.conf) is kept, so flipping
+# the value later (config partition) re-arms the mesh without re-keying.
+if [ "$(cfg_get FIPS_ENABLED)" = "false" ]; then
+    logger -t kali-live-wireguard-init "FIPS_ENABLED=false — mesh wire dormant (identity kept)" 2>/dev/null || true
+    exit 0
+fi
+
 ENDPOINT=$(cfg_get WG_ENDPOINT)
 PEER=$(cfg_get WG_PEER_PUBKEY)
 TUNNET=$(cfg_get WG_TUNNET);  [ -n "$TUNNET" ] || TUNNET=10.66

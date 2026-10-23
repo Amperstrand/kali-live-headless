@@ -267,6 +267,20 @@ Notes:
 
 ## Host-role mesh identity (FIPS)
 
+**Optionality (v20)**: the whole mesh **wire** is gated by `FIPS_ENABLED`
+(`./config` at build time; default `true`) and can be flipped per stick at
+runtime — no rebuild — via `KLHCONFIG:/fips.conf`:
+
+```
+FIPS_ENABLED=false        # ship the mesh dormant: no wg0, no enrollment,
+                          # no daemon peering (the stick's identity is kept)
+WG_ENDPOINT=host:port     # retarget which bridge/hub the stick peers with
+```
+
+The identity (npub, persisted keys) is deliberately **not** gated: a
+dormant stick can re-arm later without re-keying. The bridge address is a
+`./config`-only value — it is never committed to this public repo.
+
 The stick can carry a **persistent mesh identity** for the FIPS overlay
 (`jmcorgan/fips`): a random secp256k1 keypair (Nostr `nsec`/`npub`) and a
 short name, **generated on first boot** and persisted to the stick's

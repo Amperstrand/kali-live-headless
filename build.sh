@@ -337,7 +337,9 @@ WG_PORT="$WG_PORT"
 # "try" lets tooling (vmstore) mount a store on a locked volume when a key
 # is available (clear key or KLHCONFIG bitlocker.conf). Never a secret.
 VMSTORE_BITLOCKER="$VMSTORE_BITLOCKER"
-# FIPS mesh: the default peer (our exit node) — non-secret
+# FIPS mesh: FIPS_ENABLED gates the whole wire (identity stays); the
+# peer values are ./config-only and empty = dormant.
+FIPS_ENABLED="$FIPS_ENABLED"
 FIPS_PEER_ADDR="$FIPS_PEER_ADDR"
 FIPS_PEER_NPUB="$FIPS_PEER_NPUB"
 EOF
