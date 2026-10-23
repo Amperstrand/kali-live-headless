@@ -294,6 +294,37 @@ stick keeps the same `npub` — its mesh address — across power cycles.
   mesh firewall (`fips-firewall.service`) enforces the baseline; the
   deployment side lives in the private overlay, not this repo.
 
+## Deterministic per-machine identities (master salt + HKDF)
+
+One 256-bit **master salt** is generated on the stick's first boot and
+persisted to its `KLHCONFIG` partition (`master.salt` — plaintext, same
+threat model as the Wi-Fi PSK: it IS the master secret for every identity
+below). Every identity is then **derived**, never stored:
+
+    HKDF-SHA256(ikm = master salt, salt = constant,
+                info = "klh-headless/v1/<purpose>/<machine fingerprint>")
+
+* **machine fingerprint** = sha256 of labeled DMI fields
+  (`product_uuid`, `board_serial`, `product_serial`) — stable across boots,
+  unique per machine, deliberately excludes NIC MACs (Wi-Fi MAC
+  randomization would rotate identity)
+* purposes: `wireguard` (the wg private key), `fips` (the mesh nsec —
+  seeded into `/etc/fips/fips.key` with a persistent identity), `console`
+  (an optional typeable password, `LIVE_PASSWORD_MODE=derived`)
+
+The consequences are the point: the same stick on a different machine gets
+a different identity; a re-flash keeps identities; and the operator holding
+the salt can **precompute every machine's public values before it ever
+boots** — `tools/derive-identities.sh <salt-hex> <fingerprint>...` prints
+the wg pubkey and npub, so peers can be pre-enrolled on the hub. Plain
+`sha256(secret‖data)` was rejected in favor of HKDF per RFC 5869 and the
+Trail of Bits key-derivation guidance (variable data belongs in `info`,
+never in the salt position). Deleting `master.salt` re-keys everything.
+
+The FIPS daemon itself ships in the image (pinned upstream release,
+sha256-verified at build time), enabled at boot, dialing the staged default
+peer (`FIPS_PEER_ADDR` — our exit node) automatically.
+
 ## Image flavours: minimal (default) vs default, and the toram boot entry
 
 `./configure.sh --variant minimal|default|light` picks what the stick *is*:

@@ -94,6 +94,44 @@ if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
         log "host-role identity not provisioned (non-fatal — no generator or unwritable medium)"
     fi
 
+    # --------------------------------------------------- FIPS mesh identity
+    # Seed the FIPS daemon with the DERIVED per-machine identity (master
+    # salt + fingerprint -> nsec) and point it at the staged default peer
+    # (our exit node). The fips deb ships enabled-but-not-started; we also
+    # enable fips-dns so .fips resolution works from boot.
+    if [ -x /usr/local/sbin/kali-live-identity-init ]; then
+        /usr/local/sbin/kali-live-identity-init "$OVERRIDE_MNT" >/dev/null 2>&1 || true
+    fi
+    SALT_FILE="$OVERRIDE_MNT/master.salt"
+    if [ -r "$SALT_FILE" ] && [ -f /etc/fips/fips.yaml ]; then
+        SALT=$(head -n1 "$SALT_FILE" | tr -d '"')
+        DERIVED=$(python3 /usr/local/lib/kali-live-headless/derive_identity.py "$SALT" --machine --purpose fips 2>/dev/null || true)
+        NSEC=$(printf '%s' "$DERIVED" | cut -f2)
+        if [ -n "$NSEC" ]; then
+            umask 077
+            printf '%s\n' "$NSEC" > /etc/fips/fips.key
+            chmod 0600 /etc/fips/fips.key
+            sed -i 's/^# *persistent:.*/      persistent: true/; s/^ *persistent:.*/      persistent: true/' /etc/fips/fips.yaml
+            PEER_ADDR=$(sed -n 's/^FIPS_PEER_ADDR=//p' /etc/default/kali-live-headless | head -n1 | tr -d '"')
+            PEER_NPUB=$(sed -n 's/^FIPS_PEER_NPUB=//p' /etc/default/kali-live-headless | head -n1 | tr -d '"')
+            if [ -n "$PEER_ADDR" ] && [ -n "$PEER_NPUB" ] && ! grep -q "$PEER_NPUB" /etc/fips/fips.yaml; then
+                cat >> /etc/fips/fips.yaml <<EOFPEER
+
+peers:
+  - npub: "$PEER_NPUB"
+    alias: "exit"
+    addresses:
+      - transport: udp
+        addr: "$PEER_ADDR"
+    connect_policy: auto_connect
+EOFPEER
+            fi
+            systemctl enable fips fips-dns >/dev/null 2>&1 || true
+            systemctl restart fips >/dev/null 2>&1 || true
+            log "fips mesh identity derived and seeded; peer $PEER_ADDR"
+        fi
+    fi
+
     # ------------------------------------------------------ wireguard tunnel
     # Per-stick tunnel identity (same persistence model as the host-role
     # identity above): keypair generated on FIRST boot and persisted to the

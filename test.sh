@@ -465,7 +465,7 @@ else
     # the /etc/default staging carries the non-secret values when the
     # features are on (both runtime inits treat "not configured" as off).
     # A private key must NEVER be staged — keys are generated on the stick.
-    for klh_pkg in wireguard-tools dislocker; do
+    for klh_pkg in wireguard-tools dislocker fips; do
       if sudo grep -A1 "^Package: $klh_pkg$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "Status: install ok installed"; then
         record pass "$klh_pkg installed in image"
       else
