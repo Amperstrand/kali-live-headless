@@ -440,11 +440,23 @@ Full design + safety research: `docs/vm-store-ntfs-research.md`.
 
   ```ini
   enabled=true
-  partition=auto        # or LABEL:<label> | PARTUUID:<uuid> | /dev/sdXN
-  dir=vms               # the folder created on the NTFS volume
+  partition=auto        # opportunistic on BitLocker boxes (see below);
+                        # or LABEL:<label> | PARTUUID:<uuid> | /dev/sdXN
+  dir=vms               # the folder created on the volume
   driver=ntfs-3g        # kernel ntfs3 is absent on the live kernel
   reserved_free_mb=20480
+  # BitLocker-encrypted Windows disk (owner consent, either form):
+  # bitlocker=try       # stick-side consent: opportunistic unlock
+  #                     # (vmstore-mount newer than v18)
   ```
+
+  On a machine with BitLocker (protection suspended → clear key, or
+  KLHCONFIG `bitlocker.conf` for resumed protection), consent unlocks the
+  volume automatically: with build-staged consent (`configure.sh
+  --bitlocker-unlock try`, v18+) or `bitlocker=try` above, `partition=auto`
+  picks the first BitLocker volume that unlocks cleanly, and an explicit
+  `PARTUUID:` pins the exact volume (unlocked-vs-selected mismatches are
+  refused). Without consent the feature stays off.
 
 * Boot mounts it at `/mnt/klh-vmstore` and defines libvirt pool
   `klh-vmstore` over the folder; `kali-live-vm-create --id foo --cores 4

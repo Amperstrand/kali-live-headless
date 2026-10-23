@@ -46,8 +46,7 @@ log() {
 }
 
 # ------------------------------------------------------------- config input
-# KLHCONFIG partition (same discovery as kali-live-headless-provision)
-CONF_SOURCE=""
+# KLHCONFIG partition (same discovery as kali-live-headless-provision)CONF_SOURCE=""
 if [ -n "${KLH_VMSTORE_CONF:-}" ]; then
     CONF_SOURCE=$KLH_VMSTORE_CONF          # unit tests: config from a file
 elif [ -b /dev/disk/by-label/KLHCONFIG ]; then
@@ -199,56 +198,107 @@ pick_device() {
 # hardware 2026-10-23: auto picked nvme0n1p4 on the BitLocker gaming PC).
 # Explicit LABEL:/PARTUUID: selectors bypass this: they name the owner-made
 # dedicated VMSTORE partition (research doc §2.2 / §8 option A).
+# --------------------------------------------- BitLocker consent (two keys)
+# Consent to opportunistically unlock BitLocker volumes comes from EITHER:
+#   1. the build-time staged gate VMSTORE_BITLOCKER=try in /etc/default
+#      (configure.sh --bitlocker-unlock try — the bitlocker-mount tool
+#      enforces this one itself for try-mount), OR
+#   2. bitlocker=try in the stick's OWN vm-store.conf (KLHCONFIG) — the
+#      same stick-over-ISO precedence as headless-wifi.conf. Owner asked
+#      for opportunistic operation (2026-10-23): this makes the feature
+#      work on already-built images without a rebuild. The stick IS the
+#      trust object (PSK precedent, README "Threat model").
+# No consent from either source = no unlock, ever.
+BLKM="${KLH_BLKM:-/usr/local/sbin/kali-live-bitlocker-mount}"
+ETC_DEFAULT="${KLH_ETC_DEFAULT:-/etc/default/kali-live-headless}"
+BLK_CONSENT=$(conf_value "$CONFFILE" bitlocker | tr -d '\r')
+case "$BLK_CONSENT" in
+    ""|try|off) ;;
+    *) log "ERROR: vm-store.conf 'bitlocker' must be try or off — refusing"; rm -f "$CONFFILE" 2>/dev/null || true; exit 1 ;;
+esac
+CONSENT_STAGED=false; CONSENT_STICK=false
+grep -q "^VMSTORE_BITLOCKER=\"\?try" "$ETC_DEFAULT" 2>/dev/null && CONSENT_STAGED=true
+[ "$BLK_CONSENT" = try ] && CONSENT_STICK=true
+BLK_CONSENT_ANY=false
+[ "$CONSENT_STAGED" = true ] || [ "$CONSENT_STICK" = true ] && BLK_CONSENT_ANY=true
+
+bitlocker_devices() { # every BitLocker partition, one /dev/NAME per line
+    lsblk_rows | awk '$2 ~ /^[Bb]it[Ll]ocker$/ {print "/dev/" $1}'
+}
 bitlocker_present() {
-    lsblk_rows | awk '$2 ~ /^[Bb]it[Ll]ocker$/ {found=1} END {exit !found}'
+    [ -n "$(bitlocker_devices)" ]
 }
 
 DEVICE=$(pick_device)
-if [ -z "$DEVICE" ]; then
+DEV_FSTYPE=""
+BLK_MODE=no
+BLK_EXPECTED=""
+UNLOCK_PATH=""   # try-mount (staged consent) | mount-loop (stick consent)
+
+if [ "$PARTITION" = auto ]; then
     if bitlocker_present; then
-        log "ERROR: no NTFS partition matches partition='$PARTITION' and BitLocker volumes are present — the Windows volume is likely encrypted; vm-store refuses to guess (options: a dedicated plain-NTFS VMSTORE partition + partition=LABEL:VMSTORE, or see docs/vm-store-ntfs-research.md §2.2)"
-    else
-        log "ERROR: no NTFS partition matches partition='$PARTITION' — VM store not mounted"
+        # auto + BitLocker volumes: the old rule was a flat refusal (the
+        # plaintext auto-pick would have targeted the WinRE decoy). With
+        # consent, auto becomes OPPORTUNISTIC: unlock the first BitLocker
+        # volume that opens (owner directive 2026-10-23 — "automatic on
+        # the other computer"). Without consent the refusal stands.
+        if [ "$BLK_CONSENT_ANY" = true ]; then
+            BLK_MODE=yes
+            BLK_EXPECTED=""      # chosen by the unlock, logged + recorded
+            DEV_FSTYPE=BitLocker
+            DEVICE="(opportunistic)"
+        else
+            log "ERROR: partition=auto found only BitLocker volumes (C: encrypted) and no unlock consent — set bitlocker=try in vm-store.conf (or build with configure.sh --bitlocker-unlock try), or name the target explicitly; see docs/vm-store-ntfs-research.md §2.2"
+            rm -f "$CONFFILE" 2>/dev/null || true
+            exit 1
+        fi
+    elif [ -z "$DEVICE" ]; then
+        log "ERROR: partition=auto found no NTFS volume at all — VM store not mounted"
+        rm -f "$CONFFILE" 2>/dev/null || true
+        exit 1
     fi
-    rm -f "$CONFFILE" 2>/dev/null || true
-    exit 1
-fi
-if [ "$PARTITION" = auto ] && bitlocker_present; then
-    log "ERROR: partition=auto refuses to run while any BitLocker volume exists (C: is encrypted; the only plaintext NTFS would be the WinRE recovery partition — never a VM store). Name the target explicitly (partition=PARTUUID:... of C: with the BitLocker unlock staged), or see docs/vm-store-ntfs-research.md §2.2"
-    rm -f "$CONFFILE" 2>/dev/null || true
-    exit 1
+    # auto without BitLocker volumes: largest-NTFS pick stands
+else
+    # explicit selector: device must resolve; a BitLocker target needs consent
+    if [ -z "$DEVICE" ]; then
+        if bitlocker_present; then
+            log "ERROR: no partition matches partition='$PARTITION' and BitLocker volumes are present — the Windows volume is likely encrypted; use its PARTUUID with bitlocker=try, or see docs/vm-store-ntfs-research.md §2.2"
+        else
+            log "ERROR: no partition matches partition='$PARTITION' — VM store not mounted"
+        fi
+        rm -f "$CONFFILE" 2>/dev/null || true
+        exit 1
+    fi
+    DEV_FSTYPE=$(lsblk_rows | awk -v d="${DEVICE#/dev/}" '$1 == d {print $2; exit}')
+    case "$DEV_FSTYPE" in
+        BitLocker|bitlocker)
+            if [ "$BLK_CONSENT_ANY" != true ]; then
+                log "ERROR: $DEVICE is BitLocker-encrypted and unlock consent is absent (vm-store.conf bitlocker=try, or build-time --bitlocker-unlock try) — refusing; see docs/vm-store-ntfs-research.md §2.2"
+                rm -f "$CONFFILE" 2>/dev/null || true
+                exit 1
+            fi
+            BLK_MODE=yes
+            BLK_EXPECTED=$DEVICE
+            ;;
+    esac
 fi
 
-# ------------------------------------------- BitLocker target (owner path)
-# An explicit selector may name the BitLocker-encrypted Windows volume
-# (owner decision 2026-10-23: store IS C:\vms, no partition changes).
-# Unlocking is DELEGATED to kali-live-bitlocker-mount (6570f12) under its
-# contract: only when the owner staged VMSTORE_BITLOCKER=try
-# (configure.sh --bitlocker-unlock try — the consent gate; the tool
-# enforces it too), call try-mount and REQUIRE that the volume it unlocked
-# is the one vm-store.conf selected. Hibernation safety (ro fallback) is
-# handled inside the tool; a read-only result REFUSES the store here
-# (images need rw). Ownership of the NTFS view is normalized after the
-# mount — the qemu runtime user must be able to open image files.
-BLKM="${KLH_BLKM:-/usr/local/sbin/kali-live-bitlocker-mount}"
-ETC_DEFAULT="${KLH_ETC_DEFAULT:-/etc/default/kali-live-headless}"
-BLK_MODE=no
-DEV_FSTYPE=$(lsblk_rows | awk -v d="${DEVICE#/dev/}" '$1 == d {print $2; exit}')
-case "$DEV_FSTYPE" in
-    BitLocker|bitlocker)
-        BLK_MODE=yes
-        if ! grep -q "^VMSTORE_BITLOCKER=\"\?try" "$ETC_DEFAULT" 2>/dev/null; then
-            log "ERROR: $DEVICE is BitLocker-encrypted and optimistic unlock is not staged — refusing (owner: build with configure.sh --bitlocker-unlock try, or see docs/vm-store-ntfs-research.md §2.2)"
-            rm -f "$CONFFILE" 2>/dev/null || true
-            exit 1
-        fi
-        if [ ! -x "$BLKM" ]; then
-            log "ERROR: $DEVICE is BitLocker-encrypted but $BLKM is missing (v18+ image) — refusing"
-            rm -f "$CONFFILE" 2>/dev/null || true
-            exit 1
-        fi
-        ;;
-esac
+if [ "$BLK_MODE" = yes ]; then
+    if [ ! -x "$BLKM" ]; then
+        log "ERROR: BitLocker unlock consented but $BLKM is missing (v18+ image) — refusing"
+        rm -f "$CONFFILE" 2>/dev/null || true
+        exit 1
+    fi
+    # which unlock path: the tool's optimistic try-mount (build-staged
+    # consent; the tool enforces that gate itself) or, stick-consent only,
+    # a mount-loop over BitLocker volumes using the tool's explicit mount
+    # subcommand (not consent-gated — consent lives on the stick here).
+    if [ "$CONSENT_STAGED" = true ]; then
+        UNLOCK_PATH=try-mount
+    else
+        UNLOCK_PATH=mount-loop
+    fi
+fi
 
 # ------------------------------------------------------------- driver pick
 # Default ntfs-3g (safety, research §1). ntfs3 only when explicitly chosen
@@ -302,7 +352,7 @@ plan() {
     printf 'plan device=%s\n' "$DEVICE"
     printf 'plan fstype=%s\n' "$DEV_FSTYPE"
     printf 'plan bitlocker=%s\n' "$BLK_MODE"
-    [ "$BLK_MODE" = yes ] && printf 'plan unlock=try-mount:%s\n' "$(basename "$BLKM")"
+    [ "$BLK_MODE" = yes ] && printf 'plan unlock=%s:%s\n' "$UNLOCK_PATH" "$(basename "$BLKM")"
     printf 'plan type=%s\n' "$MOUNT_TYPE"
     printf 'plan options=%s\n' "$MOUNT_OPTS"
     printf 'plan target=%s\n' "$MNT"
@@ -313,28 +363,43 @@ plan() {
 
 # ------------------------------------------------------------- mount + pool
 # BitLocker orchestration (contract with kali-live-bitlocker-mount):
-# try-mount gets the first volume that unlocks cleanly, with the qemu
-# uid/gid mapping passed through (--uid/--gid/--umask, 410c2c8 — the tool
-# applies them to its ntfs-3g mount on both rw and ro paths). We then
-# REQUIRE that volume to be the one vm-store.conf selected (their
-# bitlocker.mounts ledger records "<device> <mnt>") and refuse a
-# read-only result (their hibernation guard degrades --rw to ro — images
-# need rw). NOTE: windows_names is NOT applied on this path (no
-# pass-through); the guard lives in vm-create's id charset instead.
-blk_try_mount() {
-    if ! "$BLKM" try-mount "$MNT" --rw --uid="$QEMU_UID" --gid="$QEMU_GID" --umask=007 >/tmp/vmstore-blkm.out 2>/tmp/vmstore-blkm.err; then
-        log "ERROR: BitLocker try-mount failed: $(head -c 200 /tmp/vmstore-blkm.err 2>/dev/null || echo unknown)"
+#  * staged consent  -> try-mount (their optimistic first-that-unlocks;
+#    the tool applies --uid/--gid/--umask to its ntfs-3g mount)
+#  * stick consent   -> mount-loop over BitLocker volumes with the tool's
+#    explicit `mount` subcommand (not consent-gated in the tool; consent
+#    lives in the stick's vm-store.conf here)
+# Both: hibernation safety is the tool's (hiberfil.sys degrades --rw to
+# ro) and a read-only result REFUSES the store (images need rw). With an
+# explicit selector the unlocked volume MUST match it.
+blk_unlock() {
+    MOUNTED_DEV=""
+    if [ "$UNLOCK_PATH" = try-mount ]; then
+        if ! "$BLKM" try-mount "$MNT" --rw --uid="$QEMU_UID" --gid="$QEMU_GID" --umask=007 >/tmp/vmstore-blkm.out 2>/tmp/vmstore-blkm.err; then
+            log "ERROR: BitLocker try-mount failed: $(head -c 200 /tmp/vmstore-blkm.err 2>/dev/null || echo unknown)"
+            rm -f /tmp/vmstore-blkm.out /tmp/vmstore-blkm.err
+            exit 1
+        fi
         rm -f /tmp/vmstore-blkm.out /tmp/vmstore-blkm.err
-        exit 1
+        MOUNTED_DEV=$(awk -v m="$MNT" '$2 == m {print "/dev/" $1; exit}' \
+            "${KLH_BLKM_MOUNTS:-/run/kali-live-headless/bitlocker.mounts}" 2>/dev/null || true)
+        [ -n "$MOUNTED_DEV" ] || { log "ERROR: try-mount reported success but $MNT is not in the mounts ledger"; exit 1; }
+    else
+        for d in $(bitlocker_devices); do
+            if "$BLKM" mount "$d" "$MNT" --rw --uid="$QEMU_UID" --gid="$QEMU_GID" --umask=007 >/tmp/vmstore-blkm.out 2>/tmp/vmstore-blkm.err; then
+                MOUNTED_DEV=$d
+                break
+            fi
+            log "unlock of $d failed (no clear key / no bitlocker.conf entry) — trying next"
+        done
+        rm -f /tmp/vmstore-blkm.out /tmp/vmstore-blkm.err
+        [ -n "$MOUNTED_DEV" ] || { log "ERROR: no BitLocker volume unlocked — store not mounted (consent present, but no usable key: protection resumed? add KLHCONFIG bitlocker.conf)"; exit 1; }
     fi
-    rm -f /tmp/vmstore-blkm.out /tmp/vmstore-blkm.err
-    MOUNTED_DEV=$(awk -v m="$MNT" '$2 == m {print "/dev/" $1; exit}' \
-        "${KLH_BLKM_MOUNTS:-/run/kali-live-headless/bitlocker.mounts}" 2>/dev/null || true)
-    if [ "$MOUNTED_DEV" != "$DEVICE" ]; then
-        log "ERROR: try-mount unlocked ${MOUNTED_DEV:-?} but vm-store.conf selected $DEVICE — refusing the mismatched volume (unmounting)"
+    if [ -n "$BLK_EXPECTED" ] && [ "$MOUNTED_DEV" != "$BLK_EXPECTED" ]; then
+        log "ERROR: unlock landed on $MOUNTED_DEV but vm-store.conf selected $BLK_EXPECTED — refusing the mismatched volume (unmounting)"
         "$BLKM" unmount "$MNT" >/dev/null 2>&1 || true
         exit 1
     fi
+    DEVICE=$MOUNTED_DEV   # record what actually opened (logs + ENVFILE)
     if findmnt -no OPTIONS "$MNT" 2>/dev/null | grep -qE '(^|,)ro(,|$)'; then
         log "ERROR: $DEVICE unlocked READ-ONLY (hibernated Windows — the tool's hiberfil guard) — a VM store needs rw. Boot Windows, 'powercfg /h off', shut down FULLY, retry"
         "$BLKM" unmount "$MNT" >/dev/null 2>&1 || true
@@ -349,7 +414,7 @@ do_mount() {
     fi
     mkdir -p "$MNT" || { log "ERROR: cannot create $MNT"; exit 1; }
     if [ "$BLK_MODE" = yes ]; then
-        blk_try_mount
+        blk_unlock
         log "BitLocker volume $DEVICE unlocked and mounted rw at $MNT"
         return 0
     fi

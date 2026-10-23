@@ -331,6 +331,18 @@ if [ -x "$VMSTORE" ] && [ -d "$FIX" ]; then
     vm_assert 0 blk-target.conf lsblk-real-gamingpc cmdline-live "plan names the unlock mechanism" '^plan unlock=try-mount:' )
   ( export KLH_ETC_DEFAULT="$FIX/etc-default-try" KLH_BLKM="/nonexistent/bitlocker-mount"
     vm_assert 1 blk-target.conf lsblk-real-gamingpc cmdline-live "BitLocker target refused when the unlock tool is missing (pre-v18 image)" )
+  # opportunistic AUTO (owner directive 2026-10-23): stick-side consent in
+  # vm-store.conf (bitlocker=try) unlocks without any build-time staging
+  ( export KLH_ETC_DEFAULT="$FIX/etc-default-off" KLH_BLKM="$FIX/bin/kali-live-bitlocker-mount-stub"
+    vm_assert 0 auto-stick.conf lsblk-real-gamingpc cmdline-live "auto + stick consent goes opportunistic" '^plan bitlocker=yes$'
+    vm_assert 0 auto-stick.conf lsblk-real-gamingpc cmdline-live "stick consent uses the mount-loop path" '^plan unlock=mount-loop:'
+    vm_assert 0 blk-stick.conf lsblk-real-gamingpc cmdline-live "explicit target + stick consent accepted" '^plan bitlocker=yes$' )
+  # staged consent makes AUTO opportunistic through their try-mount
+  ( export KLH_ETC_DEFAULT="$FIX/etc-default-try" KLH_BLKM="$FIX/bin/kali-live-bitlocker-mount-stub"
+    vm_assert 0 ok.conf lsblk-real-gamingpc cmdline-live "auto + staged consent goes opportunistic via try-mount" '^plan unlock=try-mount:' )
+  # garbage consent value never reaches an unlock
+  ( export KLH_ETC_DEFAULT="$FIX/etc-default-try" KLH_BLKM="$FIX/bin/kali-live-bitlocker-mount-stub"
+    vm_assert 1 blk-bad.conf lsblk-real-gamingpc cmdline-live "bitlocker=sure refused (try|off only)" )
   if grep -qw ntfs3 /proc/filesystems 2>/dev/null; then
     vm_assert 0 ntfs3.conf  lsblk-normal cmdline-live "explicit ntfs3 driver resolves when the kernel has it" '^plan type=ntfs3$'
   else
