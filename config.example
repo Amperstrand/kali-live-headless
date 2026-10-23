@@ -79,6 +79,11 @@ BRANCH=kali-rolling
 # FIPS mesh: the peer every stick dials at boot (our exit node). The fips
 # daemon ships in the image with a per-machine identity derived from the
 # stick's master salt (see README "deterministic identities").
+# Rescue channel (v20): ship the cloudflared quick-tunnel binary (DEFAULT
+# flavour only; ~40MB). The service is OPT-IN per stick via
+# KLHCONFIG:/rescue.conf RESCUE_ENABLED=true — never on by default.
+#WITH_RESCUE=true
+
 # FIPS mesh (v20 optionality): FIPS_ENABLED=false ships the mesh fully
 # dormant (no wg0, no enrollment, no daemon peering); flip per stick at
 # runtime with KLHCONFIG:/fips.conf — no rebuild.

@@ -1,0 +1,59 @@
+#!/bin/sh
+# kali-live-rescue — opt-in break-glass SSH rescue channel (v20).
+#
+# The ONE sanctioned exception to "no cloud": a Cloudflare quick tunnel
+# (trycloudflare.com) fronts the pure-stdlib ws_relay_lib, which relays
+# to sshd. SSH's own crypto runs end-to-end; the CDN sees framed bytes.
+# Activation is NEVER default: provision must have found
+# KLHCONFIG:/rescue.conf with RESCUE_ENABLED=true (RAM-only state —
+# reboot clears it unless the file persists it).
+#
+# The random URL is printed on the console, written to
+# /run/kali-live-headless/rescue-url and the journal. Part 2c adds
+# Nostr publication for headless discovery.
+
+set -u
+
+RUN=/run/kali-live-headless
+WS_PORT=8765
+CFD=/usr/local/bin/cloudflared
+
+log() {
+    logger -t kali-live-rescue -- "$*" 2>/dev/null || true
+    printf '[kali-live-rescue] %s\n' "$*" > /dev/console 2>/dev/null || true
+}
+
+[ -x "$CFD" ] || { log "cloudflared not shipped (minimal flavour or WITH_RESCUE=false)"; exit 0; }
+[ -e "$RUN/rescue-enabled" ] || { log "not enabled (KLHCONFIG:/rescue.conf RESCUE_ENABLED=true)"; exit 0; }
+
+log "RESCUE MODE ACTIVE: opening a trycloudflare quick tunnel to sshd (third-party egress)"
+
+mkdir -p "$RUN"
+python3 /usr/local/lib/kali-live-headless/ws_relay_lib.py \
+    --listen "$WS_PORT" --target 127.0.0.1:22 &
+RELAY_PID=$!
+trap 'kill "$RELAY_PID" 2>/dev/null; rm -f "$RUN/rescue-url"' EXIT INT TERM
+
+rm -f "$RUN/rescue-tunnel.log"
+"$CFD" tunnel --url "http://127.0.0.1:$WS_PORT" --no-autoupdate \
+    > "$RUN/rescue-tunnel.log" 2>&1 &
+CFD_PID=$!
+trap 'kill "$RELAY_PID" "$CFD_PID" 2>/dev/null; rm -f "$RUN/rescue-url"' EXIT INT TERM
+
+# the URL appears in cloudflared's log within seconds; wait bounded
+i=0
+while [ $i -lt 30 ]; do
+    URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$RUN/rescue-tunnel.log" 2>/dev/null | head -1)
+    [ -n "$URL" ] && break
+    sleep 1
+    i=$((i + 1))
+done
+if [ -n "$URL" ]; then
+    echo "$URL" > "$RUN/rescue-url"
+    log "rescue URL: $URL  (ssh via any wstunnel-style ws client; key auth only)"
+else
+    log "WARNING: no tunnel URL after 30 s — see journalctl -t kali-live-rescue / $RUN/rescue-tunnel.log"
+fi
+
+# stay alive while cloudflared runs; systemd restarts us if it dies
+wait "$CFD_PID"
