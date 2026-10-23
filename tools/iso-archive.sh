@@ -193,6 +193,28 @@ fi
 
 rm -f "$MARKER"
 
+# Mechanical verdict capture: if a suite log exists for this build number,
+# its VERDICT line becomes the INDEX verdict — no hand-typed rows (the
+# hand-typed ones lied twice; see AGENTS watch-list).
+for _lg in "$OUT_DIR"/test-run-b"$BUILD".log "$OUT_DIR"/test-run-b"$BUILD"-*.log; do
+  [ -f "$_lg" ] || continue
+  _v=$(grep -m1 "^VERDICT " "$_lg" 2>/dev/null || true)
+  if [ -n "$_v" ] && [ -f "$DEST_DIR/INDEX.md" ]; then
+    _pretty=$(printf '%s' "$_v" | sed 's/^VERDICT //; s/ iso=.*//; s/level=/stage=/')
+    [ -n "$VERDICT" ] || VERDICT="**$_pretty**"
+    python3 - "$DEST_DIR/INDEX.md" "**$_pretty** (mechanical, from $(basename "$_lg"))" <<'PY'
+import re, sys
+path, verdict = sys.argv[1], sys.argv[2]
+s = open(path).read()
+if "_not yet recorded_" in s:
+    s = re.sub(r"^_not yet recorded_.*$", verdict, s, count=1, flags=re.M)
+open(path, "w").write(s)
+PY
+    klh_ok "verdict captured from $(basename "$_lg")"
+    break
+  fi
+done
+
 # Optional verdict recording: replaces the "not yet recorded" placeholder
 # (or refreshes an existing one) so tools/iso-prune.sh --list self-documents.
 if [ -n "$VERDICT" ] && [ -f "$DEST_DIR/INDEX.md" ]; then

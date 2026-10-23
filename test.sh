@@ -1134,4 +1134,8 @@ fi
 # ============================================================= summary
 section "summary"
 printf 'pass=%d fail=%d skip=%d\n' "$PASS" "$FAIL" "$SKIP"
-if [ "$FAIL" -eq 0 ]; then echo "RESULT: PASS (see SKIPs above for environment limitations)"; exit 0; else echo "RESULT: FAIL"; exit 1; fi
+if [ "$FAIL" -eq 0 ]; then R="PASS"; else R="FAIL"; fi
+echo "RESULT: $R"
+echo "VERDICT $R pass=$PASS fail=$FAIL skip=$SKIP iso=${ISO##*/} level=$LEVEL"
+[ "$FAIL" -eq 0 ]
+exit $?
