@@ -31,6 +31,7 @@
 #   kali-live-bitlocker-mount detect
 #   kali-live-bitlocker-mount mount /dev/nvme0n1p3 [/mntpoint] [--rw]
 #   kali-live-bitlocker-mount try-mount [/mntpoint] [--rw]   # first that unlocks
+#     (consent: bitlocker=try on KLHCONFIG wins over the staged gate)
 #   kali-live-bitlocker-mount unmount /mntpoint
 
 set -u
@@ -159,8 +160,8 @@ do_mount() {
 
 do_try_mount() {  # optimistic: first volume that unlocks cleanly
     mnt=$1 d; shift
-    [ "$(cfg_get VMSTORE_BITLOCKER)" = "try" ] \
-        || { err "optimistic unlock disabled (VMSTORE_BITLOCKER != try in /etc/default)"; exit 1; }
+    [ "$(consent)" = "try" ] \
+        || { err "optimistic unlock not consented (bitlocker=try in KLHCONFIG, or --bitlocker-unlock try at build time)"; exit 1; }
     for d in $(lsblk -rno NAME,TYPE 2>/dev/null | awk '$2=="part"{print "/dev/"$1}'); do
         lsblk -rno FSTYPE "$d" 2>/dev/null | grep -qi bitlocker || continue
         if do_mount "$d" "$mnt" "$@"; then
