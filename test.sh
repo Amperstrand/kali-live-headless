@@ -881,7 +881,7 @@ else
     if [ -n "$QPID" ] && wait_ssh $CD_BOOT_TIMEOUT; then
       record pass "bios: booted to SSH (accel=$ACCEL)"
       common_guest_checks bios
-      guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu bios
+      timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu bios
       for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
       kill -9 "$QPID" 2>/dev/null || true
       WITNESS_MD5_AFTER=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
@@ -949,7 +949,7 @@ else
                 record fail "override: wg0 up" "no wg0; wg0.conf Address: ${w:-none} — staged WG_TUNNET stale?"
               fi
             fi
-            guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu override
+            timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu override
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
             kill -9 "$QPID" 2>/dev/null || true
           else
@@ -985,7 +985,7 @@ else
       if [ -n "$QPID" ] && wait_ssh $CD_BOOT_TIMEOUT; then
         record pass "uefi: booted to SSH"
         common_guest_checks uefi
-        guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu uefi
+        timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu uefi
         for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
         kill -9 "$QPID" 2>/dev/null || true
         WITNESS_MD5_AFTER=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
@@ -1016,7 +1016,7 @@ else
             record pass "forensic: booted to SSH"
             common_guest_checks forensic
             [ -z "$(guest 'swapon --show --noheadings 2>/dev/null')" ] && record pass "forensic: no swap (systemd.swap=no)" || record fail "forensic: swap active"
-            guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu forensic
+            timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu forensic
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
             kill -9 "$QPID" 2>/dev/null || true
             WITNESS_MD5_AFTER=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
@@ -1158,7 +1158,7 @@ DOCKERFILE
             v=$(guest '/usr/local/sbin/kali-live-vm-rm --stale 2>/dev/null | tail -1')
             case "$v" in removed*) record pass "vmstore: --stale sweep runs clean ($v)" ;; *) record fail "vmstore: --stale sweep ($v)" ;; esac
 
-            timeout 30 ssh "${SSH_OPTS[@]}" 'sudo -n poweroff' >/dev/null 2>&1 || kill_qemu vmstore-live
+            timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu vmstore-live
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
             kill -9 "$QPID" 2>/dev/null || true
 
@@ -1188,7 +1188,7 @@ DOCKERFILE
             [ "$v" = "0" ] && record pass "vmstore: forensic gate kept the NTFS volume unmounted" || record fail "vmstore: forensic gate FAILED — NTFS mounted under noautomount"
             v=$(guest 'virsh -c qemu:///system pool-list --all 2>/dev/null | grep -c klh-vmstore || true')
             [ "$v" = "0" ] && record pass "vmstore: no pool defined under forensic boot" || record fail "vmstore: pool exists under forensic boot"
-            timeout 30 ssh "${SSH_OPTS[@]}" 'sudo -n poweroff' >/dev/null 2>&1 || kill_qemu vmstore-forensic
+            timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu vmstore-forensic
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
             kill -9 "$QPID" 2>/dev/null || true
           else
