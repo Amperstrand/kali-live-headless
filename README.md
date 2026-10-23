@@ -481,9 +481,13 @@ the rules and their effect, never the service state alone.
 ## Testing
 
 ```console
-$ ./test.sh                    # everything the environment allows
-$ ./test.sh --only-static      # syntax, shellcheck, config, NM profile, units
-$ ./test.sh --skip-qemu        # static + ISO content inspection
+$ ./test.sh                    # everything the environment allows (full boot suite)
+$ ./test.sh --level static     # ~18s: syntax, POSIX-sh guard, shellcheck, config, units — no VM
+$ ./test.sh --level content    # + ISO + squashfs inspection — still no VM
+$ ./test.sh --stage bios       # ONE boot stage (~10 min) — the cheap gate for hotpatched builds
+$ ./test.sh --stage override | uefi | forensic
+$ KLH_TEST_PORT=2227 ./test.sh # pick your own hostfwd port when another
+                               # agent/worktree runs a suite concurrently
 ```
 
 The suite covers (see `test.sh` for the authoritative list):
@@ -653,8 +657,25 @@ $ shred -u config             # removes the plaintext passphrase copy
 
 ## Rebuilding / long runs
 
-A build takes 30–90+ min. Run it inside `tmux` and redirect output to a
-**file** — do **not** pipe through `tee` in the pane:
+Two build ways (see `BUILDS.md` for the full workflow and the speed math):
+
+* `./build.sh` — the clean build (30–90+ min… realistically 2.5–3h): the
+  only path for package, hook, bootloader or pin changes. Locks against
+  concurrent builds, stages the ISO, and **auto-archives** it to
+  `output/iso-build<N>/` with checksums + provenance.
+* `./tools/iso-hotpatch.sh [--build N]` — the fast path (~30–60 min) for
+  overlay-only changes (scripts, units, sshd drop-in): repacks the parent
+  ISO's squashfs without debootstrap/apt/live-build. Scoped, verified
+  (every file read back and compared, boot record asserted), and carrying
+  five hard-won guards — but it cannot ship packages, hook changes or
+  build-time enablement. **Always `./test.sh --stage bios` a hotpatched
+  build before flashing.**
+* Gate + record: `./test.sh --iso output/iso-build<N>/…` then
+  `tools/iso-archive.sh --build N --verdict "<pass/fail>"` so the retention
+  table (`tools/iso-prune.sh --list`) self-documents.
+
+Run it inside `tmux` and redirect output to a **file** — do **not** pipe
+through `tee` in the pane:
 
 ```console
 $ tmux new-session -d -s kali-build -c ~/src/kali-live-headless \
