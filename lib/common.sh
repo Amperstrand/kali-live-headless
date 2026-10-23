@@ -107,6 +107,7 @@ klh_load_config() {
   : "${WG_TUNNET:=10.66}"
   : "${WG_HUB_ADDR:=}"
   : "${WG_PORT:=51820}"
+  : "${VMSTORE_BITLOCKER:=off}"
 
   klh_validate_hostname "$HOSTNAME"     || klh_die "invalid HOSTNAME '$HOSTNAME' in $f"
   klh_validate_ssid "$WIFI_SSID"        || klh_die "invalid WIFI_SSID in $f (1-32 chars, no control chars, no leading/trailing whitespace)"
@@ -136,6 +137,8 @@ klh_load_config() {
     [ -z "$WG_HUB_ADDR" ] || printf '%s' "$WG_HUB_ADDR" | grep -Eq '^(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3})(/32)?$' \
       || klh_die "invalid WG_HUB_ADDR '$WG_HUB_ADDR' (want an RFC1918 address like 10.99.0.1, optionally /32)"
   fi
+  printf '%s' "$VMSTORE_BITLOCKER" | grep -Eq '^(off|try)$' \
+    || klh_die "invalid VMSTORE_BITLOCKER '$VMSTORE_BITLOCKER' (off|try)"
   [ -n "${WIFI_PSK:-}" ] || klh_die "WIFI_PSK not set in $f"
 }
 

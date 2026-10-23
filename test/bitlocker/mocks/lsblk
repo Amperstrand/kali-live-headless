@@ -1,0 +1,11 @@
+#!/bin/sh
+# lsblk mock — driven by BLT_BITLOCKER_DEVS (space-separated) + BLT_KLH_LABEL
+# NAME,TYPE output uses bare device names (like real lsblk); FSTYPE gets the
+# full /dev/ path as lsblk would when invoked on a specific device.
+BLT_BITLOCKER_DEVS=${BLT_BITLOCKER_DEVS:-}
+BLT_KLH_LABEL=${BLT_KLH_LABEL:-}
+case "$1 $2" in
+  "-rno NAME,TYPE") for d in $BLT_BITLOCKER_DEVS; do echo "${d#/dev/} part"; done ;;
+  "-rno FSTYPE") for d in $BLT_BITLOCKER_DEVS; do [ "$3" = "$d" ] && echo BitLocker; done ;;
+  "-rno NAME,LABEL") [ -n "$BLT_KLH_LABEL" ] && echo "sdb1 $BLT_KLH_LABEL" ;;
+esac

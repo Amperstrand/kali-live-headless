@@ -14,3 +14,4 @@ tcpdump
 ## first boot and persisted to the KLHCONFIG partition — nothing baked, see
 ## README "WireGuard access".
 wireguard-tools
+dislocker

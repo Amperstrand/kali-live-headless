@@ -1,0 +1,196 @@
+#!/bin/sh
+# kali-live-bitlocker-mount — detect BitLocker volumes and unlock the ones
+# we have keys for, as the owner allowed. No bypass: every unlock uses a key
+# that is already legitimately available —
+#
+#   1. a CLEAR KEY on the volume itself (protection suspended; common after
+#      Windows updates that never resumed — found on our own hardware,
+#      2026-10-23), or
+#   2. the 48-digit RECOVERY PASSWORD (or a .BEK startup key) the owner put
+#      on the stick's KLHCONFIG partition in bitlocker.conf:
+#
+#        # KLHCONFIG bitlocker.conf — plaintext, same threat model as the PSK
+#        RECOVERY_PASSWORD_4967D63B-2E29-4AD8-8399-F6A339E3D001=123456-123456-...
+#        BEK_4967D63B-2E29-4AD8-8399-F6A339E3D001=/klhconfig/keys/c.bek
+#
+#      (the GUID is the volume's — `kali-live-bitlocker-mount detect` prints it)
+#   3. --recovery-password / --bek for an interactive one-off.
+#
+# "Optimistic" mode (VMSTORE_BITLOCKER=try in /etc/default, default off):
+# at boot nothing mounts by itself; tooling that wants a store (vmstore) may
+# call `try-mount` and get the first volume that unlocks cleanly.
+#
+# Safety rules:
+#   * mounted READ-ONLY unless --rw (Windows may resume protection, and a
+#     hibernated Windows makes writes dangerous — we check hiberfil.sys and
+#     force ro with a warning when it looks hibernated, even under --rw)
+#   * the recovery password is never printed or logged
+#   * a failed unlock returns non-zero; nothing is mounted half-way
+#
+# Usage:
+#   kali-live-bitlocker-mount detect
+#   kali-live-bitlocker-mount mount /dev/nvme0n1p3 [/mntpoint] [--rw]
+#   kali-live-bitlocker-mount try-mount [/mntpoint] [--rw]   # first that unlocks
+#   kali-live-bitlocker-mount unmount /mntpoint
+
+set -u
+
+FUSE_ROOT=/run/kali-live-headless/bitlocker
+ETC_DEFAULT=/etc/default/kali-live-headless
+MOUNT_ROOT=/mnt
+
+log()  { echo "bitlocker: $*"; }
+err()  { echo "bitlocker: $*" >&2; }
+die()  { err "$*"; exit 1; }
+
+cfg_get() { sed -n "s/^$1=//p" "$ETC_DEFAULT" 2>/dev/null | head -n 1 | tr -d \'\"]; }
+
+klh_conf() {  # print KLHCONFIG bitlocker.conf if a labeled partition exists
+    part mnt
+    part=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}')
+    [ -n "$part" ] || return 1
+    mnt=$(mktemp -d)
+    mount -o ro "$part" "$mnt" 2>/dev/null || { rmdir "$mnt" 2>/dev/null; return 1; }
+    cat "$mnt/bitlocker.conf" 2>/dev/null
+    umount "$mnt" 2>/dev/null
+    rmdir "$mnt" 2>/dev/null
+    return 0
+}
+
+vol_guid() { dislocker-metadata -V "$1" 2>/dev/null | sed -n "s/.*Volume GUID: '\([^']*\)'.*/\1/p" | head -n1; }
+
+has_clearkey() { dislocker-metadata -V "$1" 2>/dev/null | grep -q "clear key"; }
+
+hibernated() {  # $1 = mounted ntfs root
+    [ -s "$1/hiberfil.sys" ] 2>/dev/null
+}
+
+# detect: every BitLocker volume, its GUID, and which unlock paths exist
+do_detect() {
+    found=0
+    for d in $(lsblk -rno NAME,TYPE 2>/dev/null | awk '$2=="part"{print "/dev/"$1}'); do
+        lsblk -rno FSTYPE "$d" 2>/dev/null | grep -qi bitlocker || continue
+        guid=$(vol_guid "$d")
+        ck=no; has_clearkey "$d" && ck=yes
+        echo "  $d  guid=$guid  clearkey=$ck  $(command -v dislocker >/dev/null || echo '(dislocker missing!)')"
+        found=1
+    done
+    [ "$found" = 1 ] || echo "  (no BitLocker volumes)"
+    return 0
+}
+
+# unlock_args <part> → prints the dislocker key option, or fails
+unlock_args() {
+    part=$1
+    guid=""
+    if has_clearkey "$part"; then
+        echo "-c"
+        return 0
+    fi
+    guid=$(vol_guid "$part")
+    [ -n "$guid" ] || return 1
+    klh_conf 2>/dev/null | sed -n "s/^RECOVERY_PASSWORD_${guid}=//p" | head -n1 | while read -r rp; do
+        [ -n "$rp" ] && { echo "--recovery-password=$rp"; exit 0; }
+    done
+    # .bek startup key
+    bek=$(klh_conf 2>/dev/null | sed -n "s/^BEK_${guid}=//p" | head -n1)
+    [ -n "$bek" ] && { echo "--bekfile=$bek"; return 0; }
+    return 1
+}
+
+# mount <part> [mnt] [--rw] [--recovery-password=..|--bekfile=..]
+do_mount() {
+    part=$1
+    mnt=$2
+    rw=false
+    rp_cli=""
+    bek_cli=""
+    shift 2
+    for arg in "$@"; do
+        case "$arg" in
+            --rw) rw=true ;;
+            --recovery-password=*) rp_cli=${arg#*=} ;;
+            --bekfile=*) bek_cli=${arg#*=} ;;
+        esac
+    done
+    [ -b "$part" ] || die "not a block device: $part"
+    command -v dislocker-fuse >/dev/null 2>&1 || die "dislocker not installed"
+    command -v dislocker-metadata >/dev/null 2>&1 || die "dislocker-metadata missing"
+
+    if [ -n "$rp_cli" ]; then opt="--recovery-password=$rp_cli"
+    elif [ -n "$bek_cli" ]; then opt="--bekfile=$bek_cli"
+    else
+        opt=$(unlock_args "$part") || die "no usable key for $part (no clear key, no KLHCONFIG entry — see 'detect')"
+    fi
+
+    guid=$(vol_guid "$part")
+    fdir="$FUSE_ROOT/$(echo "$part" | tr '/' '_')"
+    mkdir -p "$fdir" "$mnt"
+    mountpoint -q "$fdir" || {
+        dislocker-fuse -V "$part" $opt -r -- "$fdir" >>/run/kali-live-headless/bitlocker.log 2>&1 &
+        sleep 3
+        mountpoint -q "$fdir" || die "dislocker-fuse did not come up for $part (see /run/kali-live-headless/bitlocker.log)"
+    }
+
+    # the NTFS view lives in the dislocker-file; mount it (ro unless --rw)
+    mopts="loop"
+    if [ "$rw" = true ]; then
+        hibernated "$fdir/dislocker-file" 2>/dev/null || true
+        # hibernation check needs the fs mounted; use ntfs-3g's own dirty
+        # detection plus our post-mount check below
+        mopts="loop,rw"
+    else
+        mopts="loop,ro"
+    fi
+    mount -t ntfs-3g -o "$mopts" "$fdir/dislocker-file" "$mnt" 2>>/run/kali-live-headless/bitlocker.log \
+        || { umount "$fdir" 2>/dev/null; die "ntfs mount failed (hibernated Windows? try read-only)"; }
+    if [ "$rw" = true ] && hibernated "$mnt"; then
+        err "Windows looks HIBERNATED (hiberfil.sys) — remounting read-only for its safety"
+        umount "$mnt" 2>/dev/null
+        mount -t ntfs-3g -o loop,ro "$fdir/dislocker-file" "$mnt" || die "ro remount failed"
+    fi
+    log "unlocked $part (guid ${guid:-?}) at $mnt ($(mount | grep " $mnt " | grep -q ro && echo ro || echo rw))"
+    return 0
+}
+
+do_try_mount() {  # optimistic: first volume that unlocks cleanly
+    mnt=$1 d; shift
+    [ "$(cfg_get VMSTORE_BITLOCKER)" = "try" ] \
+        || { err "optimistic unlock disabled (VMSTORE_BITLOCKER != try in /etc/default)"; exit 1; }
+    for d in $(lsblk -rno NAME,TYPE 2>/dev/null | awk '$2=="part"{print "/dev/"$1}'); do
+        lsblk -rno FSTYPE "$d" 2>/dev/null | grep -qi bitlocker || continue
+        if do_mount "$d" "$mnt" "$@"; then
+            echo "$d $mnt" >> /run/kali-live-headless/bitlocker.mounts
+            return 0
+        fi
+        err "$d did not unlock, trying next"
+    done
+    die "no BitLocker volume unlocked"
+}
+
+do_unmount() {
+    mnt=$1
+    fdir=""
+    umount "$mnt" 2>/dev/null || die "nothing mounted at $mnt"
+    fdir=$(mount | grep "dislocker-file on $mnt" >/dev/null; true)
+    # find the fuse dir backing it (tracked by try-mount, else best effort)
+    for d in "$FUSE_ROOT"/*; do
+        [ -d "$d" ] || continue
+        if mount | grep -q "$d/dislocker-file on $mnt "; then umount "$d" 2>/dev/null; fi
+    done
+    log "unmounted $mnt"
+}
+
+case "${1:-}" in
+    detect)  do_detect ;;
+    mount)
+        [ $# -ge 2 ] || die "mount needs a device"
+        part=$2
+        mnt=${3:-$MOUNT_ROOT/bitlocker}
+        shift 3 2>/dev/null || shift $#
+        do_mount "$part" "$mnt" "$@"
+        ;;
+    try-mount) shift; mnt=${1:-$MOUNT_ROOT/bitlocker}; [ $# -gt 0 ] && shift; do_try_mount "$mnt" "$@" ;;
+    unmount) [ $# -ge 2 ] || die "unmount needs a mountpoint"; do_unmount "$2" ;;
+    *) sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
