@@ -312,10 +312,13 @@ as the key); or `--recovery-password=`/`--bekfile=` for a one-off. There is
 no bypass and no TPM trick — the TPM-sealed key is unrecoverable by design
 from a Linux boot; every unlock here uses a key the owner already has.
 
-**Optimistic mode** (`VMSTORE_BITLOCKER=try` via `./configure.sh
---bitlocker-unlock try`, default `off`): `try-mount` attempts every
-BitLocker volume and mounts the first that unlocks cleanly — the hook the
-VM store uses to put a store on `c:\vms` when the owner allows it.
+**Optimistic mode**: `try-mount` attempts every BitLocker volume and
+mounts the first that unlocks cleanly — the hook the VM store uses to put
+a store on `c:\vms`. Consent, most-powerful first: `bitlocker=try` on the
+stick's own `KLHCONFIG` partition (`bitlocker.conf` or `vm-store.conf` —
+the stick owner decides at runtime; `bitlocker=off` is an explicit veto
+over a staged `try`), then the build-time staged gate
+(`./configure.sh --bitlocker-unlock try`, default `off`).
 
 Safety: read-only unless `--rw`; if `hiberfil.sys` looks live (Windows
 hibernated), it remounts read-only even under `--rw` — writes to a
