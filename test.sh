@@ -799,6 +799,23 @@ else
             [ "$v" = "OverridePassphrase123" ] && record pass "override: NM profile psk applied (value not printed)" || record fail "override: NM profile psk"
             v=$(guest 'cat /run/kali-live-headless-config/headless-wifi.conf 2>/dev/null || true')
             [ -z "$v" ] && record pass "override: config partition unmounted after provisioning" || record fail "override: config partition left mounted"
+            # wireguard: THIS is the stage with a KLHCONFIG disk — wg must have
+            # provisioned. Caught for real on #15's first hardware boot
+            # (2026-10-23): a stale WG_TUNNET staged by the parent build made
+            # 5-octet addresses and wg0 silently never came up, and this assert
+            # was (wrongly) living in common_guest_checks, which the override
+            # stage never calls.
+            if [ -n "${WG_ENDPOINT_EXPECTED:-}" ]; then
+              v=$(guest 'ip -4 addr show wg0 2>/dev/null | grep -oE "inet [0-9.]+" | cut -d" " -f2')
+              if [ -n "$v" ] && printf '%s' "$v" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+                record pass "override: wg0 up with valid address" "$v"
+              elif [ -n "$v" ]; then
+                record fail "override: wg0 address malformed" "$v"
+              else
+                w=$(guest 'grep ^Address /etc/wireguard/wg0.conf 2>/dev/null || true')
+                record fail "override: wg0 up" "no wg0; wg0.conf Address: ${w:-none} — staged WG_TUNNET stale?"
+              fi
+            fi
             guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu override
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
             kill -9 "$QPID" 2>/dev/null || true
