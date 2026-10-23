@@ -1,12 +1,10 @@
 #!/bin/sh
 # Load KVM modules (some boards don't auto-load via udev) and report
-# whether hardware virtualization is available.
+# whether hardware virtualization is available. THEN bring the libvirt
+# default network up deterministically (block at the bottom — it must
+# run on EVERY boot, before any early exit).
 
 set -u
-
-if [ -e /dev/kvm ]; then
-    exit 0
-fi
 
 modprobe kvm 2>/dev/null || true
 if grep -q -w vmx /proc/cpuinfo 2>/dev/null; then
@@ -24,9 +22,17 @@ fi
 # Bring the default NAT network up deterministically. Without this,
 # libvirtd socket-activation + Autostart=no meant virbr0 NEVER existed
 # at boot until someone ran a virsh command — and the guest firewall
-# waited 300s and exited "success" with zero rules installed (the
-# build #11 "active but dead" false green). virsh socket-activates the
-# daemon, so this works even when libvirtd.service is not running yet.
+# had nothing to shield (the build #11 "active but dead" false green).
+#
+# REAL-HARDWARE LESSON (build #14, 2026-10-22): this block used to sit
+# AFTER an `if [ -e /dev/kvm ]; then exit 0; fi` early-exit. On bare
+# metal udev creates /dev/kvm during boot, the script exited at line 8,
+# and the network never started: virbr0 absent, shield dead on every
+# real machine. In QEMU there is no /dev/kvm in the guest, the script
+# fell through, and the suite was green — a device-only branch the QEMU
+# suite cannot catch. The block now runs unconditionally. virsh
+# socket-activates the daemon, so it works even when libvirtd.service
+# has not fully started yet.
 if command -v virsh >/dev/null 2>&1; then
     virsh -c qemu:///system net-autostart default >/dev/null 2>&1 || true
     if ! virsh -c qemu:///system net-info default 2>/dev/null | grep -q 'Active:.*yes'; then
