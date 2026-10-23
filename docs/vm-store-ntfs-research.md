@@ -60,14 +60,29 @@ host page cache absorbs the read side.
    mount with a clear error by default; we surface that error as the
    feature's primary diagnostic ("boot Windows once, disable Fast Startup,
    shut down fully, retry").
-2. **BitLocker must be detected and refused** unless explicitly configured.
-   Consumer gaming PCs frequently have device encryption on. `lsblk -f`
-   shows such partitions as FSTYPE `BitLocker`; mounting requires
-   `cryptsetup bitlkOpen` + the recovery key **every boot** — an unattended
-   headless stick would need that key stored in plaintext on the KLHCONFIG
-   partition (same exposure class as the Wi-Fi PSK, but it unlocks the whole
-   Windows disk — a much bigger secret). Default: refuse with a pointer to
-   this section. If ever enabled: key on KLHCONFIG at owner's explicit risk.
+2. **BitLocker-encrypted targets — delegated to `kali-live-bitlocker-mount`
+   (6570f12) under its contract; owner decision 2026-10-23: the store IS
+   `C:\vms`, no partition changes.** Two rules:
+   * `partition=auto` **refuses** whenever any BitLocker volume exists —
+     the only plaintext NTFS left on such a box is typically the ~1.1G
+     WinRE *recovery partition*, which auto would otherwise happily mount
+     (found live on the actual gaming PC 2026-10-23; never a VM store).
+   * The owner path names the encrypted volume explicitly
+     (`partition=PARTUUID:<uuid-of-C:>`) and requires the **staged consent
+     gate** `VMSTORE_BITLOCKER=try` (build-time `configure.sh
+     --bitlocker-unlock try`, default off — enforced by both tools).
+     vmstore-mount then calls `kali-live-bitlocker-mount try-mount <mnt>
+     --rw`, verifies the unlocked volume **is the selected one** (mismatch
+     → unmount + refuse), refuses read-only results (their hiberfil.sys
+     guard degrades hibernated volumes to ro — a store needs rw), and
+     remounts the NTFS view with the qemu uid/gid mapping so image files
+     are accessible to the VM runtime.
+   * Keys: our hardware currently runs BitLocker with **protection
+     suspended** (clear key on the volume — unlockable with no secret);
+     if protection is resumed, the tool resolves the recovery password /
+     .BEK from KLHCONFIG `bitlocker.conf` (per-volume GUID) — that file is
+     then a secret of the PSK class but with disk-wide blast radius; see
+     the tool's README section for rotation guidance.
 3. **Opt-in only.** New KLHCONFIG file `vm-store.conf` (same mechanism and
    precedence as `headless-wifi.conf`): `enabled`, `partition` (by-label /
    PARTUUID / `auto`=largest NTFS), `dir` (default `\vms`), `driver`
@@ -169,7 +184,7 @@ which is why the launcher takes `--format` from day one.
 | VM images at rest | Plaintext on NTFS ⇒ readable/writable by anything with a Windows account on that PC, and by the kali host | acceptable for build VMs: ephemeral, no secrets worth more than the artifacts; do **not** point this at VMs holding credentials until an at-rest encryption milestone exists |
 | Guest → host C: | **none**: guests never see the NTFS partition or the store directory — only their own file-backed virtio-scsi disk; the launcher refuses raw /dev paths as disk sources | keep this invariant in the launcher + assert it in the suite |
 | Guest → host services / LAN | unchanged: `kali-live-kvm-firewall` virbr0 shielding + NAT already shipped | regression-tested by existing suite stage |
-| Wi-Fi PSK / KLHCONFIG secrets | unchanged; `vm-store.conf` adds no secret *unless* BitLocker is ever enabled (then it would hold a disk-unlocking key — refused by default, §2.2) | keep the BitLocker refusal |
+| Wi-Fi PSK / KLHCONFIG secrets | `vm-store.conf` itself carries **no secret**; BitLocker unlock needs one only when protection is resumed (KLHCONFIG `bitlocker.conf` — tool-owned, PSK-class exposure with disk-wide blast radius; clear-key hardware needs none) | keep consent gate default-off |
 | Forensic/witness guarantees | Would be silently destroyed if the store ever auto-mounted | guarded: forensic cmdline ⇒ no mount; default-off; suite keeps the byte-for-byte witness-disk check on default boots and gains an opt-in NTFS stage (§7) |
 
 ## 7. Validation plan

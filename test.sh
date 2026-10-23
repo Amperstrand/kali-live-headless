@@ -321,6 +321,16 @@ if [ -x "$VMSTORE" ] && [ -d "$FIX" ]; then
   # the recommended owner path: dedicated VMSTORE partition by LABEL works
   # on exactly that machine (explicit selector, BitLocker elsewhere ignored)
   vm_assert 0 vmstore-partition.conf lsblk-with-vmstore cmdline-live "LABEL:VMSTORE picks the dedicated partition on a BitLocker box" '^plan device=/dev/nvme0n1p3$'
+  # BitLocker C: as the store target — the kali-live-bitlocker-mount
+  # contract (6570f12): consent must be STAGED (VMSTORE_BITLOCKER=try in
+  # /etc/default, owner staged at configure time), then try-mount
+  ( export KLH_ETC_DEFAULT="$FIX/etc-default-off" KLH_BLKM="$FIX/bin/kali-live-bitlocker-mount-stub"
+    vm_assert 1 blk-target.conf lsblk-real-gamingpc cmdline-live "BitLocker target refused when optimistic unlock is not staged" )
+  ( export KLH_ETC_DEFAULT="$FIX/etc-default-try" KLH_BLKM="$FIX/bin/kali-live-bitlocker-mount-stub"
+    vm_assert 0 blk-target.conf lsblk-real-gamingpc cmdline-live "BitLocker target with staged consent plans a try-mount" '^plan bitlocker=yes$'
+    vm_assert 0 blk-target.conf lsblk-real-gamingpc cmdline-live "plan names the unlock mechanism" '^plan unlock=try-mount:' )
+  ( export KLH_ETC_DEFAULT="$FIX/etc-default-try" KLH_BLKM="/nonexistent/bitlocker-mount"
+    vm_assert 1 blk-target.conf lsblk-real-gamingpc cmdline-live "BitLocker target refused when the unlock tool is missing (pre-v18 image)" )
   if grep -qw ntfs3 /proc/filesystems 2>/dev/null; then
     vm_assert 0 ntfs3.conf  lsblk-normal cmdline-live "explicit ntfs3 driver resolves when the kernel has it" '^plan type=ntfs3$'
   else
