@@ -267,6 +267,20 @@ Notes:
 
 ## Host-role mesh identity (FIPS)
 
+**Optionality (v20)**: the whole mesh **wire** is gated by `FIPS_ENABLED`
+(`./config` at build time; default `true`) and can be flipped per stick at
+runtime — no rebuild — via `KLHCONFIG:/fips.conf`:
+
+```
+FIPS_ENABLED=false        # ship the mesh dormant: no wg0, no enrollment,
+                          # no daemon peering (the stick's identity is kept)
+WG_ENDPOINT=host:port     # retarget which bridge/hub the stick peers with
+```
+
+The identity (npub, persisted keys) is deliberately **not** gated: a
+dormant stick can re-arm later without re-keying. The bridge address is a
+`./config`-only value — it is never committed to this public repo.
+
 The stick can carry a **persistent mesh identity** for the FIPS overlay
 (`jmcorgan/fips`): a random secp256k1 keypair (Nostr `nsec`/`npub`) and a
 short name, **generated on first boot** and persisted to the stick's
@@ -676,6 +690,19 @@ Still owed on hardware (each has a tool or a first-run caveat):
    not signed for Secure Boot — disable it or enroll Kali's key.
 
 ---
+
+## Rescue channel (v20, opt-in)
+
+The one sanctioned exception to "no cloud": `KLHCONFIG:/rescue.conf`
+with `RESCUE_ENABLED=true` arms `kali-live-rescue`, which opens a
+Cloudflare *quick tunnel* (`trycloudflare.com`) fronting a pure-stdlib
+WebSocket→TCP relay to sshd. SSH's own crypto runs end-to-end; the CDN
+sees framed bytes; **key auth remains the only access gate**. The random
+URL prints on the console and lands in the journal; the flag is RAM-only
+(cleared on reboot unless the conf file persists it). The binary ships
+in the default flavour only, service never enabled without the flag.
+Operator side: any wstunnel-style ws→tcp client. See
+`docs/fips-optionality-and-rescue-channel.md` for the full design.
 
 ## Related projects
 
