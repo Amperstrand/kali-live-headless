@@ -70,6 +70,14 @@ if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
         O_REGDOM=$(conf_value "$OVERRIDE_MNT/headless-wifi.conf" WIFI_REGDOM)
         [ -n "$O_KEYMGMT" ] || O_KEYMGMT=wpa-psk
         [ -n "$O_HIDDEN" ] || O_HIDDEN=false
+        # Rescue channel opt-in (v20): RAM-only flag; the unit's
+        # ConditionPathExists gates on it. LOUD by design — this is the
+        # one feature that egresses to a third party.
+        if [ -r "$OVERRIDE_MNT/rescue.conf" ]            && [ "$(conf_value "$OVERRIDE_MNT/rescue.conf" RESCUE_ENABLED)" = "true" ]; then
+            mkdir -p /run/kali-live-headless 2>/dev/null
+            : > /run/kali-live-headless/rescue-enabled
+            log "RESCUE MODE ARMED by rescue.conf (trycloudflare egress on next unit start)"
+        fi
         log "boot-medium config found (KLHCONFIG) — applying overrides (values not logged)"
     else
         log "KLHCONFIG partition has no headless-wifi.conf — using baked credentials"

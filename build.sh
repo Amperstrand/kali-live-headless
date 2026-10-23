@@ -345,6 +345,22 @@ else
         || klh_die "FIPS $FIPS_VERSION download failed (pin in lib/common.sh)"
 fi
 DEB_SHA=$(sha256sum "$KLH_COMMON/packages.chroot/$FIPS_DEB" | cut -d' ' -f1)
+
+# Rescue channel: pinned cloudflared into the DEFAULT flavour only
+# (minimal keeps it out — see docs/fips-optionality-and-rescue-channel.md).
+if [ "$WITH_RESCUE" = true ] && [ "$VARIANT" = "default" ]; then
+    CFD_BIN="$KLH_COMMON/includes.chroot/usr/local/bin/cloudflared"
+    mkdir -p "$(dirname "$CFD_BIN")"
+    if curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/v${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
+            -o "$CFD_BIN"; then
+        echo "$CLOUDFLARED_SHA256  $CFD_BIN" | sha256sum --check --quiet \
+            || klh_die "cloudflared $CLOUDFLARED_VERSION sha256 mismatch — repin in lib/common.sh"
+        chmod 0755 "$CFD_BIN"
+        klh_ok "rescue channel: cloudflared $CLOUDFLARED_VERSION verified+installed"
+    else
+        klh_die "cloudflared $CLOUDFLARED_VERSION download failed — check network or pin"
+    fi
+fi
 [ "$DEB_SHA" = "$FIPS_SHA256" ] \
     || klh_die "FIPS deb sha256 mismatch (got $DEB_SHA, want $FIPS_SHA256) — update the pin deliberately"
 klh_ok "FIPS $FIPS_VERSION staged (sha256 verified)"

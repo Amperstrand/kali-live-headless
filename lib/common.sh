@@ -116,6 +116,12 @@ klh_load_config() {
   # FIPS_ENABLED=false ships the mesh dormant (no wg0, no enrollment, no
   # daemon peering) — overridable per stick via KLHCONFIG:/fips.conf.
   : "${FIPS_ENABLED:=true}"
+  # Rescue channel (v20): cloudflared quick-tunnel binary shipped in the
+  # DEFAULT flavour only; the service is opt-in via KLHCONFIG:/rescue.conf.
+  # Pin + sha verified against the release's own checksum list at pin time.
+  : "${WITH_RESCUE:=true}"
+  CLOUDFLARED_VERSION="2026.10.3"
+  CLOUDFLARED_SHA256="053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0"
   case "$FIPS_ENABLED" in true|false) ;; *) klh_die "FIPS_ENABLED must be true or false";; esac
   # Peer address is ./config-ONLY (public repo: never bake the real hub
   # here — empty means the whole feature stays dormant until configured).
