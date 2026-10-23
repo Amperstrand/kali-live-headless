@@ -67,16 +67,23 @@ host page cache absorbs the read side.
      the only plaintext NTFS left on such a box is typically the ~1.1G
      WinRE *recovery partition*, which auto would otherwise happily mount
      (found live on the actual gaming PC 2026-10-23; never a VM store).
-   * The owner path names the encrypted volume explicitly
-     (`partition=PARTUUID:<uuid-of-C:>`) and requires the **staged consent
-     gate** `VMSTORE_BITLOCKER=try` (build-time `configure.sh
-     --bitlocker-unlock try`, default off — enforced by both tools).
-     vmstore-mount then calls `kali-live-bitlocker-mount try-mount <mnt>
-     --rw`, verifies the unlocked volume **is the selected one** (mismatch
-     → unmount + refuse), refuses read-only results (their hiberfil.sys
-     guard degrades hibernated volumes to ro — a store needs rw), and
-     remounts the NTFS view with the qemu uid/gid mapping so image files
-     are accessible to the VM runtime.
+   * Consent to unlock comes from EITHER the build-time staged gate
+     (`VMSTORE_BITLOCKER=try`, staged since v18) **or `bitlocker=try` in
+     the stick's own `vm-store.conf`** (owner directive 2026-10-23:
+     opportunistic, automatic on the gaming PC — same stick-over-ISO
+     precedence as `headless-wifi.conf`; needs a vmstore-mount newer than
+     v18). With consent, `partition=auto` becomes **opportunistic**: the
+     first BitLocker volume that unlocks cleanly becomes the store (the
+     WinRE-decoy hazard cannot apply — only BitLocker volumes are ever
+     unlocked; a resumed-protection machine without keys simply fails to
+     unlock and the store stays off). Explicit `PARTUUID:` stays the
+     deterministic path and still verifies the unlocked volume matches.
+     Mechanics in both paths: the unlock is delegated to
+     `kali-live-bitlocker-mount` (`try-mount` under staged consent, or the
+     explicit `mount` subcommand per volume under stick consent — the
+     qemu uid/gid/umask ride along via its `--uid/--gid/--umask`
+     passthrough); read-only results are refused (their hiberfil.sys guard
+     means hibernated Windows = no store).
    * Keys: our hardware currently runs BitLocker with **protection
      suspended** (clear key on the volume — unlockable with no secret);
      if protection is resumed, the tool resolves the recovery password /
