@@ -112,6 +112,10 @@ klh_load_config() {
   : "${WG_HUB_ADDR:=}"
   : "${WG_PORT:=51820}"
   : "${VMSTORE_BITLOCKER:=off}"
+  : "${VMSTORE_ENABLED:=false}"
+  : "${VMSTORE_PARTITION:=auto}"
+  : "${VMSTORE_DIR:=vms}"
+  : "${VMSTORE_RESERVED_MB:=20480}"
   : "${TORAM_ENTRY:=true}"
   : "${FIPS_PEER_ADDR:=inr2.cashu.exchange:2121}"
   : "${FIPS_PEER_NPUB:=npub1sjp6x2kfghzxt6f8fl0runjrp3hkjutq0ttskf6rwdk77vht3x7smrzh90}"
@@ -146,6 +150,21 @@ klh_load_config() {
   fi
   printf '%s' "$VMSTORE_BITLOCKER" | grep -Eq '^(off|try)$' \
     || klh_die "invalid VMSTORE_BITLOCKER '$VMSTORE_BITLOCKER' (off|try)"
+  # VM store on the stick's KLHCONFIG partition (runtime feature; nothing
+  # is baked into the ISO by these — stick-conf.sh renders vm-store.conf
+  # at flash time and flash.sh writes it next to headless-wifi.conf):
+  klh_validate_bool "$VMSTORE_ENABLED"  || klh_die "invalid VMSTORE_ENABLED '$VMSTORE_ENABLED' (true|false)"
+  case "$VMSTORE_PARTITION" in
+    auto) ;;
+    LABEL:*|PARTUUID:*) [ -n "${VMSTORE_PARTITION#*:}" ] || klh_die "invalid VMSTORE_PARTITION '$VMSTORE_PARTITION' (empty selector)" ;;
+    /dev/*) ;;
+    *) klh_die "invalid VMSTORE_PARTITION '$VMSTORE_PARTITION' (auto | LABEL:x | PARTUUID:x | /dev/sdXN)" ;;
+  esac
+  printf '%s' "$VMSTORE_DIR" | grep -Eq '^[A-Za-z0-9._-]{1,32}$' \
+    || klh_die "invalid VMSTORE_DIR '$VMSTORE_DIR' (one Windows-legal path component, e.g. vms)"
+  case "$VMSTORE_RESERVED_MB" in
+    ''|*[!0-9]*) klh_die "invalid VMSTORE_RESERVED_MB '$VMSTORE_RESERVED_MB' (positive integer MB)" ;;
+  esac
   printf '%s' "$VARIANT" | grep -Eq '^(minimal|default|light)$' \
     || klh_die "invalid VARIANT '$VARIANT' (minimal | default | light)"
   klh_validate_bool "$TORAM_ENTRY" || klh_die "invalid TORAM_ENTRY (true|false)"

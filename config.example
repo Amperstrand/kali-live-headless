@@ -67,6 +67,15 @@ BRANCH=kali-rolling
 # volume, or a recovery password / .BEK in KLHCONFIG bitlocker.conf).
 #VMSTORE_BITLOCKER=off
 
+# VM store on the internal NTFS disk (README "VM store"; runtime feature —
+# flash.sh seeds vm-store.conf onto the stick's KLHCONFIG partition from
+# these; nothing is baked into the ISO). VMSTORE_ENABLED=false (default)
+# leaves the store off entirely.
+#VMSTORE_ENABLED=true
+#VMSTORE_PARTITION=auto     # auto | LABEL:x | PARTUUID:x | /dev/sdXN
+#VMSTORE_DIR=vms            # the folder on the volume (C:\<dir>)
+#VMSTORE_RESERVED_MB=20480  # refuse image creation below this free space
+
 # FIPS mesh: the peer every stick dials at boot (our exit node). The fips
 # daemon ships in the image with a per-machine identity derived from the
 # stick's master salt (see README "deterministic identities").
