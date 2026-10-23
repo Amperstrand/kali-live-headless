@@ -36,21 +36,47 @@ log() { logger -t kali-live-kvm -- "$*" 2>/dev/null || true; }
 # jumps (LIBVIRT_INP/LIBVIRT_FWO...) sit BELOW them, so a guest packet
 # hits our policy before any libvirt ACCEPT.
 forward_rules_ok() {
-    # first three FORWARD rules (after the policy line) must be exactly
-    # our RFC1918 drops in top-down order 10/8, 172.16/12, 192.168/16 —
-    # anything else (missing, or libvirt's jumps re-inserted above them
-    # by a network (re)start) means we are shadowed: rebuild.
-    # ('iptables -S' prefixes rules with '-A FORWARD '; strip via read.)
-    [ "$(iptables -S FORWARD 2>/dev/null | sed -n '2,4p' | while read -r _ _ rest; do echo "$rest"; done \
-        | paste -sd'|')" = \
-      "-i virbr0 -d 10.0.0.0/8 -j DROP|-i virbr0 -d 172.16.0.0/12 -j DROP|-i virbr0 -d 192.168.0.0/16 -j DROP" ]
+    # Invariants: (a) all three RFC1918 drops exist, and (b) each sits
+    # ABOVE the first libvirt FORWARD jump - libvirt's jumps ACCEPT guest
+    # egress and would shadow the drops (that is the network-(re)start
+    # case this daemon self-heals).
+    #
+    # Rules from sanctioned tools are TOLERATED above the drops: the
+    # per-forward ACCEPTs kali-live-vm-forward inserts are destination/
+    # port-scoped or conntrack-ESTABLISHED - never a broad virbr0 egress
+    # ACCEPT - so the isolation default is intact. This tolerance ends
+    # the 30s re-insert race the strict "drops must be #1-3" check
+    # created: each daemon demoted the other every tick, and replies of
+    # allowed inbound flows died whenever the drops ended up on top
+    # (any mesh peer addressed inside RFC1918 - e.g. a 10/8 WireGuard
+    # hub - was affected).
+    out=$(iptables -S FORWARD 2>/dev/null) || return 1
+    lv=$(printf '%s\n' "$out" | grep -n -- '-j LIBVIRT_' | head -1 | cut -d: -f1)
+    for cidr in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
+        # NB: iptables -S NORMALIZES flag order (canonical dump is
+        # "-d CIDR -i virbr0 -j DROP" regardless of insert order) - match
+        # both orders or the check never fires and the daemon rebuilds
+        # every tick (the bug the strict #1-3 check shipped with).
+        esc=$(printf '%s' "$cidr" | sed 's/\./\\./g')
+        ln=$(printf '%s\n' "$out" | grep -nE -- "-d $esc -i virbr0 -j DROP|-i virbr0 -d $esc -j DROP" | head -1 | cut -d: -f1)
+        [ -n "$ln" ] || return 1
+        [ -z "$lv" ] || [ "$ln" -lt "$lv" ] || return 1
+    done
+    return 0
 }
 
 install_input() {
+    # Stateful: replies of flows the HOST initiates into the guest net
+    # (virt-manager, virsh, ssh into a VM, the hw-check VM test) arrive
+    # on INPUT -i virbr0 too — a stateless drop broke them all (found on
+    # real hardware 2026-10-22: stick->VM ssh timed out with the shield
+    # up; the QEMU suite never covers host->guest flows). ESTABLISHED
+    # first, then the dnsmasq services, then drop NEW inbound.
     iptables -D INPUT -i virbr0 -j DROP >/dev/null 2>&1
     iptables -I INPUT -i virbr0 -j DROP
     iptables -I INPUT -i virbr0 -p udp --dport 67 -j ACCEPT   # DHCP (dnsmasq)
     iptables -I INPUT -i virbr0 -p udp --dport 53 -j ACCEPT   # DNS  (dnsmasq)
+    iptables -I INPUT -i virbr0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 }
 
 install_forward() {
@@ -81,7 +107,8 @@ while :; do
         # re-ordered, rebuild.
         first=$(iptables -S INPUT 2>/dev/null | sed -n '2p')
         case "$first" in
-            *"-p udp --dport 53 -j ACCEPT"*) : ;;
+            *"-m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"*|\
+            *"-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"*) : ;;
             *) install_input; changed=1 ;;
         esac
     fi
