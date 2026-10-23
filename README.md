@@ -294,6 +294,25 @@ stick keeps the same `npub` — its mesh address — across power cycles.
   mesh firewall (`fips-firewall.service`) enforces the baseline; the
   deployment side lives in the private overlay, not this repo.
 
+## Image flavours: minimal (default) vs default, and the toram boot entry
+
+`./configure.sh --variant minimal|default|light` picks what the stick *is*:
+
+* **minimal** (default) — the appliance: our headless/KVM/WireGuard stack on
+  a lean base (`kali-linux-core`). Small ISO, fast builds and cold boots,
+  small attack surface. No desktop, no tool suites.
+* **default** — the full `kali-linux-default` experience (metasploit, gvm,
+  texlive…): ~4x the image, correspondingly slower to build, flash and
+  boot. Pick it when the stick should double as a general Kali workstation.
+* **light** — core + Xfce desktop (for virt-manager's GUI on the gaming PC).
+
+Every image also ships a **"Live (load to RAM)"** boot entry (`toram`,
+default on, `--toram-entry false` to omit): live-boot copies the squashfs
+into RAM up front and then runs purely from memory. On the minimal image
+the upfront copy is small enough that this is typically the fastest way to
+boot — compare cold-boot-to-SSH with `tools/hw-check.sh` before committing
+to it as your default.
+
 ## BitLocker volumes: detect, unlock, use (kali-live-bitlocker-mount)
 
 Our target machines turn out to run BitLocker with protection **suspended**

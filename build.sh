@@ -231,6 +231,34 @@ fi
 [ -f "$GRUB_CFG" ] && sed -i "s/^set default=.*/set default=$([ "$BOOT_DEFAULT" = forensic ] && echo 1 || echo 0)/" "$GRUB_CFG"
 klh_info "default boot entry: $BOOT_DEFAULT (auto-boots after 5s)"
 
+# Optional "Live (load to RAM)" entry: live-boot's toram copies the whole
+# squashfs into RAM up front (sequential read, fast) and then runs purely
+# from memory — vs the default overlay where every first read page-faults
+# off the USB stick. With the minimal variant the upfront copy is small
+# enough that this is usually a pure win; pick it from the boot menu.
+if [ "$TORAM_ENTRY" = true ]; then
+    if [ -f "$LIVE_CFG" ] && ! grep -q "load to" "$LIVE_CFG"; then
+        sed -i '/^label live-@FLAVOUR@-failsafe/i\
+label live-toram-@FLAVOUR@\
+        menu label Live system (@FLAVOUR@ - load to ^RAM)\
+        linux @LINUX@\
+        initrd @INITRD@\
+        append @APPEND_LIVE@ toram\
+' "$LIVE_CFG"
+    fi
+    # grub's MENU lives in grub.cfg (config.cfg only holds settings)
+    GRUB_MENU="$KLH_COMMON/bootloaders/grub-pc/grub.cfg"
+    if [ -f "$GRUB_MENU" ] && ! grep -q "load to RAM" "$GRUB_MENU"; then
+        sed -i '/forensic mode)"/i\
+menuentry "Live system (@FLAVOUR_LIVE@ - load to RAM)" {\
+        linux @KERNEL_LIVE@ @APPEND_LIVE@ toram\
+        initrd @INITRD_LIVE@\
+}\
+' "$GRUB_MENU"
+    fi
+    klh_info "boot menu: 'Live (load to RAM)' entry added (toram)"
+fi
+
 # Scrub staged secrets on ANY exit from here on. The trap must be armed
 # BEFORE the secrets are staged (review M2: staging first, trapping later
 # left the PSK profile on disk when an early command failed).
