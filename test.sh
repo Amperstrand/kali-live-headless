@@ -614,6 +614,41 @@ PKGS
       sudo test ! -e "$SQ_MNT/usr/local/sbin/kali-live-kvm-firewall" && sudo test ! -e "$SQ_MNT/usr/local/sbin/kali-live-vmstore-mount" && record pass "kvm: correctly omitted" || record fail "kvm: files shipped despite WITH_KVM=false"
     fi
 
+    # DANGLING-REQUIRES GUARD — no unit in the image may hard-Require a
+    # unit that does not exist in it. #18 shipped a libvirtd drop-in with
+    # Requires=virt-secret-init-encryption.service (absent): libvirtd
+    # could never socket-activate, every virsh hung forever, and boot
+    # wedged behind kvm-enable's virsh call — found on hardware at
+    # 19:00, should have been found here.
+    dangle=$(sudo sh -c 'SQ="$1"
+      find "$SQ/etc/systemd/system" "$SQ/usr/lib/systemd/system" "$SQ/lib/systemd/system" \
+        -type f \( -name "*.service" -o -name "*.socket" -o -name "*.timer" \
+                     -o -path "*.service.d/*.conf" -o -path "*.socket.d/*.conf" \
+                     -o -path "*.timer.d/*.conf" \) -exec grep -H "^Requires=" {} + 2>/dev/null \
+      | while IFS=":" read -r unit rest; do
+          # attribute drop-in requirements to their parent unit
+          unit=$(printf "%s" "$unit" | sed -E "s/\.d\/[^/]+\.conf$//")
+          printf "%s\n" "$rest" | sed "s/^Requires=//" | tr " " "\n" \
+          | while IFS= read -r dep; do
+              case "$dep" in
+                "") continue ;;
+                *@*) continue ;;  # template instances cannot be resolved statically
+                # stock Kali nfs-utils packaging quirk, missing for years
+                rpc_pipefs.target) continue ;;
+                *.service|*.socket|*.timer|*.path|*.target)
+                  for d in etc/systemd/system usr/lib/systemd/system lib/systemd/system; do
+                    [ -e "$SQ/$d/$dep" ] && continue 2
+                  done
+                  echo "$(basename "$unit") requires missing $dep" ;;
+              esac
+            done
+        done' sh "$SQ_MNT")
+    if [ -z "$dangle" ]; then
+      record pass "no dangling Requires= in any image unit"
+    else
+      record fail "no dangling Requires= in any image unit" "$(printf '%s' "$dangle" | head -3 | tr '\n' ';')"
+    fi
+
     umount_all; trap - EXIT
   else
     record skip "iso-content" "could not loop-mount ISO (needs sudo + loop support)"
