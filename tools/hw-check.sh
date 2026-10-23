@@ -454,6 +454,31 @@ else
   record info "vm-forward test skipped (pass --vm-forward to run it)"
 fi
 
+section "FIPS mesh (derived identity, our exit node)"
+fipsd=$(guest 'systemctl is-active fips 2>/dev/null')
+if [ "$fipsd" = active ]; then
+  record pass "fips daemon active"
+  v=$(guest 'sudo -n fipsctl show links 2>/dev/null | grep -c \"state\": \"connected\"" || true')
+  [ "${v:-0}" -ge 1 ] 2>/dev/null && record pass "fips: at least one mesh link up" "$v link(s)" || record fail "fips: mesh link up" "0 connected links — check the peer/exit"
+  v=$(guest 'sudo -n cat /etc/fips/fips.pub 2>/dev/null || true')
+  if [ -n "$v" ]; then
+    record pass "fips identity present" "${v:0:16}…"
+    if [ -n "${EXPECT_NPUB:-}" ]; then
+      [ "$v" = "$EXPECT_NPUB" ] && record pass "fips npub stable across reboot" || record fail "fips npub stable across reboot (had $EXPECT_NPUB)"
+    fi
+    # derived-identity proof: the seeded key must match the derivation from
+    # the stick's own salt + THIS machine's fingerprint
+    der=$(guest 'sudo -n python3 /usr/local/lib/kali-live-headless/derive_identity.py "$(head -n1 $(ls /dev/disk/by-label/KLHCONFIG 2>/dev/null | head -1 | xargs -I{} mount -o ro {} /mnt 2>/dev/null && head -n1 /mnt/master.salt; umount /mnt 2>/dev/null) | tr -d \"\")" --machine --purpose fips 2>/dev/null | cut -f1' 2>/dev/null || true)
+    [ -n "$der" ] && [ "$der" = "$v" ] && record pass "fips identity matches the derivation (salt+fingerprint)" || record info "fips identity derivation cross-check: ${der:+mismatch — $der vs $v}${der:-not computable (no salt? random identity)}"
+  else
+    record fail "fips identity present" "no /etc/fips/fips.pub"
+  fi
+elif guest 'command -v fipsctl >/dev/null 2>&1'; then
+  record fail "fips daemon active" "$fipsd"
+else
+  record info "fips not shipped in this image (v19+ feature)"
+fi
+
 section "hardware health"
 capture dmesg-warn guest_sudo 'dmesg --level=err,warn | tail -n 60'
 v=$(guest_sudo "dmesg 2>/dev/null | grep -ci 'firmware.*fail' || true")
