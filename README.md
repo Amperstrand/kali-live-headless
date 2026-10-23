@@ -481,9 +481,13 @@ the rules and their effect, never the service state alone.
 ## Testing
 
 ```console
-$ ./test.sh                    # everything the environment allows
-$ ./test.sh --only-static      # syntax, shellcheck, config, NM profile, units
-$ ./test.sh --skip-qemu        # static + ISO content inspection
+$ ./test.sh                    # everything the environment allows (full boot suite)
+$ ./test.sh --level static     # ~18s: syntax, POSIX-sh guard, shellcheck, config, units — no VM
+$ ./test.sh --level content    # + ISO + squashfs inspection — still no VM
+$ ./test.sh --stage bios       # ONE boot stage (~10 min) — the cheap gate for hotpatched builds
+$ ./test.sh --stage override | uefi | forensic
+$ KLH_TEST_PORT=2227 ./test.sh # pick your own hostfwd port when another
+                               # agent/worktree runs a suite concurrently
 ```
 
 The suite covers (see `test.sh` for the authoritative list):
@@ -556,26 +560,27 @@ Verdict + evidence land in `output/hw-check-*.log` and `output/hw-<ts>/`
 (gitignored) — record PASS in `BUILDS.md` and the ISO archive's
 `INDEX.md`.
 
-### Physical hardware test checklist (not yet performed — do these first run)
+### Physical hardware test checklist
 
-1. Flash, insert, boot, select **Live** (or forensic). Expect boot to
-   desktop/login in 1–3 min; console banner shows IPv4 + fingerprints.
-2. From another machine: `ping kali-live.local`, then
-   `ssh kali@kali-live.local` (accept host key after verifying it matches
-   the console banner).
-3. Confirm `ssh kali@<ip>` with the wrong/absent key is refused with
-   `Permission denied (publickey)` — never a password prompt.
-4. Unplug ethernet (if any) and reboot: Wi-Fi-only association; if it
-   fails, collect `journalctl -t kali-live-wifi-watchdog -b` and
-   `journalctl -u NetworkManager -b` via the ethernet path or console.
-5. Test WPA3 (`WIFI_KEYMGMT=sae`) if your AP supports it; also test a
-   reboot cycle (host key must stay the same — no "REMOTE HOST IDENTIFICATION
-   HAS CHANGED" warning).
-6. Boot a machine with an internal OS disk in **forensic mode**; afterwards
-   verify that disk still boots by itself.
-7. Try legacy BIOS and UEFI firmwares; Secure Boot: Kali's live images are
-   not signed for Secure Boot — disable Secure Boot or enroll Kali's key if
-   the firmware offers it.
+Status as of 2026-10-23 — much of this has now been performed on real
+hardware (x280, builds #11/#14; evidence in `BUILDS.md` and the archives'
+INDEX files): SSH/mDNS/Wi-Fi association ✓, provision + npub + WireGuard
+keygen on first boot ✓, guest→LAN and guest→host-sshd isolation with a
+**real** libvirt VM ✓, cold boot to SSH in 127 s ✓, hub handshake ✓.
+
+Still owed on hardware (each has a tool or a first-run caveat):
+
+1. `--expect-npub` / `--expect-wg` across a reboot — the identity
+   persistence proofs (KLHCONFIG partition required: flash with
+   `./flash.sh`, not plain `dd`).
+2. The Wi-Fi watchdog under a real radio disruption (`rfkill block wifi`);
+   expect reconnection — collect the watchdog journal if not.
+3. WPA3 (`WIFI_KEYMGMT=sae`) if your AP supports it; reboot cycles (host
+   key must stay the same — no "REMOTE HOST IDENTIFICATION HAS CHANGED").
+4. Forensic mode on a machine with an internal OS disk; afterwards verify
+   that disk still boots by itself.
+5. Legacy BIOS *and* UEFI firmwares; Secure Boot: Kali's live images are
+   not signed for Secure Boot — disable it or enroll Kali's key.
 
 ---
 
@@ -653,8 +658,25 @@ $ shred -u config             # removes the plaintext passphrase copy
 
 ## Rebuilding / long runs
 
-A build takes 30–90+ min. Run it inside `tmux` and redirect output to a
-**file** — do **not** pipe through `tee` in the pane:
+Two build ways (see `BUILDS.md` for the full workflow and the speed math):
+
+* `./build.sh` — the clean build (30–90+ min… realistically 2.5–3h): the
+  only path for package, hook, bootloader or pin changes. Locks against
+  concurrent builds, stages the ISO, and **auto-archives** it to
+  `output/iso-build<N>/` with checksums + provenance.
+* `./tools/iso-hotpatch.sh [--build N]` — the fast path (~30–60 min) for
+  overlay-only changes (scripts, units, sshd drop-in): repacks the parent
+  ISO's squashfs without debootstrap/apt/live-build. Scoped, verified
+  (every file read back and compared, boot record asserted), and carrying
+  five hard-won guards — but it cannot ship packages, hook changes or
+  build-time enablement. **Always `./test.sh --stage bios` a hotpatched
+  build before flashing.**
+* Gate + record: `./test.sh --iso output/iso-build<N>/…` then
+  `tools/iso-archive.sh --build N --verdict "<pass/fail>"` so the retention
+  table (`tools/iso-prune.sh --list`) self-documents.
+
+Run it inside `tmux` and redirect output to a **file** — do **not** pipe
+through `tee` in the pane:
 
 ```console
 $ tmux new-session -d -s kali-build -c ~/src/kali-live-headless \

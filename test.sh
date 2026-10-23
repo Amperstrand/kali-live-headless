@@ -99,7 +99,13 @@ for f in build.sh configure.sh flash.sh test.sh; do
   if bash -n "$REPO_DIR/$f" 2>"$SCRATCH/syntax.err"; then record pass "bash -n $f"; else record fail "bash -n $f" "$(head -1 "$SCRATCH/syntax.err")"; fi
 done
 for f in overlay/kali-config/common/includes.chroot/usr/local/sbin/* overlay/kali-config/common/hooks/live/*.hook.chroot; do
-  if bash -n "$REPO_DIR/$f" 2>/dev/null || sh -n "$REPO_DIR/$f" 2>/dev/null; then record pass "sh -n $(basename "$f")"; else record fail "sh -n $(basename "$f")"; fi
+  # only shell-shebang files: python CLIs legitimately live in sbin too
+  # (kali-live-wg-enroll) and must not be bash -n'd as shell
+  if head -n1 "$REPO_DIR/$f" | grep -qE '^#![^ ]*(ba)?sh'; then
+    if bash -n "$REPO_DIR/$f" 2>/dev/null || sh -n "$REPO_DIR/$f" 2>/dev/null; then record pass "sh -n $(basename "$f")"; else record fail "sh -n $(basename "$f")"; fi
+  else
+    record pass "sh -n $(basename "$f")" "non-shell shebang, skipped"
+  fi
 done
 
 # POSIX-sh runtime guard. bash -n happily accepts bashisms in #!/bin/sh
@@ -426,7 +432,10 @@ else
       done
       sudo test -L "$SQ_MNT/etc/systemd/system/timers.target.wants/kali-live-vm-forward-reassert.timer" && record pass "enabled: vm-forward-reassert.timer" || record fail "enabled: vm-forward-reassert.timer"
     fi
-    for s in kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-headless-wifi-gen kali-live-kvm-enable kali-live-kvm-firewall kali-live-wireguard-init kali-live-vm-forward kali-live-vmstore-mount kali-live-vm-create kali-live-vm-rm; do
+    # every shipped script must be executable — shell AND python CLIs alike
+    # (a fixed name list once let a 0644 python CLI through unseen)
+    for s in "$REPO_DIR"/overlay/kali-config/common/includes.chroot/usr/local/sbin/*; do
+      s=$(basename "$s")
       sudo test -x "$SQ_MNT/usr/local/sbin/$s" && record pass "script executable: $s" || record fail "script executable: $s"
     done
     # WireGuard M1: package installed in the image, and the /etc/default
@@ -549,10 +558,10 @@ else
   # lost 40 min of BIOS wait plus three more stages that way. Reap pidfile
   # leftovers, then refuse to start if the port is still taken.
   PORT_OK=true
-  PORT="${KLH_TEST_PORT:-2222}"   # parallel worktrees pick their own port
-                                  # (AGENTS watch list 6; same change landing
-                                  # on main — keep identical for a trivial
-                                  # merge)
+  # One QEMU hostfwd port per lane: concurrent suites in different worktrees
+  # (this is a multi-agent repo now) must not fight over 2222 — and nobody
+  # should ever need to kill another lane's QEMU to run their own gate.
+  PORT="${KLH_TEST_PORT:-2222}"
   for _pf in "$SCRATCH"/qemu-*.pid; do
     [ -e "$_pf" ] || continue
     _p=$(cat "$_pf" 2>/dev/null || true)
@@ -671,12 +680,20 @@ else
       # looked. This would have caught it.
       if [ -n "${WG_ENDPOINT_EXPECTED:-}" ]; then
         v=$(guest 'ip -4 addr show wg0 2>/dev/null | grep -oE "inet [0-9.]+" | cut -d" " -f2')
-        if [ -n "$v" ] && printf '%s' "$v" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
-          record pass "$mode: wg0 up with valid address" "$v"
-        elif [ -n "$v" ]; then
-          record fail "$mode: wg0 address malformed" "$v"
+        if [ "$mode" = override ]; then
+          # the override stage attaches a KLHCONFIG disk: wg must provision
+          if [ -n "$v" ] && printf '%s' "$v" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+            record pass "$mode: wg0 up with valid address" "$v"
+          elif [ -n "$v" ]; then
+            record fail "$mode: wg0 address malformed" "$v"
+          else
+            record fail "$mode: wg0 up" "no wg0 despite a config partition — check the wireguard-init journal"
+          fi
         else
-          record fail "$mode: wg0 up" "no wg0 — check the wireguard-init journal (derivation? wg-quick?)"
+          # no config partition in the bios/uefi stages: the init must REFUSE
+          # (an unpersisted key would silently rotate every boot)
+          [ -z "$v" ] && record pass "$mode: wg0 correctly absent (no config partition to persist the key)" \
+            || record fail "$mode: wg0 present WITHOUT a config partition" "$v — persistence guard broken"
         fi
       fi
 
@@ -788,6 +805,23 @@ else
             [ "$v" = "OverridePassphrase123" ] && record pass "override: NM profile psk applied (value not printed)" || record fail "override: NM profile psk"
             v=$(guest 'cat /run/kali-live-headless-config/headless-wifi.conf 2>/dev/null || true')
             [ -z "$v" ] && record pass "override: config partition unmounted after provisioning" || record fail "override: config partition left mounted"
+            # wireguard: THIS is the stage with a KLHCONFIG disk — wg must have
+            # provisioned. Caught for real on #15's first hardware boot
+            # (2026-10-23): a stale WG_TUNNET staged by the parent build made
+            # 5-octet addresses and wg0 silently never came up, and this assert
+            # was (wrongly) living in common_guest_checks, which the override
+            # stage never calls.
+            if [ -n "${WG_ENDPOINT_EXPECTED:-}" ]; then
+              v=$(guest 'ip -4 addr show wg0 2>/dev/null | grep -oE "inet [0-9.]+" | cut -d" " -f2')
+              if [ -n "$v" ] && printf '%s' "$v" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+                record pass "override: wg0 up with valid address" "$v"
+              elif [ -n "$v" ]; then
+                record fail "override: wg0 address malformed" "$v"
+              else
+                w=$(guest 'grep ^Address /etc/wireguard/wg0.conf 2>/dev/null || true')
+                record fail "override: wg0 up" "no wg0; wg0.conf Address: ${w:-none} — staged WG_TUNNET stale?"
+              fi
+            fi
             guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu override
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
             kill -9 "$QPID" 2>/dev/null || true

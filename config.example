@@ -51,3 +51,12 @@ ARCH=amd64
 BRANCH=kali-rolling
 #BUILD_MIRROR=http://kali.download/kali
 #OUT_DIR=output
+
+# WireGuard access channel (all NON-secret: the stick generates its own
+# private key on first boot and persists it to the KLHCONFIG partition).
+# Leave WG_ENDPOINT empty to ship the feature dormant.
+#WG_ENDPOINT=inr2.example.com
+#WG_PEER_PUBKEY=+pasteTheHubs44CharBase64PublicKeyFromWgPubkey=
+#WG_TUNNET=10.66
+#WG_HUB_ADDR=10.99.0.1
+#WG_PORT=51820
