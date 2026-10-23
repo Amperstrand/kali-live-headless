@@ -111,6 +111,9 @@ do_mount() {
             --rw) rw=true ;;
             --recovery-password=*) rp_cli=${arg#*=} ;;
             --bekfile=*) bek_cli=${arg#*=} ;;
+            --uid=*) uidopt=",uid=${arg#*=}" ;;
+            --gid=*) gidopt=",gid=${arg#*=}" ;;
+            --umask=*) umaskopt=",umask=${arg#*=}" ;;
         esac
     done
     [ -b "$part" ] || die "not a block device: $part"
@@ -133,21 +136,22 @@ do_mount() {
     }
 
     # the NTFS view lives in the dislocker-file; mount it (ro unless --rw)
+    own="${uidopt:-}${gidopt:-}${umaskopt:-}"
     mopts="loop"
     if [ "$rw" = true ]; then
         hibernated "$fdir/dislocker-file" 2>/dev/null || true
         # hibernation check needs the fs mounted; use ntfs-3g's own dirty
         # detection plus our post-mount check below
-        mopts="loop,rw"
+        mopts="loop,rw$own"
     else
-        mopts="loop,ro"
+        mopts="loop,ro$own"
     fi
     mount -t ntfs-3g -o "$mopts" "$fdir/dislocker-file" "$mnt" 2>>/run/kali-live-headless/bitlocker.log \
         || { umount "$fdir" 2>/dev/null; die "ntfs mount failed (hibernated Windows? try read-only)"; }
     if [ "$rw" = true ] && hibernated "$mnt"; then
         err "Windows looks HIBERNATED (hiberfil.sys) — remounting read-only for its safety"
         umount "$mnt" 2>/dev/null
-        mount -t ntfs-3g -o loop,ro "$fdir/dislocker-file" "$mnt" || die "ro remount failed"
+        mount -t ntfs-3g -o "loop,ro$own" "$fdir/dislocker-file" "$mnt" || die "ro remount failed"
     fi
     log "unlocked $part (guid ${guid:-?}) at $mnt ($(mount | grep " $mnt " | grep -q ro && echo ro || echo rw))"
     return 0
