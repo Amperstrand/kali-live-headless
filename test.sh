@@ -549,10 +549,10 @@ else
   # lost 40 min of BIOS wait plus three more stages that way. Reap pidfile
   # leftovers, then refuse to start if the port is still taken.
   PORT_OK=true
-  PORT="${KLH_TEST_PORT:-2222}"   # parallel worktrees pick their own port
-                                  # (AGENTS watch list 6; same change landing
-                                  # on main — keep identical for a trivial
-                                  # merge)
+  # One QEMU hostfwd port per lane: concurrent suites in different worktrees
+  # (this is a multi-agent repo now) must not fight over 2222 — and nobody
+  # should ever need to kill another lane's QEMU to run their own gate.
+  PORT="${KLH_TEST_PORT:-2222}"
   for _pf in "$SCRATCH"/qemu-*.pid; do
     [ -e "$_pf" ] || continue
     _p=$(cat "$_pf" 2>/dev/null || true)
