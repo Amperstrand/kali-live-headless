@@ -1055,19 +1055,39 @@ DOCKERFILE
       if [ -n "$NTFS_MKFS" ] && grep -qw ntfs3 /proc/filesystems 2>/dev/null; then
         VMW="$SCRATCH/vmstore.img"
         truncate -s 2G "$VMW"
-        if [ "$NTFS_MKFS" = host ]; then
-          mkfs.ntfs --quick --force --label VMSTORE "$VMW" >/dev/null 2>&1
+        # Real stores live on PARTITIONS (the gaming PC's nvme0n1p3); the
+        # -P parser iterates partitions only, so the fixture must carry a
+        # partition table too (a whole-disk filesystem stopped matching
+        # after the parser fix — found on the #18 gate, 2026-10-24).
+        # losetup -P gives the partition loop node for mkfs + population.
+        VMLOOP=""
+        if VMLOOP=$(sudo losetup -Pf --show "$VMW" 2>/dev/null) && [ -n "$VMLOOP" ]; then
+          printf 'type=0c\n' | sudo sfdisk --quiet "$VMW" >/dev/null 2>&1
+          sudo partprobe "$VMLOOP" >/dev/null 2>&1 || sudo blockdev --rereadpt "$VMLOOP" >/dev/null 2>&1 || true
+          for _ in 1 2 3 4 5; do [ -b "${VMLOOP}p1" ] && break; sleep 1; done
+          VMPART="${VMLOOP}p1"
+          if [ "$NTFS_MKFS" = host ]; then
+            mkfs.ntfs --quick --force --label VMSTORE "$VMPART" >/dev/null 2>&1
+          else
+            $NTFS_MKFS run --rm -v "$SCRATCH:/w:rw" --entrypoint mkfs.ntfs kali-build/vmstore-test --quick --force --label VMSTORE /w/vmstore.img >/dev/null 2>&1
+          fi
         else
-          $NTFS_MKFS run --rm -v "$SCRATCH:/w:rw" --entrypoint mkfs.ntfs kali-build/vmstore-test --quick --force --label VMSTORE /w/vmstore.img >/dev/null 2>&1
+          VMLOOP=""; VMPART="$VMW"   # loop-with-partitions unavailable: fall back whole-disk
+          if [ "$NTFS_MKFS" = host ]; then
+            mkfs.ntfs --quick --force --label VMSTORE "$VMW" >/dev/null 2>&1
+          else
+            $NTFS_MKFS run --rm -v "$SCRATCH:/w:rw" --entrypoint mkfs.ntfs kali-build/vmstore-test --quick --force --label VMSTORE /w/vmstore.img >/dev/null 2>&1
+          fi
         fi
         VM_MNT="$SCRATCH/vmstore-mnt"; mkdir -p "$VM_MNT"
-        if sudo mount -o loop,uid="$(id -u)" -t ntfs3 "$VMW" "$VM_MNT" 2>/dev/null; then
+        if sudo mount -o loop,uid="$(id -u)" -t ntfs3 "${VMPART:-$VMW}" "$VM_MNT" 2>/dev/null; then
           mkdir -p "$VM_MNT/vms" "$VM_MNT/other"
           printf 'untouched-marker\n' > "$VM_MNT/do-not-touch.txt"
           printf 'inner-marker\n'   > "$VM_MNT/other/inner.txt"
           VM_MARK1=$(md5sum "$VM_MNT/do-not-touch.txt" | awk '{print $1}')
           VM_MARK2=$(md5sum "$VM_MNT/other/inner.txt" | awk '{print $1}')
           sudo umount "$VM_MNT"
+          [ -n "$VMLOOP" ] && sudo losetup -d "$VMLOOP" 2>/dev/null || true
           # KLHCONFIG disk with an ENABLED vm-store.conf (partition=auto finds
           # the only NTFS volume = the witness; reserved is tiny so image
           # creation passes the headroom check on a 2G witness)
@@ -1143,13 +1163,17 @@ DOCKERFILE
             kill -9 "$QPID" 2>/dev/null || true
 
             # host-side: only \vms may have changed
-            if sudo mount -o ro,loop -t ntfs3 "$VMW" "$VM_MNT" 2>/dev/null; then
+            VMVLOOP=$(sudo losetup -Pf --show -r "$VMW" 2>/dev/null || true)
+            VMVPART="${VMVLOOP}p1"; [ -n "$VMVLOOP" ] && [ -b "$VMVPART" ] || VMVPART="$VMW"
+            if sudo mount -o ro -t ntfs3 "$VMVPART" "$VM_MNT" 2>/dev/null; then
               v=$(md5sum "$VM_MNT/do-not-touch.txt" "$VM_MNT/other/inner.txt" 2>/dev/null | awk '{print $1}' | paste -sd/ -)
               [ "$v" = "$VM_MARK1/$VM_MARK2" ] && record pass "vmstore: witness outside \\vms byte-identical (host-verified)" || record fail "vmstore: witness files OUTSIDE \\vms were modified"
               v=$(ls -A "$VM_MNT/vms" 2>/dev/null | paste -sd, -)
               [ -z "$v" ] && record pass "vmstore: teardown left \\vms empty" || record fail "vmstore: leftovers in \\vms ($v)"
               sudo umount "$VM_MNT"
+              [ -n "$VMVLOOP" ] && sudo losetup -d "$VMVLOOP" 2>/dev/null || true
             else
+              [ -n "$VMVLOOP" ] && sudo losetup -d "$VMVLOOP" 2>/dev/null || true
               record skip "vmstore: host-side witness verification" "ntfs3 ro mount failed"
             fi
           else
@@ -1194,7 +1218,7 @@ DOCKERFILE
             [ "$v" = "0" ] && record pass "vmstore: no-config boot mounts nothing" || record fail "vmstore: NTFS mounted WITHOUT vm-store.conf"
             v=$(guest 'virsh -c qemu:///system pool-list --all 2>/dev/null | grep -c klh-vmstore || true')
             [ "$v" = "0" ] && record pass "vmstore: no-config boot defines no pool" || record fail "vmstore: pool defined without vm-store.conf"
-            guest_sudo 'poweroff' >/dev/null 2>&1
+            timeout 30 ssh "${SSH_OPTS[@]}" 'sudo -n poweroff' >/dev/null 2>&1
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
             kill -9 "$QPID" 2>/dev/null || true
           else
