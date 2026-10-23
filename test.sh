@@ -426,7 +426,10 @@ else
       done
       sudo test -L "$SQ_MNT/etc/systemd/system/timers.target.wants/kali-live-vm-forward-reassert.timer" && record pass "enabled: vm-forward-reassert.timer" || record fail "enabled: vm-forward-reassert.timer"
     fi
-    for s in kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-headless-wifi-gen kali-live-kvm-enable kali-live-kvm-firewall kali-live-wireguard-init kali-live-vm-forward kali-live-vmstore-mount kali-live-vm-create kali-live-vm-rm; do
+    # every shipped script must be executable — shell AND python CLIs alike
+    # (a fixed name list once let a 0644 python CLI through unseen)
+    for s in "$REPO_DIR"/overlay/kali-config/common/includes.chroot/usr/local/sbin/*; do
+      s=$(basename "$s")
       sudo test -x "$SQ_MNT/usr/local/sbin/$s" && record pass "script executable: $s" || record fail "script executable: $s"
     done
     # WireGuard M1: package installed in the image, and the /etc/default
