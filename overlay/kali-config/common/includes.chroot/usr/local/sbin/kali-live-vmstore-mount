@@ -52,19 +52,51 @@ if [ -n "${KLH_VMSTORE_CONF:-}" ]; then
 elif [ -b /dev/disk/by-label/KLHCONFIG ]; then
     CONF_SOURCE=/dev/disk/by-label/KLHCONFIG
 else
-    CONF_SOURCE=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2 == "KLHCONFIG" { print "/dev/" $1; exit }')
+    for _d in $(blk_parts); do
+        if [ "$(blk_field "$_d" LABEL)" = "KLHCONFIG" ]; then
+            CONF_SOURCE=/dev/$_d
+            break
+        fi
+    done
 fi
 
 CMDLINE=/proc/cmdline
 [ -n "${KLH_PROC_CMDLINE:-}" ] && CMDLINE=$KLH_PROC_CMDLINE
 
-# lsblk source: real block devices, or a fixture file for --dry-run tests
-lsblk_rows() {
-    if [ -n "${KLH_LSBLK_FILE:-}" ]; then
-        cat "$KLH_LSBLK_FILE"
-    else
-        lsblk -rno NAME,FSTYPE,LABEL,SIZE,PARTUUID 2>/dev/null
+# Block-device table: lsblk -P pairs (key="value") — the raw (-r) format
+# COLLAPSES EMPTY COLUMNS, which shifts positional fields on any disk
+# whose partition has no label (the real gaming PC's C: has none — the
+# PARTUUID selector silently never matched until this was found on
+# hardware 2026-10-23). Pairs never collapse; SIZE comes in bytes (-b),
+# which also kills the unit-suffix sorting bug class.
+BLK_TABLE=""
+blk_table() {
+    if [ -z "$BLK_TABLE" ]; then
+        if [ -n "${KLH_LSBLK_FILE:-}" ]; then
+            BLK_TABLE=$(cat "$KLH_LSBLK_FILE" 2>/dev/null)
+        else
+            BLK_TABLE=$(lsblk -Pnb -o NAME,FSTYPE,LABEL,SIZE,PARTUUID,TYPE 2>/dev/null)
+        fi
     fi
+}
+
+blk_field() { # $1=device name (no /dev/), $2=FIELD -> value
+    blk_table
+    printf '%s\n' "$BLK_TABLE" | awk -v dev="NAME=\"$1\" " -v key="$2" '
+        index($0, dev) == 1 {
+            s = substr($0, length(dev) + 1)
+            if (match(s, key "=\"[^\"]*\"")) {
+                print substr(s, RSTART + length(key) + 2, RLENGTH - length(key) - 3)
+                exit
+            }
+        }'
+}
+
+blk_parts() { # partition NAMEs (no /dev/ prefix), one per line
+    blk_table
+    printf '%s\n' "$BLK_TABLE" | awk '
+        { split($0, w, " "); if (w[1] ~ /^NAME=/) { n = w[1]; sub(/^NAME="/, "", n); sub(/"$/, "", n)
+          t = $0; if (match(t, /TYPE="part"/)) print n } }'
 }
 
 conf_value() { # $1=file $2=KEY -> first plain KEY=value value
@@ -148,12 +180,22 @@ esac
 # fixtures may use plain MB numbers — both sort fine with sort -g on the
 # numeric prefix)
 pick_device() {
+    # All matching is done through blk_field (lsblk -P pairs): positional
+    # parsing of raw lsblk collapses empty columns — the gaming PC's
+    # label-less BitLocker C: made $5-based PARTUUID matching silently
+    # never match (found on hardware 2026-10-23).
     case "$PARTITION" in
         /dev/*)
-            lsblk_rows | awk -v d="${PARTITION#/dev/}" '$1 == d {print "/dev/" $1; exit}'
+            d=${PARTITION#/dev/}
+            [ -n "$(blk_field "$d" NAME)" ] && echo "$PARTITION"
             ;;
         LABEL:*)
-            lsblk_rows | awk -v l="${PARTITION#LABEL:}" '$3 == l {print "/dev/" $1; exit}'
+            for d in $(blk_parts); do
+                if [ "$(blk_field "$d" LABEL)" = "${PARTITION#LABEL:}" ]; then
+                    echo "/dev/$d"
+                    return
+                fi
+            done
             ;;
         PARTUUID:*)
             # fstype-agnostic on purpose: this is the owner's explicit
@@ -161,29 +203,26 @@ pick_device() {
             # here and handled by the BitLocker branch below (contract with
             # kali-live-bitlocker-mount, 6570f12). Wrong targets fail at
             # the mount step.
-            lsblk_rows | awk -v u="${PARTITION#PARTUUID:}" '$5 == u {print "/dev/" $1; exit}'
+            for d in $(blk_parts); do
+                if [ "$(blk_field "$d" PARTUUID)" = "${PARTITION#PARTUUID:}" ]; then
+                    echo "/dev/$d"
+                    return
+                fi
+            done
             ;;
         auto)
             # largest NTFS partition (the Windows system disk on the target
-            # machines) — sizes must be normalized to MB BEFORE sorting:
-            # lsblk prints unit-suffixed strings ("500G" vs "1.5T") and a
-            # plain numeric sort picks 500 > 1.5. BitLocker volumes are
-            # excluded by the FSTYPE filter and get their own refusal below
-            # when they are the only candidate.
-            lsblk_rows | awk '
-                function mb(s,  u, v) {
-                    u = substr(s, length(s), 1)
-                    if (u !~ /[KMGTPE]/) return s + 0
-                    v = substr(s, 1, length(s) - 1) + 0
-                    if (u == "K") return v / 1024
-                    if (u == "M") return v
-                    if (u == "G") return v * 1024
-                    if (u == "T") return v * 1048576
-                    if (u == "P") return v * 1073741824
-                    return v * 1099511627776
-                }
-                $2 == "ntfs" { printf "%.0f /dev/%s\n", mb($4), $1 }
-            ' | sort -rn | head -n 1 | cut -d' ' -f2-
+            # machines); SIZE is bytes from lsblk -b, so a plain numeric
+            # sort is correct. BitLocker volumes are excluded by the FSTYPE
+            # filter and handled by the opportunistic branch instead.
+            best=""; best_size=0
+            for d in $(blk_parts); do
+                [ "$(blk_field "$d" FSTYPE)" = "ntfs" ] || continue
+                sz=$(blk_field "$d" SIZE)
+                case "$sz" in ''|*[!0-9]*) continue ;; esac
+                if [ "$sz" -gt "$best_size" ]; then best_size=$sz; best=$d; fi
+            done
+            [ -n "$best" ] && echo "/dev/$best"
             ;;
         *)
             echo ""
@@ -213,7 +252,11 @@ case "$BLK_CONSENT" in
 esac
 
 bitlocker_devices() { # every BitLocker partition, one /dev/NAME per line
-    lsblk_rows | awk '$2 ~ /^[Bb]it[Ll]ocker$/ {print "/dev/" $1}'
+    for d in $(blk_parts); do
+        case "$(blk_field "$d" FSTYPE)" in
+            BitLocker|bitlocker) echo "/dev/$d" ;;
+        esac
+    done
 }
 bitlocker_present() {
     [ -n "$(bitlocker_devices)" ]
@@ -255,7 +298,7 @@ else
         rm -f "$CONFFILE" 2>/dev/null || true
         exit 1
     fi
-    DEV_FSTYPE=$(lsblk_rows | awk -v d="${DEVICE#/dev/}" '$1 == d {print $2; exit}')
+    DEV_FSTYPE=$(blk_field "${DEVICE#/dev/}" FSTYPE)
     case "$DEV_FSTYPE" in
         BitLocker|bitlocker)
             BLK_MODE=yes

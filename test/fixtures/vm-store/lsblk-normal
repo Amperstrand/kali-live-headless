@@ -1,3 +1,5 @@
-sda1 vfat KLHCONFIG 64M kkk
-sda3 ntfs WinDisk 1.5T zzz
-sdb1 ntfs SmallNTFS 500G www-www
+NAME="sda" FSTYPE="" LABEL="" SIZE="128849018880" PARTUUID="" TYPE="disk"
+NAME="sda1" FSTYPE="vfat" LABEL="KLHCONFIG" SIZE="67108864" PARTUUID="kkk" TYPE="part"
+NAME="sda3" FSTYPE="ntfs" LABEL="WinDisk" SIZE="1649267441664" PARTUUID="zzz" TYPE="part"
+NAME="sdb" FSTYPE="" LABEL="" SIZE="536870912000" PARTUUID="" TYPE="disk"
+NAME="sdb1" FSTYPE="ntfs" LABEL="" SIZE="536870912000" PARTUUID="www-www" TYPE="part"
