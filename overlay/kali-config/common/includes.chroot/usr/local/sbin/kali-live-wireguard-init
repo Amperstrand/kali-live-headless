@@ -38,6 +38,19 @@ PORT=$(cfg_get WG_PORT);      [ -n "$PORT" ]   || PORT=51820
 # 5-octet addresses like 10.66.0.164.194, which `ip addr add` rejects —
 # caught live on the first hardware boot of build #14, 2026-10-22.)
 
+# --ensure: bring wg0 up if the config exists but the interface does not.
+# Boot-time wg-quick fails whenever DNS cannot resolve the endpoint yet
+# (provision runs before the network is fully up — proven on hardware
+# 2026-10-23), and nothing retried it. The vm-forward-reassert timer calls
+# this every 30s, mirroring the firewall daemon's self-healing.
+if [ "${1:-}" = "--ensure" ]; then
+    [ -f /etc/wireguard/wg0.conf ] || exit 0
+    wg show wg0 >/dev/null 2>&1 && exit 0
+    wg-quick up wg0 >/dev/null 2>&1 || exit 0
+    echo "wireguard: wg0 brought up by the ensure pass"
+    exit 0
+fi
+
 [ -n "$ENDPOINT" ] || { echo "wireguard: off (WG_ENDPOINT not configured)" >&2; exit 0; }
 [ -n "$PEER" ]     || { echo "wireguard: WG_ENDPOINT set but WG_PEER_PUBKEY missing — refusing to bring up an unauthenticated tunnel" >&2; exit 0; }
 command -v wg >/dev/null 2>&1 || { echo "wireguard: wg not installed (wireguard-tools missing)" >&2; exit 0; }

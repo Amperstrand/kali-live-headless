@@ -1,5 +1,5 @@
 [Unit]
-Description=kali-live-headless: re-assert configured vm-forwards (companion to the kvm-firewall daemon)
+Description=kali-live-headless: re-assert vm-forwards + bring up wg0 (self-healing passes, 30s)
 Documentation=file:///usr/local/sbin/kali-live-vm-forward
 # The kvm firewall daemon re-inserts its chains at the top of the base chains
 # every 30s; vm-forward rules must be re-asserted on the same cadence or an
@@ -7,4 +7,7 @@ Documentation=file:///usr/local/sbin/kali-live-vm-forward
 
 [Service]
 Type=oneshot
+# two self-healing passes: the vm-forward rules, and wg0 (boot-time
+# wg-quick dies if DNS is not ready yet; see kali-live-wireguard-init)
 ExecStart=/usr/local/sbin/kali-live-vm-forward reassert
+ExecStart=/usr/local/sbin/kali-live-wireguard-init --ensure
