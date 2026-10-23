@@ -7,7 +7,9 @@
 KLH_DEFAULT_KALI_LIVE_REF="adb2e38941662f105b57134e0155ec468da294ad"
 # FIPS mesh: pinned upstream release shipped as a local .deb (not in Kali
 # repos); sha256 pins the exact artifact the build installs.
+# shellcheck disable=SC2034  # consumed by build.sh (which sources this)
 FIPS_VERSION="0.5.3"
+# shellcheck disable=SC2034
 FIPS_SHA256="6edd18e67c4f4c47d9d8c7366aacc6505d11df79c1c4b1b1d63246fa66e3e8a3"
 # shellcheck disable=SC2034  # consumed by build.sh after sourcing
 KLH_UPSTREAM_URL="https://gitlab.com/kalilinux/build-scripts/kali-live.git"
@@ -75,7 +77,7 @@ klh_validate_boot_default() {
 }
 
 klh_validate_password_mode() {
-  case "$1" in random|kali) return 0 ;; *) return 1 ;; esac
+  case "$1" in random|derived|kali) return 0 ;; *) return 1 ;; esac
 }
 
 klh_validate_bool() {
@@ -127,7 +129,7 @@ klh_load_config() {
   klh_validate_bool "$WIFI_HIDDEN"      || klh_die "invalid WIFI_HIDDEN '$WIFI_HIDDEN' (true|false)"
   klh_validate_regdom "$WIFI_REGDOM"    || klh_die "invalid WIFI_REGDOM '$WIFI_REGDOM' (empty or two uppercase letters, e.g. US)"
   klh_validate_boot_default "$BOOT_DEFAULT" || klh_die "invalid BOOT_DEFAULT '$BOOT_DEFAULT' (live|forensic)"
-  klh_validate_password_mode "$LIVE_PASSWORD_MODE" || klh_die "invalid LIVE_PASSWORD_MODE '$LIVE_PASSWORD_MODE' (random|kali)"
+  klh_validate_password_mode "$LIVE_PASSWORD_MODE" || klh_die "invalid LIVE_PASSWORD_MODE '$LIVE_PASSWORD_MODE' (random|derived|kali)"
   klh_validate_bool "$WITH_KVM"         || klh_die "invalid WITH_KVM '$WITH_KVM' (true|false)"
   # WireGuard M1 (all non-secret; the private key is generated on the stick):
   #   WG_ENDPOINT    hub, e.g. inr2.example.com (no port) — empty = feature off

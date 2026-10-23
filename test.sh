@@ -36,7 +36,10 @@ REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib/common.sh
 source "$REPO_DIR/lib/common.sh"
 
-SCRATCH="$REPO_DIR/test/scratch"
+# Per-run scratch: concurrent suite runs (multi-agent repo — this happened:
+# 2026-10-23, two lanes' runs shared witness.img/serial logs/baked-fp files
+# and cross-contaminated each other's verdicts) must not share state.
+SCRATCH="$REPO_DIR/test/scratch/run-$$-$(date +%s)"
 mkdir -p "$SCRATCH"
 
 RUN_QEMU=true RUN_BIOS=true RUN_OVERRIDE=true RUN_UEFI=true RUN_FORENSIC=true RUN_VMSTORE=true
