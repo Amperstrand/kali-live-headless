@@ -5,6 +5,10 @@
 
 # Pinned default upstream revision (kali-live.git). Overridable via config.
 KLH_DEFAULT_KALI_LIVE_REF="adb2e38941662f105b57134e0155ec468da294ad"
+# FIPS mesh: pinned upstream release shipped as a local .deb (not in Kali
+# repos); sha256 pins the exact artifact the build installs.
+FIPS_VERSION="0.5.3"
+FIPS_SHA256="6edd18e67c4f4c47d9d8c7366aacc6505d11df79c1c4b1b1d63246fa66e3e8a3"
 # shellcheck disable=SC2034  # consumed by build.sh after sourcing
 KLH_UPSTREAM_URL="https://gitlab.com/kalilinux/build-scripts/kali-live.git"
 
@@ -94,7 +98,7 @@ klh_load_config() {
   : "${WIFI_REGDOM:=}"
   : "${SSH_EXTRA_PUBKEYS:=}"
   : "${KALI_LIVE_REF:=$KLH_DEFAULT_KALI_LIVE_REF}"
-  : "${VARIANT:=default}"
+  : "${VARIANT:=minimal}"
   : "${ARCH:=amd64}"
   : "${BRANCH:=kali-rolling}"
   : "${BUILD_MIRROR:=}"
@@ -108,6 +112,9 @@ klh_load_config() {
   : "${WG_HUB_ADDR:=}"
   : "${WG_PORT:=51820}"
   : "${VMSTORE_BITLOCKER:=off}"
+  : "${TORAM_ENTRY:=true}"
+  : "${FIPS_PEER_ADDR:=inr2.cashu.exchange:2121}"
+  : "${FIPS_PEER_NPUB:=npub1sjp6x2kfghzxt6f8fl0runjrp3hkjutq0ttskf6rwdk77vht3x7smrzh90}"
 
   klh_validate_hostname "$HOSTNAME"     || klh_die "invalid HOSTNAME '$HOSTNAME' in $f"
   klh_validate_ssid "$WIFI_SSID"        || klh_die "invalid WIFI_SSID in $f (1-32 chars, no control chars, no leading/trailing whitespace)"
@@ -139,6 +146,9 @@ klh_load_config() {
   fi
   printf '%s' "$VMSTORE_BITLOCKER" | grep -Eq '^(off|try)$' \
     || klh_die "invalid VMSTORE_BITLOCKER '$VMSTORE_BITLOCKER' (off|try)"
+  printf '%s' "$VARIANT" | grep -Eq '^(minimal|default|light)$' \
+    || klh_die "invalid VARIANT '$VARIANT' (minimal | default | light)"
+  klh_validate_bool "$TORAM_ENTRY" || klh_die "invalid TORAM_ENTRY (true|false)"
   [ -n "${WIFI_PSK:-}" ] || klh_die "WIFI_PSK not set in $f"
 }
 

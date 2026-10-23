@@ -231,6 +231,34 @@ fi
 [ -f "$GRUB_CFG" ] && sed -i "s/^set default=.*/set default=$([ "$BOOT_DEFAULT" = forensic ] && echo 1 || echo 0)/" "$GRUB_CFG"
 klh_info "default boot entry: $BOOT_DEFAULT (auto-boots after 5s)"
 
+# Optional "Live (load to RAM)" entry: live-boot's toram copies the whole
+# squashfs into RAM up front (sequential read, fast) and then runs purely
+# from memory — vs the default overlay where every first read page-faults
+# off the USB stick. With the minimal variant the upfront copy is small
+# enough that this is usually a pure win; pick it from the boot menu.
+if [ "$TORAM_ENTRY" = true ]; then
+    if [ -f "$LIVE_CFG" ] && ! grep -q "load to" "$LIVE_CFG"; then
+        sed -i '/^label live-@FLAVOUR@-failsafe/i\
+label live-toram-@FLAVOUR@\
+        menu label Live system (@FLAVOUR@ - load to ^RAM)\
+        linux @LINUX@\
+        initrd @INITRD@\
+        append @APPEND_LIVE@ toram\
+' "$LIVE_CFG"
+    fi
+    # grub's MENU lives in grub.cfg (config.cfg only holds settings)
+    GRUB_MENU="$KLH_COMMON/bootloaders/grub-pc/grub.cfg"
+    if [ -f "$GRUB_MENU" ] && ! grep -q "load to RAM" "$GRUB_MENU"; then
+        sed -i '/forensic mode)"/i\
+menuentry "Live system (@FLAVOUR_LIVE@ - load to RAM)" {\
+        linux @KERNEL_LIVE@ @APPEND_LIVE@ toram\
+        initrd @INITRD_LIVE@\
+}\
+' "$GRUB_MENU"
+    fi
+    klh_info "boot menu: 'Live (load to RAM)' entry added (toram)"
+fi
+
 # Scrub staged secrets on ANY exit from here on. The trap must be armed
 # BEFORE the secrets are staged (review M2: staging first, trapping later
 # left the PSK profile on disk when an early command failed).
@@ -292,12 +320,32 @@ WG_PORT="$WG_PORT"
 # "try" lets tooling (vmstore) mount a store on a locked volume when a key
 # is available (clear key or KLHCONFIG bitlocker.conf). Never a secret.
 VMSTORE_BITLOCKER="$VMSTORE_BITLOCKER"
+# FIPS mesh: the default peer (our exit node) — non-secret
+FIPS_PEER_ADDR="$FIPS_PEER_ADDR"
+FIPS_PEER_NPUB="$FIPS_PEER_NPUB"
 EOF
 install -D -m 0644 \
   "$OVERLAY_DIR/includes.chroot/etc/ssh/sshd_config.d/0000-kali-live-headless.conf" \
   "$STAGE_ETC/sshd_config.d/0000-kali-live-headless.conf"
 
 klh_ok "staged overlay + profile + keys into $UPSTREAM_DIR"
+
+# FIPS mesh daemon: pinned upstream .deb into live-build's local-packages
+# dir (config packages.chroot/*.deb are installed into the chroot as-is).
+FIPS_DEB="fips_${FIPS_VERSION}_amd64.deb"
+mkdir -p "$KLH_COMMON/packages.chroot"
+if [ -f "$REPO_DIR/build/pkg/$FIPS_DEB" ]; then
+    install -m 0644 "$REPO_DIR/build/pkg/$FIPS_DEB" "$KLH_COMMON/packages.chroot/$FIPS_DEB"
+else
+    klh_info "fetching FIPS $FIPS_VERSION (github release)"
+    curl -fsSL "https://github.com/jmcorgan/fips/releases/download/v${FIPS_VERSION}/${FIPS_DEB}" \
+        -o "$KLH_COMMON/packages.chroot/$FIPS_DEB" \
+        || klh_die "FIPS $FIPS_VERSION download failed (pin in lib/common.sh)"
+fi
+DEB_SHA=$(sha256sum "$KLH_COMMON/packages.chroot/$FIPS_DEB" | cut -d' ' -f1)
+[ "$DEB_SHA" = "$FIPS_SHA256" ] \
+    || klh_die "FIPS deb sha256 mismatch (got $DEB_SHA, want $FIPS_SHA256) — update the pin deliberately"
+klh_ok "FIPS $FIPS_VERSION staged (sha256 verified)"
 
 # -------------------------------------------------------------- manifest
 MANIFEST="$OUT_DIR/build-manifest-$(date -u '+%Y%m%dT%H%M%SZ').txt"
@@ -328,6 +376,7 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 # ------------------------------------------------------------------ build
+SELF_HASH_START=$(sha256sum "$0" | cut -d' ' -f1)
 # The ISO is written to a staging dir, never straight into the output dir:
 # archiving then moves it into output/iso-buildN/, so a failed or concurrent
 # build cannot destroy the previous image.
@@ -395,6 +444,17 @@ trap - INT TERM
 
 if [ "$RC" -ne 0 ]; then
   klh_die "upstream build failed (rc=$RC) — see the log in $OUT_DIR; staged secrets were scrubbed, partial chroot copies may remain under build/kali-live until the next run cleans them"
+fi
+
+# post-build integrity: did build.sh change while the build ran? bash reads
+# scripts incrementally, so an in-flight edit makes the wrapper resume at a
+# byte offset in the NEW file — this killed #8 (rc=1 after a successful 4h
+# build) and #18 ('lse: command not found', 2026-10-23). Discipline did not
+# survive contact with a long build; this guard is mechanical. The artifact
+# itself is safe in the staging dir — only the wrapper steps are unreliable.
+SELF_HASH_NOW=$(sha256sum "$0" | cut -d' ' -f1)
+if [ "$SELF_HASH_NOW" != "$SELF_HASH_START" ]; then
+  klh_die "build.sh was EDITED while this build ran (hash changed). The build SUCCEEDED; the ISO is safe in $STAGE_OUT — re-run the post-build steps by hand: tools/iso-archive.sh --iso $STAGE_OUT/*.iso --build $BUILD_NUM, then ./test.sh --iso <the archived iso>"
 fi
 
 # ------------------------------------------------------------- archive

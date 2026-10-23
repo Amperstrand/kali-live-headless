@@ -66,3 +66,9 @@ BRANCH=kali-rolling
 # store on one when a key is legitimately available (clear key on the
 # volume, or a recovery password / .BEK in KLHCONFIG bitlocker.conf).
 #VMSTORE_BITLOCKER=off
+
+# FIPS mesh: the peer every stick dials at boot (our exit node). The fips
+# daemon ships in the image with a per-machine identity derived from the
+# stick's master salt (see README "deterministic identities").
+#FIPS_PEER_ADDR=inr2.cashu.exchange:2121
+#FIPS_PEER_NPUB=npub1...

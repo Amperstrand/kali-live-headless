@@ -1,5 +1,8 @@
 ## Extra packages for the headless Kali Live image.
 ## Required by the project specification:
+## Sane Kali baseline (the minimal variant ships no metapackage at all;
+## under 'default' this is already satisfied by kali-linux-default)
+kali-linux-core
 openssh-server
 network-manager
 wireless-regdb
