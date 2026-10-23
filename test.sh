@@ -313,36 +313,27 @@ if [ -x "$VMSTORE" ] && [ -d "$FIX" ]; then
   vm_assert 1 baddriver.conf lsblk-normal cmdline-live "unknown driver refused"
   vm_assert 1 baddir.conf    lsblk-normal cmdline-live "non-Windows-legal dir refused"
   vm_assert 1 badreserved.conf lsblk-normal cmdline-live "non-numeric reserved_free_mb refused"
-  vm_assert 1 ok.conf      lsblk-bitlocker-only cmdline-live "BitLocker-only system refused"
+  vm_assert 1 ok.conf      lsblk-bitlocker-only cmdline-live "BitLocker-only system with no tool present refused"
   vm_assert 1 ok.conf      lsblk-none cmdline-live "no NTFS candidate refused"
-  # the REAL gaming-PC layout (2026-10-23 hardware dry-run): BitLocker C:
-  # + a plaintext 1.1G WinRE decoy — auto must REFUSE, not pick the decoy
-  vm_assert 1 ok.conf      lsblk-real-gamingpc cmdline-live "auto refuses with BitLocker present (never mounts WinRE decoy)"
-  # the recommended owner path: dedicated VMSTORE partition by LABEL works
-  # on exactly that machine (explicit selector, BitLocker elsewhere ignored)
-  vm_assert 0 vmstore-partition.conf lsblk-with-vmstore cmdline-live "LABEL:VMSTORE picks the dedicated partition on a BitLocker box" '^plan device=/dev/nvme0n1p3$'
-  # BitLocker C: as the store target — the kali-live-bitlocker-mount
-  # contract (6570f12): consent must be STAGED (VMSTORE_BITLOCKER=try in
-  # /etc/default, owner staged at configure time), then try-mount
-  ( export KLH_ETC_DEFAULT="$FIX/etc-default-off" KLH_BLKM="$FIX/bin/kali-live-bitlocker-mount-stub"
-    vm_assert 1 blk-target.conf lsblk-real-gamingpc cmdline-live "BitLocker target refused when optimistic unlock is not staged" )
-  ( export KLH_ETC_DEFAULT="$FIX/etc-default-try" KLH_BLKM="$FIX/bin/kali-live-bitlocker-mount-stub"
-    vm_assert 0 blk-target.conf lsblk-real-gamingpc cmdline-live "BitLocker target with staged consent plans a try-mount" '^plan bitlocker=yes$'
-    vm_assert 0 blk-target.conf lsblk-real-gamingpc cmdline-live "plan names the unlock mechanism" '^plan unlock=try-mount:' )
-  ( export KLH_ETC_DEFAULT="$FIX/etc-default-try" KLH_BLKM="/nonexistent/bitlocker-mount"
+  # the REAL gaming-PC layout (2026-10-23 hardware dry-run): BitLocker C: +
+  # a plaintext 1.1G WinRE decoy. auto now goes OPPORTUNISTIC (owner
+  # directive): the plan is always try-mount and only BitLocker volumes
+  # can ever be unlocked — the decoy is structurally unselectable.
+  # Consent (stick bitlocker=try|off incl. veto, or the staged gate) is
+  # kali-live-bitlocker-mount's consent() (ce38904+); its refusal at
+  # runtime fails the service with the remediation in the journal.
+  ( export KLH_BLKM="$FIX/bin/kali-live-bitlocker-mount-stub"
+    vm_assert 0 ok.conf      lsblk-real-gamingpc cmdline-live "auto + BitLocker plans the opportunistic unlock" '^plan bitlocker=yes$'
+    vm_assert 0 ok.conf      lsblk-real-gamingpc cmdline-live "auto unlock goes through try-mount" '^plan unlock=try-mount:'
+    vm_assert 0 blk-target.conf lsblk-real-gamingpc cmdline-live "explicit BitLocker target plans try-mount" '^plan bitlocker=yes$' )
+  ( export KLH_BLKM="/nonexistent/bitlocker-mount"
     vm_assert 1 blk-target.conf lsblk-real-gamingpc cmdline-live "BitLocker target refused when the unlock tool is missing (pre-v18 image)" )
-  # opportunistic AUTO (owner directive 2026-10-23): stick-side consent in
-  # vm-store.conf (bitlocker=try) unlocks without any build-time staging
-  ( export KLH_ETC_DEFAULT="$FIX/etc-default-off" KLH_BLKM="$FIX/bin/kali-live-bitlocker-mount-stub"
-    vm_assert 0 auto-stick.conf lsblk-real-gamingpc cmdline-live "auto + stick consent goes opportunistic" '^plan bitlocker=yes$'
-    vm_assert 0 auto-stick.conf lsblk-real-gamingpc cmdline-live "stick consent uses the mount-loop path" '^plan unlock=mount-loop:'
-    vm_assert 0 blk-stick.conf lsblk-real-gamingpc cmdline-live "explicit target + stick consent accepted" '^plan bitlocker=yes$' )
-  # staged consent makes AUTO opportunistic through their try-mount
-  ( export KLH_ETC_DEFAULT="$FIX/etc-default-try" KLH_BLKM="$FIX/bin/kali-live-bitlocker-mount-stub"
-    vm_assert 0 ok.conf lsblk-real-gamingpc cmdline-live "auto + staged consent goes opportunistic via try-mount" '^plan unlock=try-mount:' )
-  # garbage consent value never reaches an unlock
-  ( export KLH_ETC_DEFAULT="$FIX/etc-default-try" KLH_BLKM="$FIX/bin/kali-live-bitlocker-mount-stub"
+  # garbage consent value never reaches the tool
+  ( export KLH_BLKM="$FIX/bin/kali-live-bitlocker-mount-stub"
     vm_assert 1 blk-bad.conf lsblk-real-gamingpc cmdline-live "bitlocker=sure refused (try|off only)" )
+  # the recommended plaintext path: dedicated VMSTORE partition by LABEL on
+  # exactly that machine (explicit selector, BitLocker elsewhere ignored)
+  vm_assert 0 vmstore-partition.conf lsblk-with-vmstore cmdline-live "LABEL:VMSTORE picks the dedicated partition on a BitLocker box" '^plan device=/dev/nvme0n1p3$'
   if grep -qw ntfs3 /proc/filesystems 2>/dev/null; then
     vm_assert 0 ntfs3.conf  lsblk-normal cmdline-live "explicit ntfs3 driver resolves when the kernel has it" '^plan type=ntfs3$'
   else
