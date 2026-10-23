@@ -108,6 +108,14 @@ for f in overlay/kali-config/common/includes.chroot/usr/local/sbin/* overlay/kal
   fi
 done
 
+# The overlay must never contain compiled artifacts (a stray __pycache__
+# shipped into a hotpatch and failed its verify after 60 min of repacking).
+if find "$REPO_DIR/overlay" -name "__pycache__" -o -name "*.pyc" | grep -q .; then
+  record fail "overlay free of bytecode" "run: find overlay -name __pycache__ -exec rm -rf {} +"
+else
+  record pass "overlay free of bytecode"
+fi
+
 # POSIX-sh runtime guard. bash -n happily accepts bashisms in #!/bin/sh
 # scripts, and dash only reports them at RUNTIME ("Bad substitution") — build
 # #11 booted with provision dead on every machine because of \${MODE//\"/}.
