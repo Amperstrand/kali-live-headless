@@ -1,4 +1,3 @@
 sda1 vfat KLHCONFIG 64M kkk
-sda2 BitLocker - 900G yyy
 sda3 ntfs WinDisk 1.5T zzz
 sdb1 ntfs SmallNTFS 500G www-www

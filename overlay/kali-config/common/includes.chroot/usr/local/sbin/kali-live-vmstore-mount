@@ -187,24 +187,29 @@ pick_device() {
     esac
 }
 
-# BitLocker probe: any BitLocker partition matching the selector means the
-# store target is encrypted and unattended mounting is refused by design
-# (the recovery key would have to live in plaintext on the stick).
-bitlocker_candidate() {
-    case "$PARTITION" in
-        LABEL:*|PARTUUID:*) return 1 ;; # explicit selectors demand ntfs anyway
-    esac
-    lsblk_rows | grep -qi 'bitlocker' && return 0
-    return 1
+# BitLocker probe: on an auto-selected store, ANY BitLocker volume on the
+# system means the machine's Windows volume is encrypted and 'auto' must
+# not guess — the only plaintext NTFS left is typically the 1.1G WinRE
+# RECOVERY partition, which auto would happily RW-mount (found on real
+# hardware 2026-10-23: auto picked nvme0n1p4 on the BitLocker gaming PC).
+# Explicit LABEL:/PARTUUID: selectors bypass this: they name the owner-made
+# dedicated VMSTORE partition (research doc §2.2 / §8 option A).
+bitlocker_present() {
+    lsblk_rows | awk '$2 ~ /^[Bb]it[Ll]ocker$/ {found=1} END {exit !found}'
 }
 
 DEVICE=$(pick_device)
 if [ -z "$DEVICE" ]; then
-    if bitlocker_candidate; then
-        log "ERROR: NTFS partition not mountable and BitLocker volumes are present — C: is likely BitLocker-encrypted; vm-store refuses to proceed (see docs/vm-store-ntfs-research.md §2)"
+    if bitlocker_present; then
+        log "ERROR: no NTFS partition matches partition='$PARTITION' and BitLocker volumes are present — the Windows volume is likely encrypted; vm-store refuses to guess (options: a dedicated plain-NTFS VMSTORE partition + partition=LABEL:VMSTORE, or see docs/vm-store-ntfs-research.md §2.2)"
     else
         log "ERROR: no NTFS partition matches partition='$PARTITION' — VM store not mounted"
     fi
+    rm -f "$CONFFILE" 2>/dev/null || true
+    exit 1
+fi
+if [ "$PARTITION" = auto ] && bitlocker_present; then
+    log "ERROR: partition=auto refuses to run while any BitLocker volume exists (C: is encrypted; the only plaintext NTFS would be the WinRE recovery partition — never a VM store). Create a dedicated plain-NTFS partition (label VMSTORE) and set partition=LABEL:VMSTORE, or see docs/vm-store-ntfs-research.md §2.2"
     rm -f "$CONFFILE" 2>/dev/null || true
     exit 1
 fi

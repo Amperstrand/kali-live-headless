@@ -1,0 +1,7 @@
+sda1 iso9660 Kali\x20Live 5.4G 238f60a0-01
+sda2 vfat  4.3M 238f60a0-02
+sda3 vfat KLHCONFIG 128M 238f60a0-03
+nvme0n1p1 vfat SYSTEM 260M 9a8e711f-8123-4059-b0bc-0c88f5d72476
+nvme0n1p2 16M 71d966cd-4155-413e-a5ea-d85c086b678d
+nvme0n1p3 BitLocker - 237.1G ec732c5b-3eed-409b-b0ef-ba6964f19af0
+nvme0n1p4 ntfs  1.1G 349db534-9172-4d38-b33d-76c74faf8ca8

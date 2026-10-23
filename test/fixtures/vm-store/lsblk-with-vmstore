@@ -1,0 +1,4 @@
+nvme0n1p1 vfat SYSTEM 260M aaa
+nvme0n1p2 BitLocker - 237.1G bbb
+nvme0n1p3 ntfs VMSTORE 150G ccc
+nvme0n1p4 ntfs  1.1G ddd

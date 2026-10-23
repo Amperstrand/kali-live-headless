@@ -301,6 +301,12 @@ if [ -x "$VMSTORE" ] && [ -d "$FIX" ]; then
   vm_assert 1 badreserved.conf lsblk-normal cmdline-live "non-numeric reserved_free_mb refused"
   vm_assert 1 ok.conf      lsblk-bitlocker-only cmdline-live "BitLocker-only system refused"
   vm_assert 1 ok.conf      lsblk-none cmdline-live "no NTFS candidate refused"
+  # the REAL gaming-PC layout (2026-10-23 hardware dry-run): BitLocker C:
+  # + a plaintext 1.1G WinRE decoy — auto must REFUSE, not pick the decoy
+  vm_assert 1 ok.conf      lsblk-real-gamingpc cmdline-live "auto refuses with BitLocker present (never mounts WinRE decoy)"
+  # the recommended owner path: dedicated VMSTORE partition by LABEL works
+  # on exactly that machine (explicit selector, BitLocker elsewhere ignored)
+  vm_assert 0 vmstore-partition.conf lsblk-with-vmstore cmdline-live "LABEL:VMSTORE picks the dedicated partition on a BitLocker box" '^plan device=/dev/nvme0n1p3$'
   if grep -qw ntfs3 /proc/filesystems 2>/dev/null; then
     vm_assert 0 ntfs3.conf  lsblk-normal cmdline-live "explicit ntfs3 driver resolves when the kernel has it" '^plan type=ntfs3$'
   else
