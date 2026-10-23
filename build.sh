@@ -182,6 +182,23 @@ mkdir -p "$KLH_COMMON"
 klh_info "overlaying repo customizations into kali-config/common/"
 cp -a "$OVERLAY_DIR/." "$KLH_COMMON/"
 
+# PROVENANCE GUARD — no mystery files. Everything just staged must be a
+# git-tracked overlay file. Build #18 shipped a libvirtd drop-in from an
+# UNCOMMITTED overlay file that was deleted from the worktree after the
+# cut: a provenance black hole whose dangling Requires= wedged every
+# boot on hardware (libvirtd could never socket-activate). Run BEFORE
+# any generated files land in the staged tree.
+if git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  mystery=$(cd "$KLH_COMMON" && find . -type f | sort > /tmp/klh-staged.$$
+    git -C "$REPO_DIR" ls-files "overlay/kali-config/common" | sed 's|^overlay/kali-config/common/|./|' | sort > /tmp/klh-git.$$
+    comm -23 /tmp/klh-staged.$$ /tmp/klh-git.$$
+    rm -f /tmp/klh-staged.$$ /tmp/klh-git.$$)
+  if [ -n "$mystery" ]; then
+    klh_die "staged files with NO git source (uncommitted overlay leftovers?): $mystery"
+  fi
+  klh_ok "overlay provenance: every staged file is git-tracked"
+fi
+
 # KVM stack: package list written only for WITH_KVM builds; the unit
 # files/scripts from the overlay are removed otherwise so nothing dead
 # ships in the ISO.
