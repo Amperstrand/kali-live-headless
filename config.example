@@ -70,5 +70,11 @@ BRANCH=kali-rolling
 # FIPS mesh: the peer every stick dials at boot (our exit node). The fips
 # daemon ships in the image with a per-machine identity derived from the
 # stick's master salt (see README "deterministic identities").
-#FIPS_PEER_ADDR=inr2.cashu.exchange:2121
+# FIPS mesh (v20 optionality): FIPS_ENABLED=false ships the mesh fully
+# dormant (no wg0, no enrollment, no daemon peering); flip per stick at
+# runtime with KLHCONFIG:/fips.conf — no rebuild.
+#FIPS_ENABLED=true
+# The hub/bridge the stick peers with — ./config-ONLY value; never commit
+# the real address to this public repo. Empty = feature dormant.
+#FIPS_PEER_ADDR=your-bridge.example:2121
 #FIPS_PEER_NPUB=npub1...
