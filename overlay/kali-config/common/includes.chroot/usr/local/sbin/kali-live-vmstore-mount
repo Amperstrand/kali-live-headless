@@ -313,14 +313,16 @@ plan() {
 
 # ------------------------------------------------------------- mount + pool
 # BitLocker orchestration (contract with kali-live-bitlocker-mount):
-# try-mount gets the first volume that unlocks cleanly; we then REQUIRE
-# that volume to be the one vm-store.conf selected (their
-# bitlocker.mounts ledger records "<device> <mnt>"), refuse a read-only
-# result (their hibernation guard degrades --rw to ro — images need rw),
-# and normalize the NTFS view's ownership so the qemu runtime user can
-# open image files (their mount carries no uid mapping).
+# try-mount gets the first volume that unlocks cleanly, with the qemu
+# uid/gid mapping passed through (--uid/--gid/--umask, 410c2c8 — the tool
+# applies them to its ntfs-3g mount on both rw and ro paths). We then
+# REQUIRE that volume to be the one vm-store.conf selected (their
+# bitlocker.mounts ledger records "<device> <mnt>") and refuse a
+# read-only result (their hibernation guard degrades --rw to ro — images
+# need rw). NOTE: windows_names is NOT applied on this path (no
+# pass-through); the guard lives in vm-create's id charset instead.
 blk_try_mount() {
-    if ! "$BLKM" try-mount "$MNT" --rw >/tmp/vmstore-blkm.out 2>/tmp/vmstore-blkm.err; then
+    if ! "$BLKM" try-mount "$MNT" --rw --uid="$QEMU_UID" --gid="$QEMU_GID" --umask=007 >/tmp/vmstore-blkm.out 2>/tmp/vmstore-blkm.err; then
         log "ERROR: BitLocker try-mount failed: $(head -c 200 /tmp/vmstore-blkm.err 2>/dev/null || echo unknown)"
         rm -f /tmp/vmstore-blkm.out /tmp/vmstore-blkm.err
         exit 1
@@ -337,22 +339,6 @@ blk_try_mount() {
         log "ERROR: $DEVICE unlocked READ-ONLY (hibernated Windows — the tool's hiberfil guard) — a VM store needs rw. Boot Windows, 'powercfg /h off', shut down FULLY, retry"
         "$BLKM" unmount "$MNT" >/dev/null 2>&1 || true
         exit 1
-    fi
-    # ownership normalization: remount the dislocker-file backing the view
-    # with the qemu uid/gid mapping (plain ntfs-3g helper path — see the
-    # fsconfig note above)
-    LOOP_SRC=$(findmnt -no SOURCE "$MNT" 2>/dev/null || true)
-    BACK_FILE=$(losetup -no BACK-FILE "$LOOP_SRC" 2>/dev/null || true)
-    if [ -n "$BACK_FILE" ] && [ -e "$BACK_FILE" ]; then
-        if umount "$MNT" 2>/dev/null \
-           && mount -t ntfs-3g -o "loop,rw,$MOUNT_OPTS" "$BACK_FILE" "$MNT" 2>/dev/null; then
-            log "store view remounted with qemu ownership mapping (backing: $BACK_FILE)"
-        else
-            # fall back to their mount rather than leaving the store empty
-            "$BLKM" try-mount "$MNT" --rw >/dev/null 2>&1 \
-                && log "WARNING: ownership normalization failed — kept the tool's mount (pool file access may fail for the qemu user)" \
-                || { log "ERROR: BitLocker remount failed and the fallback mount did not return"; exit 1; }
-        fi
     fi
 }
 
