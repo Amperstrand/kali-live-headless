@@ -1,2 +1,3 @@
-sda1 vfat KLHCONFIG 64M kkk
-sda2 ext4 rootfs 500G yyy
+NAME="sda" FSTYPE="" LABEL="" SIZE="536870912000" PARTUUID="" TYPE="disk"
+NAME="sda1" FSTYPE="vfat" LABEL="KLHCONFIG" SIZE="67108864" PARTUUID="kkk" TYPE="part"
+NAME="sda2" FSTYPE="ext4" LABEL="rootfs" SIZE="536870912000" PARTUUID="yyy" TYPE="part"
