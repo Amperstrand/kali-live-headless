@@ -195,6 +195,28 @@ MODE=$(sed -n 's/^LIVE_PASSWORD_MODE=//p' /etc/default/kali-live-headless 2>/dev
 # with "Bad substitution" at runtime (build #11, every boot, provision dead).
 MODE=$(printf '%s' "$MODE" | tr -d \'\")
 [ -n "$MODE" ] || MODE=random
+# derived: deterministic per-(stick,machine) password — the operator can
+# compute it OFFLINE from the salt + fingerprint (derive_identity.py) and
+# never read a banner. Tradeoff vs random: it is replayable (same value
+# every boot); random rotates per boot. Choose per deployment.
+if [ "$MODE" = derived ]; then
+    _cfgmnt=""
+    _odev=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}')
+    if [ -n "$_odev" ] && mkdir -p /run/klh-derive && mount -o ro "$_odev" /run/klh-derive 2>/dev/null; then
+        _cfgmnt=/run/klh-derive
+    fi
+    if [ -n "$_cfgmnt" ] && [ -r "$_cfgmnt/master.salt" ]; then
+        _salt=$(head -n1 "$_cfgmnt/master.salt" | tr -d '"')
+        PW=$(python3 /usr/local/lib/kali-live-headless/derive_identity.py "$_salt" --machine --purpose console 2>/dev/null)
+    fi
+    [ -n "$_cfgmnt" ] && umount "$_cfgmnt" 2>/dev/null; rmdir /run/klh-derive 2>/dev/null
+    if [ -n "$PW" ]; then
+        printf '%s:%s\n' "$USER" "$PW" | chpasswd > /dev/null 2>&1 \
+            && log "console password for '$USER' derived from the master salt (computable offline; replayable by design)"
+    else
+        log "derived password requested but no master salt — password left at live default (kali/kali); re-provision after first boot with a salt"
+    fi
+fi
 if [ "$MODE" = random ]; then
     PW=$(head -c 32 /dev/urandom 2>/dev/null | base64 2>/dev/null | tr -d '/+=' | cut -c1-20)
     if [ -n "$PW" ]; then
