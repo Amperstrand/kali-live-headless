@@ -47,6 +47,11 @@ drift is absorbed by bumping the pin, nothing else.
 6. **QEMU suite environment**: `-cdrom` vs virtio-blk boot quirks are
    firmware-dependent (SeaBIOS refuses virtio firmware-boot of this ISO);
    re-verify stage layout if QEMU/SeaBIOS/OVMF updates change behavior.
+   The suite's hostfwd port is `KLH_TEST_PORT` (default 2222) — **agents in
+   parallel worktrees must pick their own port** (e.g. `KLH_TEST_PORT=2225`)
+   instead of killing whoever holds 2222: that listener may be another
+   lane's legitimate suite run (2026-10-23: one was killed under the
+   "stale listener" rule; it wasn't stale, it was p4M's).
 7. **`tools/iso-hotpatch.sh` carries five hard-won guards** (docker `-i`
    artifact check, mksquashfs `-noappend`, hook-equivalent modes incl.
    sudoers 0440, `-boot_image any replay` or the remux drops El Torito,
