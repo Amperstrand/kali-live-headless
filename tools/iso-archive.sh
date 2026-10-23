@@ -30,7 +30,7 @@ ISO_NAME="kali-linux-rolling-live-amd64.iso"
 SLOT="$OUT_DIR/$ISO_NAME"
 MARKER="$OUT_DIR/.build-current"
 
-ISO_ARG="" BUILD_ARG="" FORCE=false SLOT_LINK=true
+ISO_ARG="" BUILD_ARG="" FORCE=false SLOT_LINK=true VERDICT=""
 
 usage() {
   sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
@@ -43,6 +43,7 @@ usage() {
     --iso)          ISO_ARG=${2:?}; shift 2 ;;
     --force)        FORCE=true; shift ;;
     --no-slot-link) SLOT_LINK=false; shift ;;
+    --verdict)      VERDICT=${2:?}; shift 2 ;;
     -h|--help)      usage ;;
     *) klh_die "unknown option: $1 (see --help)" ;;
   esac
@@ -191,6 +192,27 @@ if [ "$SLOT_LINK" = true ]; then
 fi
 
 rm -f "$MARKER"
+
+# Optional verdict recording: replaces the "not yet recorded" placeholder
+# (or refreshes an existing one) so tools/iso-prune.sh --list self-documents.
+if [ -n "$VERDICT" ] && [ -f "$DEST_DIR/INDEX.md" ]; then
+  python3 - "$DEST_DIR/INDEX.md" "$VERDICT" <<'PY'
+import re, sys
+path, verdict = sys.argv[1], sys.argv[2]
+s = open(path).read()
+if "_not yet recorded_" in s:
+    s = re.sub(r"^_not yet recorded_.*$", verdict, s, count=1, flags=re.M)
+else:
+    parts = s.split("## Verdict", 1)
+    if len(parts) == 2:
+        head, tail = parts[0], parts[1]
+        lines = tail.split("\n", 2)
+        if len(lines) == 3:
+            s = head + "## Verdict" + lines[0] + "\n" + verdict + "\n" + lines[2].lstrip("\n")
+open(path, "w").write(s)
+PY
+  klh_ok "verdict recorded in $DEST_DIR/INDEX.md"
+fi
 
 echo
 klh_ok "build $BUILD archived: $DEST_DIR"
