@@ -543,7 +543,10 @@ else
   # lost 40 min of BIOS wait plus three more stages that way. Reap pidfile
   # leftovers, then refuse to start if the port is still taken.
   PORT_OK=true
-  PORT=2222
+  PORT="${KLH_TEST_PORT:-2222}"   # parallel worktrees pick their own port
+                                  # (AGENTS watch list 6; same change landing
+                                  # on main — keep identical for a trivial
+                                  # merge)
   for _pf in "$SCRATCH"/qemu-*.pid; do
     [ -e "$_pf" ] || continue
     _p=$(cat "$_pf" 2>/dev/null || true)
