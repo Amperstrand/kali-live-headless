@@ -445,6 +445,18 @@ else
   record skip "iso-prune: reclaimable-total counts bytes" "numfmt not available"
 fi
 
+# vm-forward state persistence guard: reassert (a systemd timer, env-less)
+# and remove must reinstall exactly what add installed — the effective iface
+# list has to live in the rule file (netns-proven 2026-10-23: an
+# override-added DNAT silently vanished on the next env-less reassert
+# before this), not in whatever environment reappraisal happens to have.
+vmfw_script="$REPO_DIR/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-vm-forward"
+if grep -qF 'IFACES="%s"' "$vmfw_script" && [ "$(grep -c 'IFACES:-\$EXT_IFACES' "$vmfw_script")" -ge 2 ]; then
+  record pass "vm-forward: add/remove/reassert share the persisted IFACES"
+else
+  record fail "vm-forward: add/remove/reassert share the persisted IFACES" "the rule file must carry IFACES and BOTH remove and reassert must fall back to it"
+fi
+
 [ "$ONLY_STATIC" = true ] && { section "summary"; printf 'pass=%d fail=%d skip=%d\n' "$PASS" "$FAIL" "$SKIP"; [ "$FAIL" -eq 0 ]; exit $?; }
 
 # ============================================================= Stage B
