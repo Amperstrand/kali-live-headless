@@ -32,8 +32,10 @@ reserved_free_mb=20480
 ```
 
 (The PARTUUID is the gaming PC's `nvme0n1p3`, read-only-proven
-2026-10-23. On a v19+ image `partition=auto` + `bitlocker=try` works too
-— opportunistic; the explicit UUID stays the deterministic choice.)
+2026-10-23. On a v19+ image `partition=auto` + `bitlocker=try` is the
+opportunistic equivalent — the tool's consent() reads this same file;
+the explicit UUID stays the deterministic choice, and `bitlocker=off`
+vetoes a staged unlock from the stick.)
 
 ## Boot + assert (from any machine on the LAN)
 

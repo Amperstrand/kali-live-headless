@@ -67,23 +67,19 @@ host page cache absorbs the read side.
      the only plaintext NTFS left on such a box is typically the ~1.1G
      WinRE *recovery partition*, which auto would otherwise happily mount
      (found live on the actual gaming PC 2026-10-23; never a VM store).
-   * Consent to unlock comes from EITHER the build-time staged gate
-     (`VMSTORE_BITLOCKER=try`, staged since v18) **or `bitlocker=try` in
-     the stick's own `vm-store.conf`** (owner directive 2026-10-23:
-     opportunistic, automatic on the gaming PC — same stick-over-ISO
-     precedence as `headless-wifi.conf`; needs a vmstore-mount newer than
-     v18). With consent, `partition=auto` becomes **opportunistic**: the
-     first BitLocker volume that unlocks cleanly becomes the store (the
-     WinRE-decoy hazard cannot apply — only BitLocker volumes are ever
-     unlocked; a resumed-protection machine without keys simply fails to
-     unlock and the store stays off). Explicit `PARTUUID:` stays the
-     deterministic path and still verifies the unlocked volume matches.
-     Mechanics in both paths: the unlock is delegated to
-     `kali-live-bitlocker-mount` (`try-mount` under staged consent, or the
-     explicit `mount` subcommand per volume under stick consent — the
-     qemu uid/gid/umask ride along via its `--uid/--gid/--umask`
-     passthrough); read-only results are refused (their hiberfil.sys guard
-     means hibernated Windows = no store).
+   * Consent to unlock is owned by `kali-live-bitlocker-mount`'s
+     `consent()` (ce38904+): it reads `bitlocker=try|off` from KLHCONFIG
+     (`bitlocker.conf` **or** this `vm-store.conf` — stick wins over the
+     build-staged `VMSTORE_BITLOCKER` gate, and `off` is an explicit stick
+     **veto** over a staged try). With consent, `partition=auto` is
+     **opportunistic**: try-mount takes the first BitLocker volume that
+     unlocks cleanly (the WinRE-decoy hazard cannot apply — only BitLocker
+     volumes are ever unlocked; a resumed-protection machine without keys
+     simply fails to unlock and the store stays off). Explicit `PARTUUID:`
+     stays the deterministic path and verifies the unlocked volume matches.
+     Mechanics: the unlock is always `try-mount --rw` with the qemu
+     `--uid/--gid/--umask` passthrough; read-only results are refused
+     (their hiberfil.sys guard means hibernated Windows = no store).
    * Keys: our hardware currently runs BitLocker with **protection
      suspended** (clear key on the volume — unlockable with no secret);
      if protection is resumed, the tool resolves the recovery password /
