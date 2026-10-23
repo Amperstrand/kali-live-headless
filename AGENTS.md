@@ -93,7 +93,14 @@ drift is absorbed by bumping the pin, nothing else.
    hardware runs too. hw-check now asserts "virbr0 up without help"
    BEFORE remediating — keep that ordering, and apply the pattern:
    *verify the product did X, then fix X for downstream tests*.
-8. **Orphaned build clients burn CPU silently** (found 2026-10-22): when the
+8. **dd-ing an ISO onto a stick restores the ISO's own partition table** —
+   any partition appended afterwards (KLHCONFIG!) is orphaned even though
+   its sectors survive past the image. flash.sh detects and reuses a
+   surviving labeled partition (7ff7ef5); before that, every flash
+   silently dropped the stick's identities. Related: never write to a
+   device on a live stick without first matching it against the device
+   backing `/run/live/medium`.
+9. **Orphaned build clients burn CPU silently** (found 2026-10-22): when the
    tmux that drives a build dies, the root-owned
    `sudo -E build-in-container.sh → sudo → docker run` chain can survive with
    no container behind it and spin ~1.4 cores each forever (three chains from
