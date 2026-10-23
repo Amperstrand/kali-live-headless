@@ -60,3 +60,9 @@ BRANCH=kali-rolling
 #WG_TUNNET=10.66
 #WG_HUB_ADDR=10.99.0.1
 #WG_PORT=51820
+
+# Optimistic BitLocker unlock for the VM store (kali-live-bitlocker-mount):
+# off (default) = never touch a locked volume; try = tooling may mount a
+# store on one when a key is legitimately available (clear key on the
+# volume, or a recovery password / .BEK in KLHCONFIG bitlocker.conf).
+#VMSTORE_BITLOCKER=off

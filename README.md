@@ -294,6 +294,34 @@ stick keeps the same `npub` — its mesh address — across power cycles.
   mesh firewall (`fips-firewall.service`) enforces the baseline; the
   deployment side lives in the private overlay, not this repo.
 
+## BitLocker volumes: detect, unlock, use (kali-live-bitlocker-mount)
+
+Our target machines turn out to run BitLocker with protection **suspended**
+(a clear key sits on the volume — found on our own hardware 2026-10-23), so
+the C: drive is legitimately unlockable without any secret:
+
+    kali-live-bitlocker-mount detect            # list volumes + available keys
+    sudo kali-live-bitlocker-mount mount /dev/nvme0n1p3 /mnt/win   # read-only
+    sudo kali-live-bitlocker-mount mount /dev/nvme0n1p3 /mnt/win --rw
+
+Unlock sources, in order: the volume's own **clear key** (suspended
+protection); a **48-digit recovery password** or **.BEK** startup key you
+put on the stick's `KLHCONFIG` partition in `bitlocker.conf` (plaintext,
+same threat model as the Wi-Fi PSK — `detect` prints the volume GUID to use
+as the key); or `--recovery-password=`/`--bekfile=` for a one-off. There is
+no bypass and no TPM trick — the TPM-sealed key is unrecoverable by design
+from a Linux boot; every unlock here uses a key the owner already has.
+
+**Optimistic mode** (`VMSTORE_BITLOCKER=try` via `./configure.sh
+--bitlocker-unlock try`, default `off`): `try-mount` attempts every
+BitLocker volume and mounts the first that unlocks cleanly — the hook the
+VM store uses to put a store on `c:\vms` when the owner allows it.
+
+Safety: read-only unless `--rw`; if `hiberfil.sys` looks live (Windows
+hibernated), it remounts read-only even under `--rw` — writes to a
+hibernated Windows volume are how dual-boot setups die. `dislocker` ships
+in the image from v18.
+
 ## Forwarding one port into a VM (kali-live-vm-forward)
 
 Default-deny means nothing outside reaches a guest. When a deployment (the

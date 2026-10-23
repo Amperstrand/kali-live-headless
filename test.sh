@@ -446,15 +446,17 @@ else
       s=$(basename "$s")
       sudo test -x "$SQ_MNT/usr/local/sbin/$s" && record pass "script executable: $s" || record fail "script executable: $s"
     done
-    # WireGuard M1: package installed in the image, and the /etc/default
-    # staging carries the non-secret hub values when the feature is on (the
-    # runtime init treats "no endpoint" as feature-off). A private key must
-    # NEVER be staged — keys are generated on the stick, on first boot.
-    if sudo grep -A1 "^Package: wireguard-tools$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "Status: install ok installed"; then
-      record pass "wireguard-tools installed in image"
-    else
-      record fail "wireguard-tools installed in image"
-    fi
+    # WireGuard M1 + BitLocker unlock: packages installed in the image, and
+    # the /etc/default staging carries the non-secret values when the
+    # features are on (both runtime inits treat "not configured" as off).
+    # A private key must NEVER be staged — keys are generated on the stick.
+    for klh_pkg in wireguard-tools dislocker; do
+      if sudo grep -A1 "^Package: $klh_pkg$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "Status: install ok installed"; then
+        record pass "$klh_pkg installed in image"
+      else
+        record fail "$klh_pkg installed in image"
+      fi
+    done
     WG_DEFAULTS=$(sudo cat "$SQ_MNT/etc/default/kali-live-headless" 2>/dev/null || true)
     printf '%s' "$WG_DEFAULTS" | grep -q '^PrivateKey' \
       && record fail "WG private key staged" "secrets are generated on the stick, never baked" \

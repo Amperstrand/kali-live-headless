@@ -288,6 +288,10 @@ WG_PEER_PUBKEY="$WG_PEER_PUBKEY"
 WG_TUNNET="$WG_TUNNET"
 WG_HUB_ADDR="$WG_HUB_ADDR"
 WG_PORT="$WG_PORT"
+# BitLocker optimistic unlock (kali-live-bitlocker-mount): off by default;
+# "try" lets tooling (vmstore) mount a store on a locked volume when a key
+# is available (clear key or KLHCONFIG bitlocker.conf). Never a secret.
+VMSTORE_BITLOCKER="$VMSTORE_BITLOCKER"
 EOF
 install -D -m 0644 \
   "$OVERLAY_DIR/includes.chroot/etc/ssh/sshd_config.d/0000-kali-live-headless.conf" \

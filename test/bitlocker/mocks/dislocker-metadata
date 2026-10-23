@@ -1,0 +1,12 @@
+#!/bin/sh
+# dislocker-metadata mock — BLT_CLEARKEY_DEV gets a clear key; others do not
+BLT_CLEARKEY_DEV=${BLT_CLEARKEY_DEV:-}
+case "$*" in
+  *-V*$BLT_CLEARKEY_DEV*)
+    echo "INFO   Volume GUID: '4967D63B-2E29-4AD8-8399-F6A339E3D001'"
+    echo "INFO =======[ There's a clear key here ]========"
+    ;;
+  *-V*)
+    echo "INFO   Volume GUID: 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE'"
+    ;;
+esac
