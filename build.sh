@@ -376,6 +376,7 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 # ------------------------------------------------------------------ build
+SELF_HASH_START=$(sha256sum "$0" | cut -d' ' -f1)
 # The ISO is written to a staging dir, never straight into the output dir:
 # archiving then moves it into output/iso-buildN/, so a failed or concurrent
 # build cannot destroy the previous image.
@@ -443,6 +444,17 @@ trap - INT TERM
 
 if [ "$RC" -ne 0 ]; then
   klh_die "upstream build failed (rc=$RC) — see the log in $OUT_DIR; staged secrets were scrubbed, partial chroot copies may remain under build/kali-live until the next run cleans them"
+fi
+
+# post-build integrity: did build.sh change while the build ran? bash reads
+# scripts incrementally, so an in-flight edit makes the wrapper resume at a
+# byte offset in the NEW file — this killed #8 (rc=1 after a successful 4h
+# build) and #18 ('lse: command not found', 2026-10-23). Discipline did not
+# survive contact with a long build; this guard is mechanical. The artifact
+# itself is safe in the staging dir — only the wrapper steps are unreliable.
+SELF_HASH_NOW=$(sha256sum "$0" | cut -d' ' -f1)
+if [ "$SELF_HASH_NOW" != "$SELF_HASH_START" ]; then
+  klh_die "build.sh was EDITED while this build ran (hash changed). The build SUCCEEDED; the ISO is safe in $STAGE_OUT — re-run the post-build steps by hand: tools/iso-archive.sh --iso $STAGE_OUT/*.iso --build $BUILD_NUM, then ./test.sh --iso <the archived iso>"
 fi
 
 # ------------------------------------------------------------- archive
