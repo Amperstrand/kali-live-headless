@@ -154,10 +154,15 @@ pick_device() {
             lsblk_rows | awk -v d="${PARTITION#/dev/}" '$1 == d {print "/dev/" $1; exit}'
             ;;
         LABEL:*)
-            lsblk_rows | awk -v l="${PARTITION#LABEL:}" '$3 == l && $2 == "ntfs" {print "/dev/" $1; exit}'
+            lsblk_rows | awk -v l="${PARTITION#LABEL:}" '$3 == l {print "/dev/" $1; exit}'
             ;;
         PARTUUID:*)
-            lsblk_rows | awk -v u="${PARTITION#PARTUUID:}" '$5 == u && $2 == "ntfs" {print "/dev/" $1; exit}'
+            # fstype-agnostic on purpose: this is the owner's explicit
+            # pointer — the BitLocker-encrypted C: is legitimately selected
+            # here and handled by the BitLocker branch below (contract with
+            # kali-live-bitlocker-mount, 6570f12). Wrong targets fail at
+            # the mount step.
+            lsblk_rows | awk -v u="${PARTITION#PARTUUID:}" '$5 == u {print "/dev/" $1; exit}'
             ;;
         auto)
             # largest NTFS partition (the Windows system disk on the target
@@ -209,10 +214,41 @@ if [ -z "$DEVICE" ]; then
     exit 1
 fi
 if [ "$PARTITION" = auto ] && bitlocker_present; then
-    log "ERROR: partition=auto refuses to run while any BitLocker volume exists (C: is encrypted; the only plaintext NTFS would be the WinRE recovery partition — never a VM store). Create a dedicated plain-NTFS partition (label VMSTORE) and set partition=LABEL:VMSTORE, or see docs/vm-store-ntfs-research.md §2.2"
+    log "ERROR: partition=auto refuses to run while any BitLocker volume exists (C: is encrypted; the only plaintext NTFS would be the WinRE recovery partition — never a VM store). Name the target explicitly (partition=PARTUUID:... of C: with the BitLocker unlock staged), or see docs/vm-store-ntfs-research.md §2.2"
     rm -f "$CONFFILE" 2>/dev/null || true
     exit 1
 fi
+
+# ------------------------------------------- BitLocker target (owner path)
+# An explicit selector may name the BitLocker-encrypted Windows volume
+# (owner decision 2026-10-23: store IS C:\vms, no partition changes).
+# Unlocking is DELEGATED to kali-live-bitlocker-mount (6570f12) under its
+# contract: only when the owner staged VMSTORE_BITLOCKER=try
+# (configure.sh --bitlocker-unlock try — the consent gate; the tool
+# enforces it too), call try-mount and REQUIRE that the volume it unlocked
+# is the one vm-store.conf selected. Hibernation safety (ro fallback) is
+# handled inside the tool; a read-only result REFUSES the store here
+# (images need rw). Ownership of the NTFS view is normalized after the
+# mount — the qemu runtime user must be able to open image files.
+BLKM="${KLH_BLKM:-/usr/local/sbin/kali-live-bitlocker-mount}"
+ETC_DEFAULT="${KLH_ETC_DEFAULT:-/etc/default/kali-live-headless}"
+BLK_MODE=no
+DEV_FSTYPE=$(lsblk_rows | awk -v d="${DEVICE#/dev/}" '$1 == d {print $2; exit}')
+case "$DEV_FSTYPE" in
+    BitLocker|bitlocker)
+        BLK_MODE=yes
+        if ! grep -q "^VMSTORE_BITLOCKER=\"\?try" "$ETC_DEFAULT" 2>/dev/null; then
+            log "ERROR: $DEVICE is BitLocker-encrypted and optimistic unlock is not staged — refusing (owner: build with configure.sh --bitlocker-unlock try, or see docs/vm-store-ntfs-research.md §2.2)"
+            rm -f "$CONFFILE" 2>/dev/null || true
+            exit 1
+        fi
+        if [ ! -x "$BLKM" ]; then
+            log "ERROR: $DEVICE is BitLocker-encrypted but $BLKM is missing (v18+ image) — refusing"
+            rm -f "$CONFFILE" 2>/dev/null || true
+            exit 1
+        fi
+        ;;
+esac
 
 # ------------------------------------------------------------- driver pick
 # Default ntfs-3g (safety, research §1). ntfs3 only when explicitly chosen
@@ -264,7 +300,9 @@ MOUNT_OPTS="uid=$QEMU_UID,gid=$QEMU_GID,umask=007,windows_names"
 plan() {
     [ "$DRY_RUN" = true ] || return 0
     printf 'plan device=%s\n' "$DEVICE"
-    printf 'plan fstype=%s\n' "$(lsblk_rows | awk -v d="${DEVICE#/dev/}" '$1 == d {print $2; exit}')"
+    printf 'plan fstype=%s\n' "$DEV_FSTYPE"
+    printf 'plan bitlocker=%s\n' "$BLK_MODE"
+    [ "$BLK_MODE" = yes ] && printf 'plan unlock=try-mount:%s\n' "$(basename "$BLKM")"
     printf 'plan type=%s\n' "$MOUNT_TYPE"
     printf 'plan options=%s\n' "$MOUNT_OPTS"
     printf 'plan target=%s\n' "$MNT"
@@ -274,12 +312,61 @@ plan() {
 }
 
 # ------------------------------------------------------------- mount + pool
+# BitLocker orchestration (contract with kali-live-bitlocker-mount):
+# try-mount gets the first volume that unlocks cleanly; we then REQUIRE
+# that volume to be the one vm-store.conf selected (their
+# bitlocker.mounts ledger records "<device> <mnt>"), refuse a read-only
+# result (their hibernation guard degrades --rw to ro — images need rw),
+# and normalize the NTFS view's ownership so the qemu runtime user can
+# open image files (their mount carries no uid mapping).
+blk_try_mount() {
+    if ! "$BLKM" try-mount "$MNT" --rw >/tmp/vmstore-blkm.out 2>/tmp/vmstore-blkm.err; then
+        log "ERROR: BitLocker try-mount failed: $(head -c 200 /tmp/vmstore-blkm.err 2>/dev/null || echo unknown)"
+        rm -f /tmp/vmstore-blkm.out /tmp/vmstore-blkm.err
+        exit 1
+    fi
+    rm -f /tmp/vmstore-blkm.out /tmp/vmstore-blkm.err
+    MOUNTED_DEV=$(awk -v m="$MNT" '$2 == m {print "/dev/" $1; exit}' \
+        "${KLH_BLKM_MOUNTS:-/run/kali-live-headless/bitlocker.mounts}" 2>/dev/null || true)
+    if [ "$MOUNTED_DEV" != "$DEVICE" ]; then
+        log "ERROR: try-mount unlocked ${MOUNTED_DEV:-?} but vm-store.conf selected $DEVICE — refusing the mismatched volume (unmounting)"
+        "$BLKM" unmount "$MNT" >/dev/null 2>&1 || true
+        exit 1
+    fi
+    if findmnt -no OPTIONS "$MNT" 2>/dev/null | grep -qE '(^|,)ro(,|$)'; then
+        log "ERROR: $DEVICE unlocked READ-ONLY (hibernated Windows — the tool's hiberfil guard) — a VM store needs rw. Boot Windows, 'powercfg /h off', shut down FULLY, retry"
+        "$BLKM" unmount "$MNT" >/dev/null 2>&1 || true
+        exit 1
+    fi
+    # ownership normalization: remount the dislocker-file backing the view
+    # with the qemu uid/gid mapping (plain ntfs-3g helper path — see the
+    # fsconfig note above)
+    LOOP_SRC=$(findmnt -no SOURCE "$MNT" 2>/dev/null || true)
+    BACK_FILE=$(losetup -no BACK-FILE "$LOOP_SRC" 2>/dev/null || true)
+    if [ -n "$BACK_FILE" ] && [ -e "$BACK_FILE" ]; then
+        if umount "$MNT" 2>/dev/null \
+           && mount -t ntfs-3g -o "loop,rw,$MOUNT_OPTS" "$BACK_FILE" "$MNT" 2>/dev/null; then
+            log "store view remounted with qemu ownership mapping (backing: $BACK_FILE)"
+        else
+            # fall back to their mount rather than leaving the store empty
+            "$BLKM" try-mount "$MNT" --rw >/dev/null 2>&1 \
+                && log "WARNING: ownership normalization failed — kept the tool's mount (pool file access may fail for the qemu user)" \
+                || { log "ERROR: BitLocker remount failed and the fallback mount did not return"; exit 1; }
+        fi
+    fi
+}
+
 do_mount() {
     if mountpoint -q "$MNT" 2>/dev/null; then
         log "$MNT already mounted — reusing"
         return 0
     fi
     mkdir -p "$MNT" || { log "ERROR: cannot create $MNT"; exit 1; }
+    if [ "$BLK_MODE" = yes ]; then
+        blk_try_mount
+        log "BitLocker volume $DEVICE unlocked and mounted rw at $MNT"
+        return 0
+    fi
     if ! mount -t "$MOUNT_TYPE" -o "$MOUNT_OPTS" "$DEVICE" "$MNT" 2>/tmp/vmstore-mount.err; then
         ERR=$(cat /tmp/vmstore-mount.err 2>/dev/null || echo unknown)
         rm -f /tmp/vmstore-mount.err
