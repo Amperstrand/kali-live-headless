@@ -21,9 +21,11 @@
 # call `try-mount` and get the first volume that unlocks cleanly.
 #
 # Safety rules:
-#   * mounted READ-ONLY unless --rw (Windows may resume protection, and a
-#     hibernated Windows makes writes dangerous — we check hiberfil.sys and
-#     force ro with a warning when it looks hibernated, even under --rw)
+#   * mounted READ-ONLY unless --rw (Windows may resume protection); when
+#     --rw is given, hibernation safety is NTFS-3G'S authoritative refusal
+#     — an ACTIVE fast-startup session fails the rw mount ("Metadata kept
+#     in Windows cache"); a stale hiberfil.sys after a FULL shutdown
+#     (Shift+Shut-down) stays writable (warned, not degraded)
 #   * the recovery password is never printed or logged
 #   * a failed unlock returns non-zero; nothing is mounted half-way
 #
@@ -140,9 +142,14 @@ do_mount() {
     own="${uidopt:-}${gidopt:-}${umaskopt:-}"
     mopts="loop"
     if [ "$rw" = true ]; then
-        hibernated "$fdir/dislocker-file" 2>/dev/null || true
-        # hibernation check needs the fs mounted; use ntfs-3g's own dirty
-        # detection plus our post-mount check below
+        # Hibernation safety is NTFS-3G'S call and it is authoritative: it
+        # refuses rw on an ACTIVE hibernation ("Metadata kept in Windows
+        # cache", the fast-startup state) right here at this mount. A stale
+        # hiberfil.sys left by a FULL shutdown (Shift+Shut-down /
+        # 'shutdown /s /full' — only 'powercfg /h off' deletes the file) is
+        # NOT an active session and must stay writable; the old
+        # presence-based remount turned those into permanent false
+        # positives (analyzed + acked 2026-10-23).
         mopts="loop,rw$own"
     else
         mopts="loop,ro$own"
@@ -150,9 +157,11 @@ do_mount() {
     mount -t ntfs-3g -o "$mopts" "$fdir/dislocker-file" "$mnt" 2>>/run/kali-live-headless/bitlocker.log \
         || { umount "$fdir" 2>/dev/null; die "ntfs mount failed (hibernated Windows? try read-only)"; }
     if [ "$rw" = true ] && hibernated "$mnt"; then
-        err "Windows looks HIBERNATED (hiberfil.sys) — remounting read-only for its safety"
-        umount "$mnt" 2>/dev/null
-        mount -t ntfs-3g -o "loop,ro$own" "$fdir/dislocker-file" "$mnt" || die "ro remount failed"
+        # informational only: hiberfil.sys present but ntfs-3g mounted rw
+        # ⇒ the session is inactive (full shutdown happened); warn for the
+        # operator's benefit, do NOT degrade — degrading here would make
+        # full-shutdown owners repeat powercfg forever.
+        err "note: stale hiberfil.sys present (inactive — ntfs-3g mounted rw); 'powercfg /h off' in Windows removes the file for good"
     fi
     log "unlocked $part (guid ${guid:-?}) at $mnt ($(mount | grep " $mnt " | grep -q ro && echo ro || echo rw))"
     return 0
