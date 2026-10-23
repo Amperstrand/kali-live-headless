@@ -288,7 +288,7 @@ VMRM="$REPO_DIR/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-l
 FIX="$REPO_DIR/test/fixtures/vm-store"
 if [ -x "$VMSTORE" ] && [ -d "$FIX" ]; then
   vmrun() { # conf lsblk [cmdline] -> stdout; rc follows
-    ( PATH="$FIX/bin:$PATH" KLH_VMSTORE_CONF="$FIX/$1" KLH_LSBLK_FILE="$FIX/$2" \
+    ( PATH="$FIX/bin:$PATH" TMPDIR="$SCRATCH" KLH_VMSTORE_CONF="$FIX/$1" KLH_LSBLK_FILE="$FIX/$2" \
       KLH_PROC_CMDLINE="$FIX/${3:-cmdline-live}" "$VMSTORE" --dry-run 2>&1 )
   }
   vm_assert() { # expect_rc conf lsblk [cmdline] description [grep-pattern]

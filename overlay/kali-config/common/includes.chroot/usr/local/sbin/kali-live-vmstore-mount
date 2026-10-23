@@ -113,6 +113,7 @@ valid_driver() {
 }
 
 # read config from the KLHCONFIG partition (mounted ro, then released)
+# rc 0 + output = conf found; rc 0 + empty = none; rc 2 = IO trouble
 read_conf() { # -> echoes the conf file to stdout
     [ -n "$CONF_SOURCE" ] || return 1
     if [ -f "$CONF_SOURCE" ]; then
@@ -120,7 +121,7 @@ read_conf() { # -> echoes the conf file to stdout
         return 0
     fi
     [ -b "$CONF_SOURCE" ] || return 1
-    tmp=$(mktemp -d /run/kali-live-vmstore-conf.XXXXXX 2>/dev/null) || return 1
+    tmp=$(mktemp -d /run/kali-live-vmstore-conf.XXXXXX 2>/dev/null) || return 2
     if mount -o ro "$CONF_SOURCE" "$tmp" 2>/dev/null; then
         cat "$tmp/vm-store.conf" 2>/dev/null
         umount "$tmp" 2>/dev/null || true
@@ -129,14 +130,27 @@ read_conf() { # -> echoes the conf file to stdout
     return 0
 }
 
-CONF=$(read_conf) || CONF=""
+CONF=$(read_conf)
+rc=$?
+if [ "$rc" -eq 2 ]; then
+    log "ERROR: could not stage the KLHCONFIG read (tmpfs full? /run unwritable?) — refusing to guess"
+    exit 1
+fi
 if [ -z "$CONF" ]; then
     # quiet no-op: feature ships disabled, absent config is normal
     log "no vm-store.conf on KLHCONFIG — VM store not configured (no-op)"
     exit 0
 fi
-CONFFILE=$(mktemp /tmp/vmstore-conf.XXXXXX 2>/dev/null || echo /dev/null)
-printf '%s\n' "$CONF" > "$CONFFILE" 2>/dev/null || true
+# CONFFILE must be REAL: a full tmpfs once made mktemp fail and the old
+# '/dev/null' fallback silently turned every boot into the no-op path
+# (13 suite fails, 2026-10-24). Prefer /run (root-writable, exists on the
+# live system); fail LOUDLY if neither works.
+CONFFILE=$(mktemp /run/kali-live-vmstore-conf.XXXXXX 2>/dev/null || mktemp /tmp/vmstore-conf.XXXXXX 2>/dev/null || true)
+if [ -z "$CONFFILE" ] || [ "$CONFFILE" = "/dev/null" ]; then
+    log "ERROR: cannot create a temp conf file (/run and /tmp both unwritable/full?) — refusing to run blind"
+    exit 1
+fi
+printf '%s\n' "$CONF" > "$CONFFILE" 2>/dev/null || { log "ERROR: cannot stage the parsed config — refusing"; exit 1; }
 
 ENABLED=$(conf_value "$CONFFILE" enabled)
 PARTITION=$(conf_value "$CONFFILE" partition)
