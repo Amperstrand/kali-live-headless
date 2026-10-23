@@ -118,7 +118,9 @@ step() { printf '  [%5ds] %s\n' "$(( $(date +%s) - T0 ))" "$*"; }
 
 step "scope: overlay runtime files"
 cd /overlay/kali-config/common/includes.chroot
-find . -type f | sed 's|^\./||' | sort > /out/scope.txt
+# never ship compiled artifacts: bytecode is nondeterministic and a stray
+# __pycache__ once failed the whole 60-minute repack at verify time
+find . -type f | sed 's|^\./||' | grep -vE '__pycache__|\.pyc$' | sort > /out/scope.txt
 if [ "$KVM" != true ]; then
   grep -v -E 'kali-live-kvm-(enable|firewall)|kali-live-vmstore-mount|kali-live-vm-create|kali-live-vm-rm|klh-kvm-nested' /out/scope.txt > /out/scope.kvm \
     && mv /out/scope.kvm /out/scope.txt
