@@ -202,13 +202,15 @@ path, verdict = sys.argv[1], sys.argv[2]
 s = open(path).read()
 if "_not yet recorded_" in s:
     s = re.sub(r"^_not yet recorded_.*$", verdict, s, count=1, flags=re.M)
-else:
+elif "## Verdict" in s:
     parts = s.split("## Verdict", 1)
     if len(parts) == 2:
         head, tail = parts[0], parts[1]
         lines = tail.split("\n", 2)
         if len(lines) == 3:
             s = head + "## Verdict" + lines[0] + "\n" + verdict + "\n" + lines[2].lstrip("\n")
+else:
+    s = s.rstrip("\n") + "\n\n## Verdict\n\n" + verdict + "\n"
 open(path, "w").write(s)
 PY
   klh_ok "verdict recorded in $DEST_DIR/INDEX.md"
