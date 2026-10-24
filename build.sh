@@ -206,6 +206,15 @@ fi
 # KVM stack: package list written only for WITH_KVM builds; the unit
 # files/scripts from the overlay are removed otherwise so nothing dead
 # ships in the ISO.
+# LEAN profile enforcement (must run BEFORE the WITH_KVM gate): the two
+# big levers on image size are the kali-linux-firmware whale (~1GB of
+# vendor blobs) and the qemu/libvirt stack — both useless on a stick
+# whose job is wifi+ssh+mesh.
+if [ "$LEAN" = true ] && [ "$WITH_KVM" = true ]; then
+    klh_warn "LEAN=true forces WITH_KVM=false (no qemu/libvirt in the image)"
+    WITH_KVM=false
+fi
+
 if [ "$WITH_KVM" = true ]; then
   cat > "$KLH_COMMON/package-lists/kvm.list.chroot" <<'EOF'
 ## KVM/libvirt stack (WITH_KVM=true builds) — see README "KVM"
@@ -234,6 +243,24 @@ else
         "$KLH_COMMON/includes.chroot/etc/modprobe.d/klh-kvm-nested.conf"
   klh_info "KVM stack omitted (WITH_KVM=false)"
 fi
+
+# LEAN file staging (after the WITH_KVM gate so its removals have run)
+if [ "$LEAN" = true ]; then
+    cat > "$KLH_COMMON/package-lists/hardware-support.list.chroot" <<'LEOF'
+## LEAN: only firmware a headless wifi stick plausibly needs — the full
+## kali-linux-firmware collection is ~1GB of vendor blobs this profile
+## refuses to carry. Add your adapter's blob here if missing.
+firmware-linux-free
+firmware-iwlwifi
+firmware-realtek
+firmware-atheros
+firmware-ath9k-htc
+firmware-misc-nonfree
+LEOF
+    rm -f "$KLH_COMMON/package-lists/headless.list.chroot"
+    klh_ok "LEAN profile staged: slim firmware, no KVM, headless-lean package list"
+fi
+
 
 # Default boot entry: move syslinux's "menu default" onto the chosen
 # entry and point GRUB at its index. Upstream defaults to the first
