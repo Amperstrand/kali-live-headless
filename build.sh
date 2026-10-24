@@ -194,7 +194,12 @@ if git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
   # upstream's grub.cfg as "mystery") UNION our git-tracked overlay
   mystery=$(cd "$KLH_COMMON" && find . -type f | sort > /tmp/klh-staged.$$
     { git -C "$REPO_DIR" ls-files "overlay/kali-config/common" | sed 's|^overlay/kali-config/common/|./|'
-      git -C "$UPSTREAM_DIR" ls-files "kali-config/common" 2>/dev/null | sed 's|^kali-config/common/|./|'; } | sort -u > /tmp/klh-git.$$
+      git -C "$UPSTREAM_DIR" ls-files "kali-config/common" 2>/dev/null | sed 's|^kali-config/common/|./|'
+      # build-time downloads (verified by sha/version at download): the
+      # pinned cloudflared binary and the fips .deb — neither is in git,
+      # both land in the persistent staged tree and survive cp -a
+      echo './includes.chroot/usr/local/bin/cloudflared'
+      ls ./packages.chroot/*.deb 2>/dev/null || true; } | sort -u > /tmp/klh-git.$$
     comm -23 /tmp/klh-staged.$$ /tmp/klh-git.$$
     rm -f /tmp/klh-staged.$$ /tmp/klh-git.$$)
   if [ -n "$mystery" ]; then
