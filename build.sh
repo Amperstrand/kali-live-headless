@@ -372,7 +372,7 @@ DEB_SHA=$(sha256sum "$KLH_COMMON/packages.chroot/$FIPS_DEB" | cut -d' ' -f1)
 if [ "$WITH_RESCUE" = true ] && [ "$VARIANT" = "default" ]; then
     CFD_BIN="$KLH_COMMON/includes.chroot/usr/local/bin/cloudflared"
     mkdir -p "$(dirname "$CFD_BIN")"
-    if curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/v${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
+    if curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
             -o "$CFD_BIN"; then
         echo "$CLOUDFLARED_SHA256  $CFD_BIN" | sha256sum --check --quiet \
             || klh_die "cloudflared $CLOUDFLARED_VERSION sha256 mismatch — repin in lib/common.sh"
