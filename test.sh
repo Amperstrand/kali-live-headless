@@ -458,6 +458,55 @@ else
   record fail "vm-forward: add/remove/reassert share the persisted IFACES" "the rule file must carry IFACES and BOTH remove and reassert must fall back to it"
 fi
 
+# ---- tollgate-watchdog decision matrix (fixture-driven, no NetworkManager)----
+# The watchdog is the fail-safe for the TollGate connectivity experiment:
+# these assert its DECISIONS with stub inputs (the vm-store fixture pattern):
+# house mode is a no-op; the open network starts a deadline; internet within
+# it = ok; past it with no internet = force the house profile (and with
+# KLH_TG_REBOOT=true + fallback not taking, the reboot escalation — which
+# the clock-file guard makes test-safe: a fake clock means never actually reboot).
+TGW="$REPO_DIR/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-tollgate-watchdog"
+if [ -x "$TGW" ]; then
+  record pass "tollgate watchdog shipped+executable"
+  tgw_env() { # dir con probe clock
+    rm -rf "$1"; mkdir -p "$1"
+    printf '%s\n' "$2" > "$1/nm"
+    printf '%s\n' "$3" > "$1/probe"
+    printf '%s' "$4" > "$1/clock"
+  }
+  D="$SCRATCH/tgw"
+  tgw_env "$D/house" "headless-wifi:802-11-wireless" ok 100
+  KLH_STATE_DIR="$D/house" KLH_NMCLI_FILE="$D/house/nm" KLH_INET_PROBE_FILE="$D/house/probe" KLH_CLOCK_FILE="$D/house/clock" "$TGW" --once
+  [ "$?" = 0 ] && grep -q '^house - ok' "$D/house/tollgate-status" && [ ! -e "$D/house/nm.calls" ] \
+    && record pass "tollgate watchdog: house mode is a no-op" || record fail "tollgate watchdog: house mode is a no-op"
+
+  tgw_env "$D/first" "tollgate-open:802-11-wireless" fail 100
+  KLH_STATE_DIR="$D/first" KLH_NMCLI_FILE="$D/first/nm" KLH_INET_PROBE_FILE="$D/first/probe" KLH_CLOCK_FILE="$D/first/clock" "$TGW" --once
+  grep -q 'tollgate .* waiting' "$D/first/tollgate-status" \
+    && record pass "tollgate watchdog: open network starts the deadline" || record fail "tollgate watchdog: open network starts the deadline"
+
+  tgw_env "$D/paid" "tollgate-open:802-11-wireless" ok 130
+  cp "$D/first/tollgate-since" "$D/paid/tollgate-since" 2>/dev/null
+  KLH_STATE_DIR="$D/paid" KLH_NMCLI_FILE="$D/paid/nm" KLH_INET_PROBE_FILE="$D/paid/probe" KLH_CLOCK_FILE="$D/paid/clock" "$TGW" --once
+  grep -q 'tollgate .* ok' "$D/paid/tollgate-status" && [ ! -e "$D/paid/nm.calls" ] \
+    && record pass "tollgate watchdog: internet within deadline = ok, no fallback" || record fail "tollgate watchdog: internet within deadline = ok, no fallback"
+
+  tgw_env "$D/dead" "tollgate-open:802-11-wireless" fail 400
+  cp "$D/first/tollgate-since" "$D/dead/tollgate-since" 2>/dev/null
+  KLH_STATE_DIR="$D/dead" KLH_NMCLI_FILE="$D/dead/nm" KLH_INET_PROBE_FILE="$D/dead/probe" KLH_CLOCK_FILE="$D/dead/clock" KLH_TG_HOUSE_PROFILE=headless-wifi "$TGW" --once
+  tgwrc=0; [ -f "$D/dead/nm.calls" ] || tgwrc=1
+  grep -q 'con-up headless-wifi' "$D/dead/nm.calls" 2>/dev/null && grep -q 'fell-back' "$D/dead/tollgate-status" && [ "$tgwrc" = 0 ] \
+    && record pass "tollgate watchdog: deadline+no internet forces the house profile" || record fail "tollgate watchdog: deadline+no internet forces the house profile"
+
+  tgw_env "$D/reboot" "tollgate-open:802-11-wireless" fail 400
+  cp "$D/first/tollgate-since" "$D/reboot/tollgate-since" 2>/dev/null
+  KLH_STATE_DIR="$D/reboot" KLH_NMCLI_FILE="$D/reboot/nm" KLH_INET_PROBE_FILE="$D/reboot/probe" KLH_CLOCK_FILE="$D/reboot/clock" KLH_TG_REBOOT=true "$TGW" --once
+  grep -q 'rebooting' "$D/reboot/tollgate-status" \
+    && record pass "tollgate watchdog: opt-in reboot escalation (test-safe via fake clock)" || record fail "tollgate watchdog: reboot escalation"
+else
+  record fail "tollgate watchdog shipped+executable"
+fi
+
 [ "$ONLY_STATIC" = true ] && { section "summary"; printf 'pass=%d fail=%d skip=%d\n' "$PASS" "$FAIL" "$SKIP"; [ "$FAIL" -eq 0 ]; exit $?; }
 
 # ============================================================= Stage B
@@ -628,6 +677,14 @@ PKGS
     sudo test -x "$SQ_MNT/usr/local/bin/tollgate-client" && record pass "tollgate-client binary shipped" || record fail "tollgate-client binary shipped"
     sudo test -x "$SQ_MNT/usr/local/sbin/kali-live-tollgate" && record pass "tollgate trigger script shipped" || record fail "tollgate trigger script shipped"
     sudo test -f "$SQ_MNT/etc/NetworkManager/system-connections/tollgate-open.nmconnection" && record pass "tollgate open-network NM profile" || record fail "tollgate open-network NM profile"
+    sudo test -x "$SQ_MNT/usr/local/sbin/kali-live-tollgate-watchdog" && record pass "tollgate watchdog shipped" || record fail "tollgate watchdog shipped"
+    sudo test -L "$SQ_MNT/etc/systemd/system/multi-user.target.wants/kali-live-tollgate-watchdog.service" && record pass "tollgate watchdog enabled" || record fail "tollgate watchdog enabled"
+    # autoconnect-priority: HIGHER wins in NM — the open profile must be
+    # NEGATIVE so the house PSK always wins when visible (e6815aa shipped
+    # +10, which preferred ANY open AP over the house wifi)
+    sudo grep -q 'autoconnect-priority=-10' "$SQ_MNT/etc/NetworkManager/system-connections/tollgate-open.nmconnection" \
+      && record pass "tollgate open profile priority is -10 (house wifi wins)" \
+      || record fail "tollgate open profile priority is -10 (house wifi wins)" "check the tollgate-profile hook"
     # toram boot entry
     if [ "$TORAM_EXPECTED" = true ]; then
       sudo grep -rq "toram" "$ISO_MNT/isolinux/" 2>/dev/null && record pass "isolinux: toram entry present" || record fail "isolinux: toram entry present"

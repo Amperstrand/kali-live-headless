@@ -1,0 +1,16 @@
+[Unit]
+Description=kali-live-headless: TollGate fail-safe watchdog (internet deadline -> house-wifi fallback)
+Documentation=file:///usr/local/sbin/kali-live-tollgate-watchdog
+# The watchdog reasons about NM's ACTIVE connection, so it must run after
+# NetworkManager exists — but it self-heals every tick, no hard ordering.
+After=NetworkManager.service
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/kali-live-tollgate-watchdog
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
