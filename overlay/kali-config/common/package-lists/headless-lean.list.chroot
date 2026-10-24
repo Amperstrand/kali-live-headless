@@ -1,0 +1,20 @@
+## LEAN profile (VARIANT=minimal + LEAN=true): the headless essentials
+## only — no kali-linux-core baseline, no git/tmux/tcpdump/dislocker.
+## The stick still boots headless, joins Wi-Fi, takes SSH keys, runs the
+## mesh (wg + fips daemon) and the rescue channel. Everything not needed
+## to reach sshd over wifi/wg is out.
+openssh-server
+network-manager
+wpasupplicant
+wireless-regdb
+iw
+iproute2
+avahi-daemon
+curl
+python3
+openssl
+ca-certificates
+sudo
+e2fsprogs
+## WireGuard access channel (identical to the standard profile)
+wireguard-tools
