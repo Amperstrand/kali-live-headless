@@ -105,6 +105,14 @@ net_ensure() {
 
 while :; do
     if ! ip link show virbr0 >/dev/null 2>&1; then
+        # LEAN wedge fix (#21): socket-activated libvirtd takes >60s to
+        # become responsive in the lean package set — the bounded virsh
+        # calls in net_ensure all expire before the daemon is ready.
+        # Start it EXPLICITLY (deterministic, no socket-activation race).
+        # Once running, the existing net_ensure calls work normally.
+        if [ "$installed_once" = 0 ]; then
+            timeout 90 systemctl start libvirtd.service >/dev/null 2>&1 || true
+        fi
         # No bridge yet: CREATE it — the default-network bring-up lives here
         # since 8921f9e moved it out of kvm-enable. Without this call the
         # loop waited forever for a bridge only it could create (chicken-and-
