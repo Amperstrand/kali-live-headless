@@ -40,6 +40,84 @@ echo "== purpose separation =="
 WG2=$(py "$SALT" --fingerprint "$FP2" --purpose wireguard)
 [ "$WG" != "$WG2" ] && ok "wg diverges per machine" || bad "wg collides across machines"
 
+echo "== host_role_init: salt-derived unification (2026-10-24) =="
+LIB="$HERE/../../overlay/kali-config/common/includes.chroot/usr/local/lib/kali-live-headless"
+IDENT_INIT="$HERE/../../overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-identity-init"
+TD=$(mktemp -d)
+# DMI product_uuid is root-only, so --machine can't run in a unit test as a
+# user. The driver injects a fake fingerprint into derive_identity BEFORE
+# host_role_init.main() imports it (same module object) — production code
+# path is otherwise identical.
+cat > "$TD/driver.py" <<PYDRV
+import sys, io, os, contextlib, importlib.util
+LIB = os.environ["KLH_LIB"]
+FP  = os.environ["KLH_FP"]
+sys.path.insert(0, LIB)
+import derive_identity
+derive_identity.machine_fingerprint = lambda: FP
+mode, mnt = sys.argv[1], sys.argv[2]
+if mode == "ref":
+    salt = bytes.fromhex(open(os.path.join(mnt, "master.salt")).readline().strip())
+    _, npub, _ = derive_identity.derive_nsec(salt, FP)
+    print(npub)
+else:
+    spec = importlib.util.spec_from_file_location("host_role_init", os.path.join(LIB, "host_role_init.py"))
+    hr = importlib.util.module_from_spec(spec); spec.loader.exec_module(hr)
+    sys.argv = ["host_role_init", mnt]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = hr.main()
+    print(f"{rc} {buf.getvalue().strip()}")
+PYDRV
+export KLH_LIB="$LIB"
+role() { KLH_FP="$1" python3 "$TD/driver.py" role "$TD" 2>/dev/null | awk '{print $2}'; }
+ref()  { KLH_FP="$1" python3 "$TD/driver.py" ref  "$TD" 2>/dev/null; }
+
+printf '%s\n' "$SALT" > "$TD/master.salt"
+R1=$(role "$FP1"); REF1=$(ref "$FP1")
+[ -n "$R1" ] && [ -n "$REF1" ] && [ "$R1" = "$REF1" ] \
+    && ok "host-role npub == derive_identity npub (ONE identity source)" \
+    || bad "host-role ('$R1') != derived ('$REF1')"
+R2=$(role "$FP1")
+[ -n "$R2" ] && [ "$R1" = "$R2" ] && ok "host-role derived identity stable across runs" || bad "unstable or empty"
+# machine scoping: same stick (salt), different machine -> different npub
+RM=$(role "$FP2"); REFM=$(ref "$FP2")
+[ -n "$RM" ] && [ "$RM" = "$REFM" ] && [ "$RM" != "$R1" ] \
+    && ok "same salt on a different machine -> different identity (machine-scoped)" \
+    || bad "machine scoping broken ('$RM' vs '$REFM' vs '$R1')"
+# migration: a stored pre-salt RANDOM identity is replaced by the derived one
+printf 'FIPS_NAME=stick-deadbeef\nFIPS_NSEC=nsec1%s\nFIPS_NPUB=npub1%s\n' "$(printf 'q%.0s' $(seq 58))" "$(printf 'q%.0s' $(seq 58))" > "$TD/host-role.conf"
+RMIG=$(role "$FP1")
+[ -n "$RMIG" ] && [ "$RMIG" = "$REF1" ] && ok "pre-salt random identity migrated to salt-derived" || bad "random identity survived: '$RMIG'"
+grep -q "^FIPS_NSEC=nsec1" "$TD/host-role.conf" && grep -vq "^FIPS_NSEC=nsec1qqq" "$TD/host-role.conf" \
+    && ok "migrated nsec persisted (fake gone)" || bad "nsec not persisted or fake survived"
+# re-key: a new salt replaces the identity (non-vacuous: compare to REF of salt2)
+printf '%s\n' "$SALT2" > "$TD/master.salt"
+RRE=$(role "$FP1"); REF2=$(KLH_FP="$FP1" python3 "$TD/driver.py" ref "$TD" 2>/dev/null)
+[ -n "$RRE" ] && [ "$RRE" = "$REF2" ] && [ "$RRE" != "$R1" ] && ok "salt rotation re-keys the mesh identity" || bad "re-key wrong: '$RRE' vs '$REF2'"
+# empty salt: no derivation, no random churn — stored identity restored untouched
+: > "$TD/master.salt"
+printf 'FIPS_NSEC=nsec1%s\nFIPS_NPUB=npub1%s\n' "$(printf 'q%.0s' $(seq 58))" "$(printf 'q%.0s' $(seq 58))" > "$TD/host-role.conf"
+RC_EMPTY=$(KLH_FP="$FP1" python3 "$TD/driver.py" role "$TD" 2>/dev/null | awk '{print $1}')
+grep -q "^FIPS_NSEC=nsec1qqq" "$TD/host-role.conf" && [ "$RC_EMPTY" = "0" ] \
+    && ok "empty salt: stored identity restored untouched" || bad "empty salt clobbered stored identity (rc=$RC_EMPTY)"
+
+echo "== identity-init: salt lifecycle =="
+TD2=$(mktemp -d)
+: > "$TD2/master.salt"
+OUT=$(sh "$IDENT_INIT" "$TD2" 2>&1); RC=$?
+NEW=$(head -n1 "$TD2/master.salt")
+if [ "$RC" = 0 ] && printf '%s' "$NEW" | grep -qE '^[0-9a-f]{64}$'; then
+    ok "0-byte salt regenerated as 256-bit hex"
+else
+    bad "0-byte salt not regenerated (rc=$RC, salt='$NEW', out='$OUT')"
+fi
+OUT2=$(sh "$IDENT_INIT" "$TD2" 2>&1); RC2=$?
+[ "$RC2" = 0 ] && [ "$(head -n1 "$TD2/master.salt")" = "$NEW" ] && ok "valid salt left untouched" || bad "valid salt churned"
+printf 'not-hex-at-all\n' > "$TD2/master.salt"
+sh "$IDENT_INIT" "$TD2" >/dev/null 2>&1 && bad "malformed salt accepted" || ok "malformed non-empty salt refused"
+rm -rf "$TD" "$TD2"
+
 echo "== openssl scalar->pubkey round-trip =="
 python3 - "$MOD" <<'PY' && ok "hand-built DER matches openssl keygen" || bad "DER round-trip failed"
 import sys, subprocess

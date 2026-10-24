@@ -185,6 +185,40 @@ def main():
         kv = {k: v for k, v in kv.items()
               if k not in ("FIPS_NSEC", "FIPS_NPUB", "FIPS_NAME")}
         changed = True
+    # ------------------------------------------------------ salt-derived path
+    # THE design (derive_identity.py): ONE master secret on the stick + this
+    # machine's DMI fingerprint -> every identity. When a valid master.salt
+    # is present the mesh identity is DERIVED and any stored one that
+    # doesn't match is REPLACED (this must run AFTER the legacy self-heal/
+    # migration blocks above, or their wipe-and-regenerate would clobber
+    # the derived identity). Until 2026-10-24 this file generated a random
+    # keypair instead — a leftover from the pre-salt era that made the
+    # identity stick-scoped (same npub on every machine this stick boots)
+    # and contradicted identity-init's "consumers derive from the salt"
+    # contract. Migration: the npub changes once; nothing was ever enrolled
+    # under the old one (hub listener not deployed).
+    salt = None
+    try:
+        with open(os.path.join(mnt, "master.salt")) as f:
+            _s = f.readline().strip().strip('"')
+        if len(_s) >= 64:
+            salt = bytes.fromhex(_s)
+    except (OSError, ValueError):
+        salt = None
+    if salt is not None:
+        try:
+            import derive_identity
+            _nsec, _npub, _ = derive_identity.derive_nsec(
+                salt, derive_identity.machine_fingerprint())
+        except Exception as e:  # no DMI, openssl missing, ...
+            print(f"host-role: salt derivation failed ({e}) — "
+                  "falling back to stored/random identity", file=sys.stderr)
+            _nsec = None
+        if _nsec and kv.get("FIPS_NSEC") != _nsec:
+            kv["FIPS_NSEC"] = _nsec
+            kv["FIPS_NPUB"] = _npub
+            kv.pop("FIPS_NAME", None)  # identity changed: re-name it
+            changed = True
     if not kv.get("FIPS_NSEC", "").startswith("nsec1"):
         nsec, npub = generate_identity()
         kv["FIPS_NSEC"] = nsec

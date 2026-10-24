@@ -24,12 +24,21 @@ MOD=/usr/local/lib/kali-live-headless/derive_identity.py
 SALT_FILE="$1/master.salt"
 
 if [ -r "$SALT_FILE" ]; then
-    # existing salt: sanity-check shape, nothing to do
-    S=$(head -n1 "$SALT_FILE" | tr -d '"' )
-    printf '%s' "$S" | grep -qE '^[0-9a-fA-F]{64,}$' \
-        || { echo "identity: $SALT_FILE malformed (not >=64 hex chars) — refusing; delete it to re-key" >&2; exit 1; }
-    echo "salt-present"
-    exit 0
+    if [ ! -s "$SALT_FILE" ]; then
+        # 0 bytes can only be a broken write (found live 2026-10-24: a
+        # manually-seeded empty master.salt was accepted by every consumer's
+        # `test -r` and silently blocked all salt-derived identities). No
+        # operator intent is representable in an empty file — regenerate.
+        echo "identity: $SALT_FILE is EMPTY (0 bytes — broken write, not an operator secret); regenerating" >&2
+        rm -f "$SALT_FILE"
+    else
+        # existing salt: sanity-check shape, nothing to do
+        S=$(head -n1 "$SALT_FILE" | tr -d '"' )
+        printf '%s' "$S" | grep -qE '^[0-9a-fA-F]{64,}$' \
+            || { echo "identity: $SALT_FILE malformed (not >=64 hex chars) — refusing; delete it to re-key" >&2; exit 1; }
+        echo "salt-present"
+        exit 0
+    fi
 fi
 
 # generate: 32 bytes from the CSPRNG, hex
