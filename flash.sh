@@ -369,8 +369,13 @@ make_config_partition() {
       || klh_warn "could not generate headless-wifi.conf — fill it in on the stick (see README)"
     # vm-store.conf: seeded only when VMSTORE_ENABLED=true in ./config
     # (rc 3 = disabled = skip silently; anything else odd = warn and move on)
-    vmout=$("$REPO_DIR/scripts/stick-conf.sh" --vm-store 2>/dev/null)
-    vmrc=$?
+    # NOTE the || vmrc=$? idiom: a bare `vmout=$(...)` assignment dies under
+    # set -e BEFORE the next line can capture the rc — the case below was
+    # unreachable dead code and every flash with vm-store disabled ended
+    # SILENTLY at rc=3 right here (partition made, wifi seeded, no unmount,
+    # no summary — found 2026-10-24 on the #20 stick).
+    vmrc=0
+    vmout=$("$REPO_DIR/scripts/stick-conf.sh" --vm-store 2>/dev/null) || vmrc=$?
     case "$vmrc" in
       0) printf '%s\n' "$vmout" > "$mnt/vm-store.conf" && KLHCONFIG_STATUS="written (+vm-store.conf — store enabled at boot)" ;;
       3) : ;; # vm-store disabled in config — nothing to seed
