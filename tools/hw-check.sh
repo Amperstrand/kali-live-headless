@@ -201,6 +201,27 @@ else
   [ -n "$v" ] && record info "FIPS wire enabled (bridge staged)" || record info "FIPS wire enabled, no bridge staged (dormant until configured)"
 fi
 
+section "rescue channel (v20: the security property is DEFAULT-OFF)"
+v=$(guest 'ls -la /usr/local/bin/cloudflared 2>/dev/null | wc -l')
+if [ "$v" = "0" ]; then
+  record info "rescue: cloudflared not shipped (minimal flavour / WITH_RESCUE=false)"
+else
+  sha=$(guest 'sha256sum /usr/local/bin/cloudflared 2>/dev/null | cut -d" " -f1')
+  case "$sha" in
+    053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0) record pass "rescue: cloudflared is the pinned 2026.10.3" ;;
+    *) record fail "rescue: cloudflared sha UNRECOGNIZED" "$sha - not the pinned build; repin or investigate" ;;
+  esac
+  # the security property: shipped but GATED OFF without explicit opt-in
+  v=$(guest 'systemctl is-active kali-live-rescue.service 2>/dev/null')
+  [ "$v" = "inactive" ] && record pass "rescue: service dormant (no rescue.conf armed)"     || record fail "rescue: service ACTIVE without opt-in" "$v - the gate leaked"
+  guest 'test -e /run/kali-live-headless/rescue-enabled' 2>/dev/null \
+    && record fail "rescue: armed flag present" "rescue-enabled exists with no rescue.conf - who armed it?" \
+    || record pass "rescue: no armed flag"
+  v=$(guest 'systemctl cat kali-live-rescue.service 2>/dev/null | grep -c ConditionPathExists=/run/kali-live-headless/rescue-enabled')
+  [ "$v" = "1" ] && record pass "rescue: unit gated on the armed flag" \
+    || record fail "rescue: unit Condition missing - would start ungated"
+fi
+
 section "networking (the part a VM cannot prove)"
 v=$(guest 'nmcli -g NAME connection show | grep -c HEADLESS-WIFI || true')
 [ "${v:-0}" -ge 1 ] 2>/dev/null && record pass "NM profile loaded" || record fail "NM profile loaded"
