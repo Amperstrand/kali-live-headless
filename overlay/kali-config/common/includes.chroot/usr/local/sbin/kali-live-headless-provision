@@ -160,8 +160,15 @@ if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
     if [ -x /usr/local/sbin/kali-live-identity-init ]; then
         /usr/local/sbin/kali-live-identity-init "$OVERRIDE_MNT" >/dev/null 2>&1 || true
     fi
+    # The fips deb ships only /usr/share/fips/fips.yaml.example — nothing
+    # ever copied it to /etc/fips/fips.yaml, so the seeding below skipped
+    # itself and fips stayed disabled on every boot (found live 2026-10-24:
+    # fips.service inactive, /etc/fips/ empty except fips.nft).
+    if [ ! -f /etc/fips/fips.yaml ] && [ -f /usr/share/fips/fips.yaml.example ]; then
+        cp /usr/share/fips/fips.yaml.example /etc/fips/fips.yaml 2>/dev/null || true
+    fi
     SALT_FILE="$OVERRIDE_MNT/master.salt"
-    if [ -r "$SALT_FILE" ] && [ -f /etc/fips/fips.yaml ]; then
+    if [ -r "$SALT_FILE" ] && [ -s "$SALT_FILE" ] && [ -f /etc/fips/fips.yaml ]; then
         SALT=$(head -n1 "$SALT_FILE" | tr -d '"')
         DERIVED=$(python3 /usr/local/lib/kali-live-headless/derive_identity.py "$SALT" --machine --purpose fips 2>/dev/null || true)
         NSEC=$(printf '%s' "$DERIVED" | cut -f2)
@@ -263,7 +270,7 @@ if [ "$MODE" = derived ]; then
     if [ -n "$_odev" ] && mkdir -p /run/klh-derive && mount -o ro "$_odev" /run/klh-derive 2>/dev/null; then
         _cfgmnt=/run/klh-derive
     fi
-    if [ -n "$_cfgmnt" ] && [ -r "$_cfgmnt/master.salt" ]; then
+    if [ -n "$_cfgmnt" ] && [ -s "$_cfgmnt/master.salt" ]; then
         _salt=$(head -n1 "$_cfgmnt/master.salt" | tr -d '"')
         PW=$(python3 /usr/local/lib/kali-live-headless/derive_identity.py "$_salt" --machine --purpose console 2>/dev/null)
     fi
