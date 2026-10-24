@@ -178,6 +178,7 @@ fi
 # load config values if available (non-fatal)
 HOSTNAME_EXPECTED="kali-live" WIFI_SSID_EXPECTED="" PUBKEY_FP_EXPECTED="" SSH_KEY=""
 BOOT_DEFAULT_EXPECTED="live" LIVE_PASSWORD_MODE_EXPECTED="random" WITH_KVM_EXPECTED="true" WG_ENDPOINT_EXPECTED="" VARIANT_EXPECTED="minimal" TORAM_EXPECTED="true"
+LEAN_EXPECTED=${LEAN:-false}
 if [ -r "$REPO_DIR/config" ]; then
   rm -f "$SCRATCH/env" "$SCRATCH/pubkeypath"
   # shellcheck disable=SC1091
@@ -567,8 +568,14 @@ PKGS
       else
         record pass "variant minimal: kali-linux-default absent"
       fi
-      sudo grep -A1 "^Package: kali-linux-core$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "install ok installed" \
-        && record pass "variant minimal: kali-linux-core base present" || record fail "variant minimal: kali-linux-core base present"
+      if [ "$LEAN_EXPECTED" = true ]; then
+        sudo grep -A1 "^Package: kali-linux-core$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "install ok installed" \
+          && record fail "LEAN: kali-linux-core base absent (by design)" "found it — LEAN list not applied" \
+          || record pass "LEAN: kali-linux-core base absent (by design)"
+      else
+        sudo grep -A1 "^Package: kali-linux-core$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "install ok installed" \
+          && record pass "variant minimal: kali-linux-core base present" || record fail "variant minimal: kali-linux-core base present"
+      fi
     fi
     # toram boot entry
     if [ "$TORAM_EXPECTED" = true ]; then
