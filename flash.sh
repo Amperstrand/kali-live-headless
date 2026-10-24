@@ -306,9 +306,24 @@ make_config_partition() {
     klh_info "existing KLHCONFIG partition found ($part) — reformatting it"
     newpart=$part
   else
-    start_mb=$(( (ISO_SIZE + 1048575) / 1048576 + 1 ))   # 1 MiB-aligned, past the ISO
+    # Start past the LAST EXISTING partition, not just past the ISO: the
+    # newer isohybrid layout ships an EFI partition (sdb2) exactly at the
+    # post-ISO MiB boundary, so the old ISO-only math asked sfdisk to
+    # append ONTO it — sfdisk refuses (overlap), newpart comes back empty,
+    # and every flash of this ISO class warn-skipped the config partition
+    # (#18+ images, proven on a spare-image sim 2026-10-24).
+    last_end=0 s= z=
+    while IFS= read -r pline; do
+      s=$(printf '%s\n' "$pline" | sed -n 's/.*start= *\([0-9][0-9]*\),.*/\1/p')
+      z=$(printf '%s\n' "$pline" | sed -n 's/.*size= *\([0-9][0-9]*\),.*/\1/p')
+      [ -n "$s" ] && [ -n "$z" ] || continue
+      [ $((s + z)) -gt "$last_end" ] && last_end=$((s + z))
+    done < <(sfdisk -d "$DEVPATH" 2>/dev/null)
+    iso_end_mb=$(( (ISO_SIZE + 1048575) / 1048576 ))
+    start_mb=$(( ((last_end + 2047) / 2048) + 1 ))
+    [ "$start_mb" -lt "$iso_end_mb" ] && start_mb=$iso_end_mb
     if [ "$stick_mb" -lt $((start_mb + 64)) ]; then
-      klh_warn "stick smaller than ISO + 64M — skipping config partition"
+      klh_warn "stick smaller than image + 64M — skipping config partition"
       return 0
     fi
     # --force: this ISO's isohybrid table makes plain appends REFUSE
