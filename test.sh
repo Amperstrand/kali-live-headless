@@ -624,6 +624,10 @@ PKGS
           && record pass "variant minimal: kali-linux-core base present" || record fail "variant minimal: kali-linux-core base present"
       fi
     fi
+    # TollGate client: static binary + trigger script + open-network profile
+    sudo test -x "$SQ_MNT/usr/local/bin/tollgate-client" && record pass "tollgate-client binary shipped" || record fail "tollgate-client binary shipped"
+    sudo test -x "$SQ_MNT/usr/local/sbin/kali-live-tollgate" && record pass "tollgate trigger script shipped" || record fail "tollgate trigger script shipped"
+    sudo test -f "$SQ_MNT/etc/NetworkManager/system-connections/tollgate-open.nmconnection" && record pass "tollgate open-network NM profile" || record fail "tollgate open-network NM profile"
     # toram boot entry
     if [ "$TORAM_EXPECTED" = true ]; then
       sudo grep -rq "toram" "$ISO_MNT/isolinux/" 2>/dev/null && record pass "isolinux: toram entry present" || record fail "isolinux: toram entry present"
