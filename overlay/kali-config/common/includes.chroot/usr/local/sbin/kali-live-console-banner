@@ -49,6 +49,14 @@ NPUB=""
 if [ -r /run/kali-live-headless-npub ]; then
     NPUB=$(head -n1 /run/kali-live-headless-npub 2>/dev/null)
 fi
+# KLHCONFIG status: the ONE thing everything depends on
+_klh=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2=="KLHCONFIG"{print $1; exit}')
+if [ -n "$_klh" ]; then
+    KLH_LINE=" KLHCONFIG: present (/dev/$_klh) — identities persist"
+else
+    KLH_LINE=" ⚠ NO KLHCONFIG — WireGuard/FIPS identities NOT persisting, console password changes every boot, Wi-Fi override OFF"
+fi
+
 MESH_LINE=" mesh id (npub): ${NPUB:-not provisioned — boot from a stick with a KLHCONFIG partition}"
 
 # wireguard tunnel identity (public key only) if provisioned this boot
@@ -73,7 +81,7 @@ BANNER=$(printf '
 %s
 %s
 ==============================================================
-' "$HN" "$ADDRS" "$HN" "$FP_ED" "$FP_RSA" "$MESH_LINE" "${WG_LINE:-}")
+' "$HN" "$ADDRS" "$HN" "$FP_ED" "$FP_RSA" "$KLH_LINE" "$MESH_LINE" "${WG_LINE:-}")
 
 # Show on the console...
 printf '%s\n' "$BANNER" > /dev/console 2>/dev/null || true
