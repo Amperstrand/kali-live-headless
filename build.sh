@@ -194,7 +194,12 @@ if git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
   # upstream's grub.cfg as "mystery") UNION our git-tracked overlay
   mystery=$(cd "$KLH_COMMON" && find . -type f | sort > /tmp/klh-staged.$$
     { git -C "$REPO_DIR" ls-files "overlay/kali-config/common" | sed 's|^overlay/kali-config/common/|./|'
-      git -C "$UPSTREAM_DIR" ls-files "kali-config/common" 2>/dev/null | sed 's|^kali-config/common/|./|'; } | sort -u > /tmp/klh-git.$$
+      git -C "$UPSTREAM_DIR" ls-files "kali-config/common" 2>/dev/null | sed 's|^kali-config/common/|./|'
+      # build-time downloads (verified by sha/version at download): the
+      # pinned cloudflared binary and the fips .deb — neither is in git,
+      # both land in the persistent staged tree and survive cp -a
+      echo './includes.chroot/usr/local/bin/cloudflared'
+      ls ./packages.chroot/*.deb 2>/dev/null || true; } | sort -u > /tmp/klh-git.$$
     comm -23 /tmp/klh-staged.$$ /tmp/klh-git.$$
     rm -f /tmp/klh-staged.$$ /tmp/klh-git.$$)
   if [ -n "$mystery" ]; then
@@ -206,6 +211,15 @@ fi
 # KVM stack: package list written only for WITH_KVM builds; the unit
 # files/scripts from the overlay are removed otherwise so nothing dead
 # ships in the ISO.
+# LEAN profile enforcement (must run BEFORE the WITH_KVM gate): the two
+# big levers on image size are the kali-linux-firmware whale (~1GB of
+# vendor blobs) and the qemu/libvirt stack — both useless on a stick
+# whose job is wifi+ssh+mesh.
+if [ "$LEAN" = true ] && [ "$WITH_KVM" = true ]; then
+    klh_warn "LEAN=true forces WITH_KVM=false (no qemu/libvirt in the image)"
+    WITH_KVM=false
+fi
+
 if [ "$WITH_KVM" = true ]; then
   cat > "$KLH_COMMON/package-lists/kvm.list.chroot" <<'EOF'
 ## KVM/libvirt stack (WITH_KVM=true builds) — see README "KVM"
@@ -234,6 +248,24 @@ else
         "$KLH_COMMON/includes.chroot/etc/modprobe.d/klh-kvm-nested.conf"
   klh_info "KVM stack omitted (WITH_KVM=false)"
 fi
+
+# LEAN file staging (after the WITH_KVM gate so its removals have run)
+if [ "$LEAN" = true ]; then
+    cat > "$KLH_COMMON/package-lists/hardware-support.list.chroot" <<'LEOF'
+## LEAN: only firmware a headless wifi stick plausibly needs — the full
+## kali-linux-firmware collection is ~1GB of vendor blobs this profile
+## refuses to carry. Add your adapter's blob here if missing.
+firmware-linux-free
+firmware-iwlwifi
+firmware-realtek
+firmware-atheros
+firmware-ath9k-htc
+firmware-misc-nonfree
+LEOF
+    rm -f "$KLH_COMMON/package-lists/headless.list.chroot"
+    klh_ok "LEAN profile staged: slim firmware, no KVM, headless-lean package list"
+fi
+
 
 # Default boot entry: move syslinux's "menu default" onto the chosen
 # entry and point GRUB at its index. Upstream defaults to the first

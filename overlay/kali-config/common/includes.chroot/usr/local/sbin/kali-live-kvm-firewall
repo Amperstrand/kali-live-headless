@@ -91,6 +91,18 @@ install_forward() {
 }
 
 installed_once=0
+# Deterministic default-network bring-up (moved from kvm-enable, whose
+# Before=libvirtd ordering deadlocked the boot transaction). Bounded virsh
+# calls; retried every tick — the daemon is the self-healing component.
+net_ensure() {
+    command -v virsh >/dev/null 2>&1 || return 0
+    timeout 10 virsh -c qemu:///system net-info default 2>/dev/null | grep -q "Active:.*yes" && return 0
+    timeout 15 virsh -c qemu:///system net-autostart default >/dev/null 2>&1
+    timeout 15 virsh -c qemu:///system net-start default >/dev/null 2>&1 \
+        && logger -t kali-live-kvm "default network started by firewall daemon (virbr0 up)"
+    return 0
+}
+
 while :; do
     if ! ip link show virbr0 >/dev/null 2>&1; then
         # No bridge yet (no VMs / net not started). Nothing to shield;

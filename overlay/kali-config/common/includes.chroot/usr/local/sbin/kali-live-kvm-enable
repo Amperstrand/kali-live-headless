@@ -37,14 +37,4 @@ fi
 # that hangs (e.g. libvirtd wedged behind a boot-transaction deadlock)
 # hangs THIS unit forever, and half of multi-user.target queues behind it
 # — an unbootable stick. Bounded calls degrade to a logged warning.
-if command -v virsh >/dev/null 2>&1; then
-    timeout 60 virsh -c qemu:///system net-autostart default >/dev/null 2>&1 || true
-    if ! timeout 60 virsh -c qemu:///system net-info default 2>/dev/null | grep -q 'Active:.*yes'; then
-        if timeout 60 virsh -c qemu:///system net-start default >/dev/null 2>&1; then
-            logger -t kali-live-kvm "default network started (virbr0 up; guest firewall will engage)"
-        else
-            logger -t kali-live-kvm "WARNING: could not start libvirt default network (virbr0 later?)"
-        fi
-    fi
-fi
 exit 0
