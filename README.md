@@ -265,6 +265,18 @@ Notes:
   (tmpfs overlay) and vanish on power-off — nothing is written back to the
   USB stick or to internal disks.
 
+## Lean profile (small images, full project stack)
+
+`VARIANT=minimal` + `LEAN=true` (in `./config`) builds a small ISO with
+**no default-Kali weight** — no desktop, no tools baseline
+(`kali-linux-core`), no ~1GB every-vendor firmware blob — **while
+keeping the project's own stack**: KVM/vmstore (`WITH_KVM=true`),
+WireGuard mesh, FIPS daemon, rescue channel (any variant). Only the
+firmware a headless Wi-Fi stick plausibly needs ships
+(iwlwifi/realtek/atheros — add your adapter's blob to the override in
+`build.sh` and rebuild). For the full Kali toolset use the default
+variant.
+
 ## Host-role mesh identity (FIPS)
 
 **Optionality (v20)**: the whole mesh **wire** is gated by `FIPS_ENABLED`
