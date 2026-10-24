@@ -614,6 +614,41 @@ PKGS
       sudo test ! -e "$SQ_MNT/usr/local/sbin/kali-live-kvm-firewall" && sudo test ! -e "$SQ_MNT/usr/local/sbin/kali-live-vmstore-mount" && record pass "kvm: correctly omitted" || record fail "kvm: files shipped despite WITH_KVM=false"
     fi
 
+    # DANGLING-REQUIRES GUARD — no unit in the image may hard-Require a
+    # unit that does not exist in it. #18 shipped a libvirtd drop-in with
+    # Requires=virt-secret-init-encryption.service (absent): libvirtd
+    # could never socket-activate, every virsh hung forever, and boot
+    # wedged behind kvm-enable's virsh call — found on hardware at
+    # 19:00, should have been found here.
+    dangle=$(sudo sh -c 'SQ="$1"
+      find "$SQ/etc/systemd/system" "$SQ/usr/lib/systemd/system" "$SQ/lib/systemd/system" \
+        -type f \( -name "*.service" -o -name "*.socket" -o -name "*.timer" \
+                     -o -path "*.service.d/*.conf" -o -path "*.socket.d/*.conf" \
+                     -o -path "*.timer.d/*.conf" \) -exec grep -H "^Requires=" {} + 2>/dev/null \
+      | while IFS=":" read -r unit rest; do
+          # attribute drop-in requirements to their parent unit
+          unit=$(printf "%s" "$unit" | sed -E "s/\.d\/[^/]+\.conf$//")
+          printf "%s\n" "$rest" | sed "s/^Requires=//" | tr " " "\n" \
+          | while IFS= read -r dep; do
+              case "$dep" in
+                "") continue ;;
+                *@*) continue ;;  # template instances cannot be resolved statically
+                # stock Kali nfs-utils packaging quirk, missing for years
+                rpc_pipefs.target) continue ;;
+                *.service|*.socket|*.timer|*.path|*.target)
+                  for d in etc/systemd/system usr/lib/systemd/system lib/systemd/system; do
+                    [ -e "$SQ/$d/$dep" ] && continue 2
+                  done
+                  echo "$(basename "$unit") requires missing $dep" ;;
+              esac
+            done
+        done' sh "$SQ_MNT")
+    if [ -z "$dangle" ]; then
+      record pass "no dangling Requires= in any image unit"
+    else
+      record fail "no dangling Requires= in any image unit" "$(printf '%s' "$dangle" | head -3 | tr '\n' ';')"
+    fi
+
     umount_all; trap - EXIT
   else
     record skip "iso-content" "could not loop-mount ISO (needs sudo + loop support)"
@@ -846,7 +881,7 @@ else
     if [ -n "$QPID" ] && wait_ssh $CD_BOOT_TIMEOUT; then
       record pass "bios: booted to SSH (accel=$ACCEL)"
       common_guest_checks bios
-      guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu bios
+      timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu bios
       for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
       kill -9 "$QPID" 2>/dev/null || true
       WITNESS_MD5_AFTER=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
@@ -914,7 +949,7 @@ else
                 record fail "override: wg0 up" "no wg0; wg0.conf Address: ${w:-none} — staged WG_TUNNET stale?"
               fi
             fi
-            guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu override
+            timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu override
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
             kill -9 "$QPID" 2>/dev/null || true
           else
@@ -950,7 +985,7 @@ else
       if [ -n "$QPID" ] && wait_ssh $CD_BOOT_TIMEOUT; then
         record pass "uefi: booted to SSH"
         common_guest_checks uefi
-        guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu uefi
+        timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu uefi
         for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
         kill -9 "$QPID" 2>/dev/null || true
         WITNESS_MD5_AFTER=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
@@ -981,7 +1016,7 @@ else
             record pass "forensic: booted to SSH"
             common_guest_checks forensic
             [ -z "$(guest 'swapon --show --noheadings 2>/dev/null')" ] && record pass "forensic: no swap (systemd.swap=no)" || record fail "forensic: swap active"
-            guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu forensic
+            timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu forensic
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
             kill -9 "$QPID" 2>/dev/null || true
             WITNESS_MD5_AFTER=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
@@ -1123,7 +1158,7 @@ DOCKERFILE
             v=$(guest '/usr/local/sbin/kali-live-vm-rm --stale 2>/dev/null | tail -1')
             case "$v" in removed*) record pass "vmstore: --stale sweep runs clean ($v)" ;; *) record fail "vmstore: --stale sweep ($v)" ;; esac
 
-            timeout 30 ssh "${SSH_OPTS[@]}" 'sudo -n poweroff' >/dev/null 2>&1 || kill_qemu vmstore-live
+            timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu vmstore-live
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
             kill -9 "$QPID" 2>/dev/null || true
 
@@ -1153,7 +1188,7 @@ DOCKERFILE
             [ "$v" = "0" ] && record pass "vmstore: forensic gate kept the NTFS volume unmounted" || record fail "vmstore: forensic gate FAILED — NTFS mounted under noautomount"
             v=$(guest 'virsh -c qemu:///system pool-list --all 2>/dev/null | grep -c klh-vmstore || true')
             [ "$v" = "0" ] && record pass "vmstore: no pool defined under forensic boot" || record fail "vmstore: pool exists under forensic boot"
-            timeout 30 ssh "${SSH_OPTS[@]}" 'sudo -n poweroff' >/dev/null 2>&1 || kill_qemu vmstore-forensic
+            timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu vmstore-forensic
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
             kill -9 "$QPID" 2>/dev/null || true
           else
