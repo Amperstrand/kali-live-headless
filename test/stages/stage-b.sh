@@ -1,4 +1,3 @@
-. "$REPO_DIR/test/stages/stage-b.sh"
 # (end Stage B)
 
 find_iso() {

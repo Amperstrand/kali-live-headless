@@ -1,5 +1,17 @@
-. "$REPO_DIR/test/stages/stage-a.sh"
 # (end Stage A)
+
+# Stage modules are SOURCED by test.sh — a stage sourcing a stage (or
+# itself) is an infinite recursion that exhausts bash's stack and dies as
+# SIGSEGV rc=139 (found 2026-10-24: the test.sh split left a self-source
+# line at the top of every stage file, which also explains the v24 suite's
+# rc=139 "silent" death — and every `test.sh | tail` invocation swallowed
+# the crash because a pipeline's rc is tail's, so the split-era "static
+# green" runs were all vacuous).
+if grep -nE '^\s*\.\s.*test/stages/.*stage' "$REPO_DIR"/test/stages/*.sh >/dev/null 2>&1; then
+  record fail "no stage sources a stage (self-recursion guard)" "$(grep -hE '^\s*\.\s.*test/stages/.*stage' "$REPO_DIR"/test/stages/*.sh | head -1)"
+else
+  record pass "no stage sources a stage (self-recursion guard)"
+fi
 
 for f in build.sh configure.sh flash.sh test.sh; do
   if bash -n "$REPO_DIR/$f" 2>"$SCRATCH/syntax.err"; then record pass "bash -n $f"; else record fail "bash -n $f" "$(head -1 "$SCRATCH/syntax.err")"; fi
