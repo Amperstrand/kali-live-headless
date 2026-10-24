@@ -1,4 +1,3 @@
-. "$REPO_DIR/test/stages/stage-cde.sh"
 # (end Stage C/D/E)
 
 QEMU_BIN=qemu-system-x86_64
