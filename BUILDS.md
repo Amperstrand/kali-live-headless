@@ -71,6 +71,15 @@ Explicit `--iso` is still the gold standard for gating a specific build.
   row says so. Every archive dir carries an `INDEX.md` + `SHA256SUMS`.
 - A build needs ≥30G free under the repo; ISOs are ~5.4G each.
 
+## ⚠️ DO NOT FLASH #19 (advisory 2026-10-24, device-review lane)
+
+Whatever its suite verdict: #19 ships the #18 wedge wiring
+(`libvirtd.service.d/10-secret.conf` + `virt-secret-init-encryption.service`,
+mtime fingerprint 2026-10-01 — the staged-tree leftover's last ride; QEMU
+cannot form the deadlock, so a green suite proves nothing here). The
+flashable image is the next build from merged main (provenance guard
+active). Evidence: docs/device-review-2026-10.md + workspace-state.
+
 ## Ledger
 
 | Build | Started (UTC) | ISO sha512 (first 12) | Repo commit | KVM | Boot default | Suite verdict | Archive |
