@@ -233,6 +233,19 @@ if [ "$MODE" = random ]; then
     fi
 fi
 
+# M2: optionally bind sshd to wg0 only (close the LAN-facing ssh hole).
+# Requires the WireGuard tunnel to be up — the wg-ensure timer brings it
+# within 30s; sshd restarts when it lands.
+WG_ONLY=$(sed -n 's/^SSHD_WG_ONLY=//p' /etc/default/kali-live-headless 2>/dev/null | head -n1 | tr -d '"')
+if [ "$WG_ONLY" = true ] && [ -d /sys/class/net/wg0 ]; then
+    WG_ADDR=$(ip -4 addr show wg0 2>/dev/null | grep -oE 'inet [0-9.]+' | cut -d' ' -f2)
+    if [ -n "$WG_ADDR" ]; then
+        printf 'ListenAddress %s\n' "$WG_ADDR" > /etc/ssh/sshd_config.d/0010-wg-only.conf
+        systemctl restart ssh 2>/dev/null || true
+        log "sshd bound to wg0 only ($WG_ADDR) — LAN hole closed"
+    fi
+fi
+
 # KVM/libvirt access for the live user (groups only exist on WITH_KVM builds)
 for grp in kvm libvirt libvirt-qemu; do
     if getent group "$grp" > /dev/null 2>&1; then

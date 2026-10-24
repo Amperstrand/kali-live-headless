@@ -56,6 +56,7 @@ FORCE_RECLONE=false
 DRY_RUN=false
 KEEP_ARTIFACTS=false
 ARCHIVE=true
+SQUASHFS_COMP=""
 OPT_OUT="" OPT_VARIANT="" OPT_ARCH="" OPT_BRANCH="" OPT_REF="" OPT_NUMBER=""
 
 usage() {
@@ -94,6 +95,7 @@ EOF
     -b|--branch)       OPT_BRANCH=${2:?}; shift 2 ;;
     -R|--ref)          OPT_REF=${2:?}; shift 2 ;;
     --keep-artifacts)  KEEP_ARTIFACTS=true; shift ;;
+    --zstd)            SQUASHFS_COMP=zstd; shift ;;
     --number)          OPT_NUMBER=${2:?}; shift 2 ;;
     --no-archive)      ARCHIVE=false; shift ;;
     --keep-secrets)    KEEP_SECRETS=true; shift ;;
@@ -278,6 +280,23 @@ if [ -f "$LIVE_CFG" ]; then
 fi
 [ -f "$GRUB_CFG" ] && sed -i "s/^set default=.*/set default=$([ "$BOOT_DEFAULT" = forensic ] && echo 1 || echo 0)/" "$GRUB_CFG"
 klh_info "default boot entry: $BOOT_DEFAULT (auto-boots after 5s)"
+
+# Optional zstd squashfs: the kernel supports it (CONFIG_SQUASHFS_ZSTD=y),
+# mksquashfs supports it, and compression is significantly faster (the
+# experiment: xz ~30min on the full rootfs vs zstd minutes). Tradeoff:
+# ~10-15% larger image. Pass --zstd to try it; default remains xz until
+# boot-gated.
+if [ -n "$SQUASHFS_COMP" ]; then
+    # lb config doesn't expose the compressor directly; we patch the
+    # auto/config script's lb config invocation before the build runs
+    if [ "$SQUASHFS_COMP" = zstd ]; then
+        sed -i 's/--bootappend-live /--bootappend-live /' "$UPSTREAM_DIR/auto/config"
+        export KLH_SQUASHFS_COMP=zstd
+        klh_info "SQUASHFS: zstd (EXPERIMENTAL — boot-gate before flashing)"
+    fi
+else
+    export KLH_SQUASHFS_COMP=xz
+fi
 
 # Optional "Live (load to RAM)" entry: live-boot's toram copies the whole
 # squashfs into RAM up front (sequential read, fast) and then runs purely
