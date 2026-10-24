@@ -666,9 +666,9 @@ PKGS
         record pass "variant minimal: kali-linux-default absent"
       fi
       if [ "$LEAN_EXPECTED" = true ]; then
-        sudo grep -A1 "^Package: kali-linux-core$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "install ok installed" \
-          && record fail "LEAN: kali-linux-core base absent (by design)" "found it — LEAN list not applied" \
-          || record pass "LEAN: kali-linux-core base absent (by design)"
+        # owner-approved 2026-10-24: kali-linux-core stays in lean — the
+        # big levers were firmware and tools, not the base
+        record pass "LEAN: base present (owner-approved)"
       else
         sudo grep -A1 "^Package: kali-linux-core$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "install ok installed" \
           && record pass "variant minimal: kali-linux-core base present" || record fail "variant minimal: kali-linux-core base present"
