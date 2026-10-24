@@ -86,6 +86,56 @@ if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
     rmdir "$OVERRIDE_MNT" 2>/dev/null || true
 fi
 
+# ------------------------------------------------- KLHCONFIG auto-creation
+# Self-healing: if the stick was flashed with plain dd (no flash.sh), the
+# ISO's partition table has no KLHCONFIG partition, and EVERYTHING that
+# persists lives on it: master.salt (deterministic identities!), Wi-Fi
+# override, BitLocker consent, vm-store.conf, rescue opt-in. Instead of
+# silently degrading, CREATE the partition on the boot device.
+#
+# Safety: we only touch the device that backs /run/live/medium (never any
+# other disk), only if there's no KLHCONFIG partition anywhere, and only
+# if there's free space past the ISO.
+O_DEV=""
+_cfgpart=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}')
+if [ -z "$_cfgpart" ]; then
+    _mediumpath=$(findmnt -n -o SOURCE /run/live/medium 2>/dev/null || true)
+    if [ -n "$_mediumpath" ]; then
+        _bootdev=$(lsblk -no PKNAME "$(basename "$_mediumpath" | sed 's|/dev/||')" 2>/dev/null | head -1)
+        if [ -n "$_bootdev" ] && [ -b "/dev/$_bootdev" ]; then
+            # verify it's a USB/removable device
+            if lsblk -dno TRAN "/dev/$_bootdev" 2>/dev/null | grep -q "usb"; then
+                _isosize=$(blockdev --getsize64 "/dev/$_bootdev" 2>/dev/null || echo 0)
+                _devsize=$(blockdev --getsize64 "/dev/$_bootdev" 2>/dev/null || echo 0)
+                _isoend=$(( (_isosize + 1048575) / 1048576 + 1 ))  # MiB-aligned, past ISO
+                _devmb=$(( _devsize / 1048576 ))
+                if [ "$_devmb" -gt $(( _isoend + 64 )) ]; then
+                    _start=$(( _isoend * 2048 ))
+                    log "no KLHCONFIG found — creating one on /dev/$_bootdev (self-healing)"
+                    if printf 'start=%s, size=131072, type=0c\n' "$_start" | sfdisk --force --append "/dev/$_bootdev" >/dev/null 2>&1; then
+                        partprobe "/dev/$_bootdev" 2>/dev/null || blockdev --rereadpt "/dev/$_bootdev" 2>/dev/null || true
+                        sleep 3
+                        _newpart=$(lsblk -rno NAME,LABEL "/dev/$_bootdev" 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}')
+                        if [ -n "$_newpart" ] && [ -b "$_newpart" ]; then
+                            mkfs.vfat -n KLHCONFIG "$_newpart" >/dev/null 2>&1
+                            O_DEV=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}')
+                            log "KLHCONFIG partition created: $O_DEV (identities will persist from now on)"
+                        else
+                            log "WARNING: KLHCONFIG partition appended but device node not found — identities will NOT persist this boot"
+                        fi
+                    else
+                        log "WARNING: could not create KLHCONFIG partition on /dev/$_bootdev — identities will NOT persist"
+                    fi
+                else
+                    log "WARNING: no KLHCONFIG partition and no free space on /dev/$_bootdev — identities will NOT persist"
+                fi
+            fi
+        fi
+    fi
+else
+    O_DEV="$_cfgpart"
+fi
+
 # ---------------------------------------------------- host-role mesh identity
 # Persistent FIPS mesh identity (nsec/npub + name): generated on FIRST boot,
 # persisted to KLHCONFIG, reused on every later boot. The ISO ships NO
@@ -99,7 +149,7 @@ if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
         echo "$NPUB" > /run/kali-live-headless-npub 2>/dev/null || true
         log "host-role mesh identity ready: $NPUB"
     else
-        log "host-role identity not provisioned (non-fatal — no generator or unwritable medium)"
+        log "WARNING: no KLHCONFIG config mount — mesh identity NOT provisioned, WireGuard identity NOT provisioned, console password will change every boot, Wi-Fi override unavailable, BitLocker unlock unavailable. Re-flash with ./flash.sh or let the auto-creation above handle it on next boot."
     fi
 
     # --------------------------------------------------- FIPS mesh identity
