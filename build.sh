@@ -387,6 +387,9 @@ WG_PORT="$WG_PORT"
 # "try" lets tooling (vmstore) mount a store on a locked volume when a key
 # is available (clear key or KLHCONFIG bitlocker.conf). Never a secret.
 VMSTORE_BITLOCKER="$VMSTORE_BITLOCKER"
+# TollGate auto-payment mint fallback: handed to tollgate-client when the
+# TollGate's advertisement carries no mints (public testnet mint; no secret).
+TG_MINT_URL="$TG_MINT_URL"
 # FIPS mesh: FIPS_ENABLED gates the whole wire (identity stays); the
 # peer values are ./config-only and empty = dormant.
 FIPS_ENABLED="$FIPS_ENABLED"

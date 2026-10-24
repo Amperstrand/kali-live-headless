@@ -172,6 +172,13 @@ klh_load_config() {
   fi
   printf '%s' "$VMSTORE_BITLOCKER" | grep -Eq '^(off|try)$' \
     || klh_die "invalid VMSTORE_BITLOCKER '$VMSTORE_BITLOCKER' (off|try)"
+  # TollGate mint fallback (non-secret; testnet mint by default): used when
+  # a TollGate's advertisement carries no mints (found live 2026-10-24: the
+  # house gateway's TollGate advertises no-reachable-mints while degraded —
+  # the client refuses without a mint).
+  : "${TG_MINT_URL:=https://testnut.cashu.space}"
+  printf '%s' "$TG_MINT_URL" | grep -Eq '^https?://[A-Za-z0-9._:-]+(/[A-Za-z0-9._/-]*)?$' \
+    || klh_die "invalid TG_MINT_URL '$TG_MINT_URL' (want http(s)://host[:port][/path])"
   # VM store on the stick's KLHCONFIG partition (runtime feature; nothing
   # is baked into the ISO by these — stick-conf.sh renders vm-store.conf
   # at flash time and flash.sh writes it next to headless-wifi.conf):
