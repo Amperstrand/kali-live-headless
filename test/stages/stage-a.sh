@@ -47,13 +47,13 @@ else
 fi
 if [ -n "$SC" ]; then
   if [ "$SC" = "shellcheck" ]; then
-    shellcheck -x "$REPO_DIR"/build.sh "$REPO_DIR"/configure.sh "$REPO_DIR"/flash.sh "$REPO_DIR"/test.sh "$REPO_DIR"/lib/common.sh 2>"$SCRATCH/sc.out" \
+    shellcheck -x "$REPO_DIR"/build.sh "$REPO_DIR"/configure.sh "$REPO_DIR"/flash.sh "$REPO_DIR"/test.sh "$REPO_DIR"/lib/common.sh "$REPO_DIR"/tools/*.sh 2>"$SCRATCH/sc.out" \
       && shellcheck -s sh "$REPO_DIR"/overlay/kali-config/common/hooks/live/*.hook.chroot \
                     "$REPO_DIR"/overlay/kali-config/common/includes.chroot/usr/local/sbin/* >>"$SCRATCH/sc.out" 2>&1 \
       && record pass "shellcheck" || { [ -s "$SCRATCH/sc.out" ] && record fail "shellcheck" "$(grep -c '^' "$SCRATCH/sc.out") findings" || record pass "shellcheck"; }
   else
     $SC run --rm -v "$REPO_DIR:/src:ro" koalaman/shellcheck:stable \
-      /src/build.sh /src/configure.sh /src/flash.sh /src/test.sh /src/lib/common.sh >"$SCRATCH/sc.out" 2>&1 \
+      /src/build.sh /src/configure.sh /src/flash.sh /src/test.sh /src/lib/common.sh /src/tools/*.sh >"$SCRATCH/sc.out" 2>&1 \
       && $SC run --rm -v "$REPO_DIR:/src:ro" -i koalaman/shellcheck:stable -s sh \
           /src/overlay/kali-config/common/hooks/live/zz-headless-configure.hook.chroot \
           /src/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-headless-provision \
@@ -372,6 +372,7 @@ fi
 TGW="$REPO_DIR/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-tollgate-watchdog"
 if [ -x "$TGW" ]; then
   record pass "tollgate watchdog shipped+executable"
+
   tgw_env() { # dir con probe clock
     rm -rf "$1"; mkdir -p "$1"
     printf '%s\n' "$2" > "$1/nm"
@@ -409,4 +410,49 @@ if [ -x "$TGW" ]; then
     && record pass "tollgate watchdog: opt-in reboot escalation (test-safe via fake clock)" || record fail "tollgate watchdog: reboot escalation"
 else
   record fail "tollgate watchdog shipped+executable"
+fi
+
+# ---- tollgate trigger decision matrix (fixture-driven, no network) ----
+# The trigger is what pays for internet on open networks; these assert its
+# DECISIONS with stubs (KLH_TG_CLIENT/ROUTE_FILE/PROBE_FILE indirection —
+# the watchdog fixture pattern): no TollGate = clean skip; TollGate + staged
+# TG_MINT_URL = client invoked WITH --mint (the degraded-advert fallback);
+# TollGate + no staged mint = client invoked bare.
+TGT="$REPO_DIR/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-tollgate"
+if [ -x "$TGT" ]; then
+  record pass "tollgate trigger shipped+executable"
+  T="$SCRATCH/tgt"
+  mkdir -p "$T"
+  cat > "$T/client-stub" <<'STUB'
+#!/bin/sh
+echo "$@" >> "$(dirname "$0")/client.calls"
+exit 0
+STUB
+  chmod +x "$T/client-stub"
+
+  printf '10.0.0.1\n' > "$T/route"
+  printf 'tollgate\n' > "$T/probe-yes"
+  printf 'empty\n'    > "$T/probe-no"
+  : > "$T/defaults"
+
+  KLH_TG_CLIENT="$T/client-stub" KLH_TG_ROUTE_FILE="$T/route" KLH_TG_PROBE_FILE="$T/probe-no" KLH_TG_DEFAULTS="$T/defaults" "$TGT" >/dev/null 2>&1
+  [ ! -e "$T/client.calls" ] \
+    && record pass "tollgate trigger: no TollGate on the gateway = clean skip (client not invoked)" \
+    || record fail "tollgate trigger: no TollGate = clean skip"
+
+  rm -f "$T/client.calls"
+  printf 'TG_MINT_URL=https://testnut.cashu.space\n' > "$T/defaults"
+  KLH_TG_CLIENT="$T/client-stub" KLH_TG_ROUTE_FILE="$T/route" KLH_TG_PROBE_FILE="$T/probe-yes" KLH_TG_DEFAULTS="$T/defaults" "$TGT" >/dev/null 2>&1
+  grep -q -- '--gateway 10.0.0.1 --mint https://testnut.cashu.space' "$T/client.calls" 2>/dev/null \
+    && record pass "tollgate trigger: staged TG_MINT_URL passed as --mint (degraded-advert fallback)" \
+    || record fail "tollgate trigger: staged TG_MINT_URL passed as --mint"
+
+  rm -f "$T/client.calls"
+  : > "$T/defaults"
+  KLH_TG_CLIENT="$T/client-stub" KLH_TG_ROUTE_FILE="$T/route" KLH_TG_PROBE_FILE="$T/probe-yes" KLH_TG_DEFAULTS="$T/defaults" "$TGT" >/dev/null 2>&1
+  grep -q -- '--gateway 10.0.0.1$' "$T/client.calls" 2>/dev/null \
+    && record pass "tollgate trigger: no staged mint = client invoked bare" \
+    || record fail "tollgate trigger: no staged mint = bare invocation"
+else
+  record fail "tollgate trigger shipped+executable"
 fi
