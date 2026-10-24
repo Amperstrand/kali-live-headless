@@ -96,7 +96,8 @@ run() { # name command... (reserved)
 }
 
 # ============================================================= Stage A
-section "A. static checks"
+. "$REPO_DIR/test/stages/stage-a.sh"
+# (end Stage A)
 
 for f in build.sh configure.sh flash.sh test.sh; do
   if bash -n "$REPO_DIR/$f" 2>"$SCRATCH/syntax.err"; then record pass "bash -n $f"; else record fail "bash -n $f" "$(head -1 "$SCRATCH/syntax.err")"; fi
@@ -511,7 +512,8 @@ fi
 [ "$ONLY_STATIC" = true ] && { section "summary"; printf 'pass=%d fail=%d skip=%d\n' "$PASS" "$FAIL" "$SKIP"; [ "$FAIL" -eq 0 ]; exit $?; }
 
 # ============================================================= Stage B
-section "B. ISO content"
+. "$REPO_DIR/test/stages/stage-b.sh"
+# (end Stage B)
 
 find_iso() {
   if [ -n "$ISO_ARG" ]; then echo "$ISO_ARG"; return; fi
@@ -772,7 +774,8 @@ PKGS
 fi
 
 # ============================================================= Stage C/D/E
-section "C-E. QEMU boot tests"
+. "$REPO_DIR/test/stages/stage-cde.sh"
+# (end Stage C/D/E)
 
 QEMU_BIN=qemu-system-x86_64
 if ! command -v "$QEMU_BIN" >/dev/null 2>&1; then
