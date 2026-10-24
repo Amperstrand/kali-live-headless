@@ -1,3 +1,6 @@
+. "$REPO_DIR/test/stages/stage-a.sh"
+# (end Stage A)
+
 for f in build.sh configure.sh flash.sh test.sh; do
   if bash -n "$REPO_DIR/$f" 2>"$SCRATCH/syntax.err"; then record pass "bash -n $f"; else record fail "bash -n $f" "$(head -1 "$SCRATCH/syntax.err")"; fi
 done
@@ -407,5 +410,3 @@ if [ -x "$TGW" ]; then
 else
   record fail "tollgate watchdog shipped+executable"
 fi
-
-[ "$ONLY_STATIC" = true ] && { section "summary"; printf 'pass=%d fail=%d skip=%d\n' "$PASS" "$FAIL" "$SKIP"; [ "$FAIL" -eq 0 ]; exit $?; }

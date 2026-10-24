@@ -1,3 +1,6 @@
+. "$REPO_DIR/test/stages/stage-b.sh"
+# (end Stage B)
+
 find_iso() {
   if [ -n "$ISO_ARG" ]; then echo "$ISO_ARG"; return; fi
   # Prefer the newest archived build: archives are the versioned artifacts and
