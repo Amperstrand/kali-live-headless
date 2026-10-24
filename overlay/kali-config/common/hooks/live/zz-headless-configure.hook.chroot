@@ -54,6 +54,16 @@ fi
 # console banner writes here (getty shows /etc/issue.d/* on the prompt)
 install -d -m 0755 /etc/issue.d 2>/dev/null || true
 
+# Audit rules: watch for tampering with identity/credential files.
+# These fire on ANY write to the files that hold the stick's identity
+# and access credentials — after first-boot provisioning, nothing should
+# touch them. Check with: ausearch -k klh-identity
+if command -v auditctl >/dev/null 2>&1; then
+    auditctl -w /etc/fips/fips.key -p wa -k klh-identity 2>/dev/null || true
+    auditctl -w /etc/wireguard/wg0.conf -p wa -k klh-identity 2>/dev/null || true
+    auditctl -w /etc/ssh/sshd_config.d/ -p wa -k klh-sshd 2>/dev/null || true
+fi
+
 # FIPS mesh DNS: the fips deb ships fips-dns (a local resolver for .fips
 # hostnames), but the live system's nsswitch doesn't know about it. Wire it
 # so `ping peer.fips` works alongside npub/IPv6 addressing.
