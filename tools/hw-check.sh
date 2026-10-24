@@ -144,8 +144,15 @@ if [ -n "$wgp" ]; then
 elif [ "$NO_WG" = true ]; then
   record info "wireguard off (--no-wg)"
 elif guest 'grep -q "^WG_ENDPOINT=" <(cat /etc/default/kali-live-headless) 2>/dev/null || grep -q "^WG_ENDPOINT=" /etc/default/kali-live-headless 2>/dev/null'; then
-  record fail "wireguard provisioned" "WG_ENDPOINT staged but no /run/kali-live-headless-wg-pub — check the provision journal"
-  capture provision-journal guest_sudo 'journalctl -t kali-live-headless --no-pager -n 60'
+  if [ -z "${klh_part:-}" ]; then
+    # keygen is skipped BY DESIGN without a config partition (a key that
+    # cannot persist would re-enroll as a new peer every boot) — same
+    # awareness the npub section has; not a provisioner failure
+    record info "wireguard keygen skipped" "WG_ENDPOINT staged but no KLHCONFIG partition to persist the key (dd-flashed or flashed pre-a8a56ed) — reflash with flash.sh for the WG access channel"
+  else
+    record fail "wireguard provisioned" "WG_ENDPOINT staged but no /run/kali-live-headless-wg-pub — check the provision journal"
+    capture provision-journal guest_sudo 'journalctl -t kali-live-headless --no-pager -n 60'
+  fi
 else
   record info "wireguard off (not configured at build time — see configure.sh --wg-endpoint)"
 fi
@@ -178,7 +185,14 @@ else
   if [ "$NO_MESH" = true ]; then
     record info "mesh identity not provisioned (--no-mesh: dd-flashed stick, no KLHCONFIG)"
   else
-    record fail "mesh npub provisioned this boot" "no /run/kali-live-headless-npub — ${klh_part:+generator failed (see provision journal) or }no KLHCONFIG partition (dd-flashed stick? reflash with ./flash.sh, or pass --no-mesh)"
+    if [ -z "${klh_part:-}" ]; then
+      # no config partition = identity disabled by design on this flash
+      # method — same awareness as the WG/fips sections; the --no-mesh flag
+      # remains for sticks that deliberately never had one
+      record info "mesh npub provisioned this boot" "no KLHCONFIG partition — identity disabled by design (flashed pre-a8a56ed or dd); reflash with flash.sh to enable"
+    else
+      record fail "mesh npub provisioned this boot" "no /run/kali-live-headless-npub — generator failed (see provision journal)?"
+    fi
     capture provision-journal guest_sudo 'journalctl -t kali-live-headless --no-pager -n 60'
   fi
 fi
@@ -479,7 +493,10 @@ if [ "$TEST_VMFORWARD" = true ]; then
         code3=$(curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 8 "http://$LAN_IP:2222/" || echo 000)
         [ "$code3" = "200" ] && record pass "vm-forward: flow survives a firewall-daemon reassert cycle" || record fail "vm-forward: flow died after a daemon tick (HTTP $code3 — the reply-path race)"
         guest_sudo "KLH_VM_FORWARD_IFACES=$EXT_IF /usr/local/sbin/kali-live-vm-forward remove hwtest" >/dev/null 2>&1 || true
-        code2=$(curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 5 "http://$LAN_IP:2222/" || echo 000)
+        # NB: curl -w %{http_code} ALWAYS prints (000 on connect-failure);
+        # `|| echo 000` would append a second one ("000000") and break the
+        # comparison — use || true, the code is already in the output.
+        code2=$(curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 5 "http://$LAN_IP:2222/" || true)
         [ "$code2" = "000" ] && record pass "vm-forward: port closed again after remove" || record fail "vm-forward: port still open after remove (HTTP $code2)"
       else
         record fail "vm-forward" "kali-live-vm-forward add failed (shipped in this image?)"
@@ -513,7 +530,13 @@ if [ "$fipsd" = active ]; then
     record fail "fips identity present" "no /etc/fips/fips.pub"
   fi
 elif guest 'command -v fipsctl >/dev/null 2>&1'; then
-  record fail "fips daemon active" "$fipsd"
+  if [ -z "${klh_part:-}" ]; then
+    # no config partition = no persistent identity = the mesh it serves is
+    # disabled by design on this flash method (mirrors the WG skip above)
+    record info "fips daemon inactive" "no KLHCONFIG partition — mesh identity disabled by design; reflash with flash.sh to enable"
+  else
+    record fail "fips daemon active" "$fipsd"
+  fi
 else
   record info "fips not shipped in this image (v19+ feature)"
 fi
