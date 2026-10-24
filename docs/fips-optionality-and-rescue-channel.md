@@ -1,6 +1,10 @@
 # FIPS optionality + rescue channel — design for v20
 
-Status: proposal (2026-10-23). Owner stance (confirmed): phoning home to
+Status: **IMPLEMENTED on main** (2026-10-24; Part 1 @ 263ea18, rescue
+2a/2b/2c @ f6a5818/bbf458e/1aa01af, guard fixes 2ced169; first image =
+build #20, VARIANT=default). Rescue asserts live in hw-check (the
+default-off security property); the enabled-path drill is
+docs/rescue-channel.md. Owner stance (confirmed): phoning home to
 own infra (the WG hub / FIPS exit node — address lives in `./config`
 only) is approved; the mesh must be **optional and configurable**, and a
 **trycloudflare quick tunnel becomes an official, opt-in rescue channel**.
