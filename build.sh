@@ -189,8 +189,12 @@ cp -a "$OVERLAY_DIR/." "$KLH_COMMON/"
 # boot on hardware (libvirtd could never socket-activate). Run BEFORE
 # any generated files land in the staged tree.
 if git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  # allowed = upstream-native (the pinned clone ships its own
+  # kali-config files we do not overlay — first live run flagged
+  # upstream's grub.cfg as "mystery") UNION our git-tracked overlay
   mystery=$(cd "$KLH_COMMON" && find . -type f | sort > /tmp/klh-staged.$$
-    git -C "$REPO_DIR" ls-files "overlay/kali-config/common" | sed 's|^overlay/kali-config/common/|./|' | sort > /tmp/klh-git.$$
+    { git -C "$REPO_DIR" ls-files "overlay/kali-config/common" | sed 's|^overlay/kali-config/common/|./|'
+      git -C "$UPSTREAM_DIR" ls-files "kali-config/common" 2>/dev/null | sed 's|^kali-config/common/|./|'; } | sort -u > /tmp/klh-git.$$
     comm -23 /tmp/klh-staged.$$ /tmp/klh-git.$$
     rm -f /tmp/klh-staged.$$ /tmp/klh-git.$$)
   if [ -n "$mystery" ]; then
