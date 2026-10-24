@@ -74,9 +74,14 @@ record() {
 section() { printf '\n=== %s ===\n' "$*"; }
 
 SSH_OPTS=(-F none -i "$SSH_KEY" -o UserKnownHostsFile="$EVID/known_hosts" \
-  -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes kali@"$HOST")
-guest()     { ssh "${SSH_OPTS[@]}" "$@" 2>/dev/null; }
-guest_sudo(){ ssh "${SSH_OPTS[@]}" "sudo -n $*" 2>/dev/null; }
+  -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes \
+  -o ServerAliveInterval=15 -o ServerAliveCountMax=3 kali@"$HOST")
+# Every guest call is time-bounded: an unresponsive guest (the wedged-libvirtd
+# class that hung the QEMU suite three times on 2026-10-23/24 — ConnectTimeout
+# only bounds connection, not a stalled remote command) degrades to an empty
+# result + the check's own fail path instead of hanging the whole battery.
+guest()     { timeout 90 ssh "${SSH_OPTS[@]}" "$@" 2>/dev/null; }
+guest_sudo(){ timeout 90 ssh "${SSH_OPTS[@]}" "sudo -n $*" 2>/dev/null; }
 capture()   { local n=$1; shift; { echo "\$ $*"; "$@" ; } >"$EVID/$n.txt" 2>&1 || true; }
 
 section "reach: $HOST (mode=$MODE, timeout=${TIMEOUT}s)"
