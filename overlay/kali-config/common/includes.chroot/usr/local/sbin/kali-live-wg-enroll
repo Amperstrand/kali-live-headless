@@ -79,6 +79,13 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
+    # FIPS optionality (v20): FIPS_ENABLED=false = the wire is dormant —
+    # identity on the config partition is kept, enrollment is skipped so
+    # nothing phones anywhere until the value is flipped back.
+    if (cfg_get("FIPS_ENABLED") or "true").strip().lower() == "false":
+        print("fips disabled: enrollment skipped", file=sys.stderr)
+        return 0
+
     mnt = args.config_mount_dir
     wg_pub = kv_get(os.path.join(mnt, "wireguard.conf"), "PUBKEY")
     nsec = kv_get(os.path.join(mnt, "host-role.conf"), "FIPS_NSEC")

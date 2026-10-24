@@ -182,6 +182,27 @@ mkdir -p "$KLH_COMMON"
 klh_info "overlaying repo customizations into kali-config/common/"
 cp -a "$OVERLAY_DIR/." "$KLH_COMMON/"
 
+# PROVENANCE GUARD — no mystery files. Everything just staged must be a
+# git-tracked overlay file. Build #18 shipped a libvirtd drop-in from an
+# UNCOMMITTED overlay file that was deleted from the worktree after the
+# cut: a provenance black hole whose dangling Requires= wedged every
+# boot on hardware (libvirtd could never socket-activate). Run BEFORE
+# any generated files land in the staged tree.
+if git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  # allowed = upstream-native (the pinned clone ships its own
+  # kali-config files we do not overlay — first live run flagged
+  # upstream's grub.cfg as "mystery") UNION our git-tracked overlay
+  mystery=$(cd "$KLH_COMMON" && find . -type f | sort > /tmp/klh-staged.$$
+    { git -C "$REPO_DIR" ls-files "overlay/kali-config/common" | sed 's|^overlay/kali-config/common/|./|'
+      git -C "$UPSTREAM_DIR" ls-files "kali-config/common" 2>/dev/null | sed 's|^kali-config/common/|./|'; } | sort -u > /tmp/klh-git.$$
+    comm -23 /tmp/klh-staged.$$ /tmp/klh-git.$$
+    rm -f /tmp/klh-staged.$$ /tmp/klh-git.$$)
+  if [ -n "$mystery" ]; then
+    klh_die "staged files with NO git source (uncommitted overlay leftovers?): $mystery"
+  fi
+  klh_ok "overlay provenance: every staged file is git-tracked"
+fi
+
 # KVM stack: package list written only for WITH_KVM builds; the unit
 # files/scripts from the overlay are removed otherwise so nothing dead
 # ships in the ISO.
@@ -320,7 +341,9 @@ WG_PORT="$WG_PORT"
 # "try" lets tooling (vmstore) mount a store on a locked volume when a key
 # is available (clear key or KLHCONFIG bitlocker.conf). Never a secret.
 VMSTORE_BITLOCKER="$VMSTORE_BITLOCKER"
-# FIPS mesh: the default peer (our exit node) — non-secret
+# FIPS mesh: FIPS_ENABLED gates the whole wire (identity stays); the
+# peer values are ./config-only and empty = dormant.
+FIPS_ENABLED="$FIPS_ENABLED"
 FIPS_PEER_ADDR="$FIPS_PEER_ADDR"
 FIPS_PEER_NPUB="$FIPS_PEER_NPUB"
 EOF
@@ -343,6 +366,22 @@ else
         || klh_die "FIPS $FIPS_VERSION download failed (pin in lib/common.sh)"
 fi
 DEB_SHA=$(sha256sum "$KLH_COMMON/packages.chroot/$FIPS_DEB" | cut -d' ' -f1)
+
+# Rescue channel: pinned cloudflared into the DEFAULT flavour only
+# (minimal keeps it out — see docs/fips-optionality-and-rescue-channel.md).
+if [ "$WITH_RESCUE" = true ] && [ "$VARIANT" = "default" ]; then
+    CFD_BIN="$KLH_COMMON/includes.chroot/usr/local/bin/cloudflared"
+    mkdir -p "$(dirname "$CFD_BIN")"
+    if curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
+            -o "$CFD_BIN"; then
+        echo "$CLOUDFLARED_SHA256  $CFD_BIN" | sha256sum --check --quiet \
+            || klh_die "cloudflared $CLOUDFLARED_VERSION sha256 mismatch — repin in lib/common.sh"
+        chmod 0755 "$CFD_BIN"
+        klh_ok "rescue channel: cloudflared $CLOUDFLARED_VERSION verified+installed"
+    else
+        klh_die "cloudflared $CLOUDFLARED_VERSION download failed — check network or pin"
+    fi
+fi
 [ "$DEB_SHA" = "$FIPS_SHA256" ] \
     || klh_die "FIPS deb sha256 mismatch (got $DEB_SHA, want $FIPS_SHA256) — update the pin deliberately"
 klh_ok "FIPS $FIPS_VERSION staged (sha256 verified)"
