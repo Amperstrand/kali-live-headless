@@ -49,7 +49,8 @@ newest=$(echo "$builds" | tail -1)
 row() { # build -> one line of the table
   local b=$1 d="$OUT_DIR/iso-build$1" iso="$OUT_DIR/iso-build$1/$ISO_NAME"
   local size date verdict sha
-  if [ -f "$iso" ]; then
+  iso=$(find "$d" -maxdepth 1 -name '*.iso' -print -quit 2>/dev/null || true)
+  if [ -n "$iso" ] && [ -f "$iso" ]; then
     size=$(numfmt --to=iec "$(stat -c '%s' "$iso")")
     date=$(stat -c '%y' "$iso" | cut -d. -f1)
     sha=$(cut -d' ' -f1 "$iso.sha512sum" 2>/dev/null | cut -c1-12)
