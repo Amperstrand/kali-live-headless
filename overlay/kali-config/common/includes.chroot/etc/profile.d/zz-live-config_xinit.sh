@@ -10,7 +10,7 @@
 # the intended headless-first UX anyway.
 
 if [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_TTY" ]; then
-    return 0 2>/dev/null || exit 0
+    return 0
 fi
 
 # no session manager -> no X (a session-less Xorg is a frozen screen)
@@ -19,7 +19,7 @@ if ! update-alternatives --query x-session-manager >/dev/null 2>&1 \
     echo ""
     echo "kali-live-headless: no graphical session in this image — text console only."
     echo "(SSH over Wi-Fi/WireGuard is the primary access channel.)"
-    return 0 2>/dev/null || exit 0
+    return 0
 fi
 
 if [ -x /usr/bin/startx ] && command -v systemctl >/dev/null 2>&1 \
