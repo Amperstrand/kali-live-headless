@@ -242,7 +242,7 @@ v=$(guest 'systemctl is-active avahi-daemon'); [ "$v" = "active" ] && record pas
 
 section "KVM stack (WITH_KVM=$WITH_KVM)"
 if [ "$WITH_KVM" = true ]; then
-  v=$(guest 'for i in $(seq 1 10); do virsh -c qemu:///system list >/dev/null 2>&1 && echo ok && exit 0; sleep 3; done; echo no')
+  v=$(guest 'for i in $(seq 1 10); do timeout 5 virsh -c qemu:///system list >/dev/null 2>&1 && echo ok && exit 0; sleep 3; done; echo no')
   [ "$v" = "ok" ] && record pass "virsh usable as kali" || { record fail "virsh usable as kali ($v)"; capture libvirt guest_sudo 'systemctl status libvirtd --no-pager -l; journalctl -u libvirtd --no-pager -n 40'; }
   v=$(guest 'ls -l /dev/kvm 2>/dev/null || echo missing')
   record info "/dev/kvm: $v"

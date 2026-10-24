@@ -835,7 +835,7 @@ else
 
       # KVM stack: libvirtd reachable by the live user, host shield installed
       if [ "$WITH_KVM_EXPECTED" = true ]; then
-        v=$(guest 'for i in 1 2 3 4 5 6 7 8 9 10; do virsh -c qemu:///system list >/dev/null 2>&1 && echo ok && exit 0; sleep 3; done; echo no')
+        v=$(guest 'for i in 1 2 3 4 5 6 7 8 9 10; do timeout 5 virsh -c qemu:///system list >/dev/null 2>&1 && echo ok && exit 0; sleep 3; done; echo no')
         [ "$v" = "ok" ] && record pass "$mode: virsh usable as kali (libvirtd + group membership)" || record fail "$mode: virsh usable as kali ($v)"
         v=$(guest 'systemctl is-active kali-live-kvm-firewall')
         [ "$v" = "active" ] && record pass "$mode: kvm host-shield active" || record fail "$mode: kvm host-shield active ($v)"
