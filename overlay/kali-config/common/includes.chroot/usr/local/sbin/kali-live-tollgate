@@ -18,6 +18,14 @@ log() { logger -t "$LOGGER_TAG" "$*" 2>/dev/null || echo "tollgate: $*" >&2; }
 CLIENT=/usr/local/bin/tollgate-client
 [ -x "$CLIENT" ] || { log "tollgate-client not installed — skipping"; exit 0; }
 
+# staged defaults (TG_MINT_URL = mint fallback for adverts without mints —
+# found live: a degraded TollGate advertises no-reachable-mints and the
+# client refuses to pay without a mint)
+TG_MINT_URL=${TG_MINT_URL:-}
+DEFAULTS=/etc/default/kali-live-headless
+# shellcheck disable=SC1090  # staged runtime defaults (build.sh generates it)
+[ -r "$DEFAULTS" ] && . "$DEFAULTS"
+
 # Only run when we actually have a default route (i.e., we associated)
 GW=$(ip route show default 2>/dev/null | awk '{print $3; exit}')
 [ -n "$GW" ] || { log "no default route — not on a TollGate network"; exit 0; }
@@ -30,8 +38,13 @@ fi
 
 log "TollGate detected on $GW — attempting payment"
 
-# Run the client (discovers the advertisement, mints, pays)
-OUTPUT=$("$CLIENT" --gateway "$GW" 2>&1)
+# Run the client (discovers the advertisement, mints, pays); TG_MINT_URL
+# overrides an advert with no mints
+if [ -n "$TG_MINT_URL" ]; then
+    OUTPUT=$("$CLIENT" --gateway "$GW" --mint "$TG_MINT_URL" 2>&1)
+else
+    OUTPUT=$("$CLIENT" --gateway "$GW" 2>&1)
+fi
 RC=$?
 echo "$OUTPUT" | while IFS= read -r line; do log "$line"; done
 
