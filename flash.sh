@@ -312,7 +312,7 @@ make_config_partition() {
     # append ONTO it — sfdisk refuses (overlap), newpart comes back empty,
     # and every flash of this ISO class warn-skipped the config partition
     # (#18+ images, proven on a spare-image sim 2026-10-24).
-    last_end=0 s= z=
+    last_end=0 s='' z=''
     while IFS= read -r pline; do
       s=$(printf '%s\n' "$pline" | sed -n 's/.*start= *\([0-9][0-9]*\),.*/\1/p')
       z=$(printf '%s\n' "$pline" | sed -n 's/.*size= *\([0-9][0-9]*\),.*/\1/p')
