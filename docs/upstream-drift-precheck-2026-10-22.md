@@ -1,4 +1,15 @@
-# Upstream drift pre-check — 2026-10-22 (evidence only, no pin bump)
+# Upstream drift pre-check — 2026-10-22, re-verified 2026-10-24 (evidence only, no pin bump)
+
+> **2026-10-24 re-verification (pre-dawn window): verdict UNCHANGED — zero
+> drift, no pin bump.** Re-checked live: (1) kali-live `main` HEAD is still
+> `adb2e389` — no commits since 2026-10-12 ([commit
+> list](https://gitlab.com/kalilinux/build-scripts/kali-live/-/commits/main?ref_type=heads));
+> (2) [live-config](https://pkg.kali.org/pkg/live-config) still 11.0.5 in
+> kali-roll/kali-dev (unchanged since 2023); (3)
+> [live-build](https://gitlab.com/kalilinux/packages/live-build) repo last
+> activity 2026-04-09 — quiet. The pin-frozen surfaces (1165/0031 components,
+> bootloader files) cannot move without a commit; Friday's shape evidence
+> below still stands verbatim.
 
 Scope: `KALI_LIVE_REF` pin vs upstream, the two live-config interop
 components, and bootloader config shapes. Per AGENTS.md this is a
