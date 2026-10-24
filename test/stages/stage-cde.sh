@@ -1,3 +1,6 @@
+. "$REPO_DIR/test/stages/stage-cde.sh"
+# (end Stage C/D/E)
+
 QEMU_BIN=qemu-system-x86_64
 if ! command -v "$QEMU_BIN" >/dev/null 2>&1; then
   record skip "qemu" "qemu-system-x86_64 not installed"
