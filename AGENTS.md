@@ -86,7 +86,23 @@ drift is absorbed by bumping the pin, nothing else.
    it the heredoc never arrives and the lab false-passes) and the
    output-presence check (no `lab: pass=` line = transport bug, not a
    pass). Both earned their keep within minutes of writing the tool.
-12. **A test that remediates before it asserts masks boot-path
+12. **Count-zero verdicts need non-empty-list proof** (three hits in
+   one night): `grep -c` on an EMPTY file returns 0 — a "must be absent"
+   assert passes vacuously if the extraction failed, the path was wrong
+   (#19's minimal ISO has a different filename!), or the transport died.
+   Assert list-length sanity BEFORE reporting any count-based verdict;
+   the count is part of the assertion. Same class: a green test count
+   you didn't verify belongs to the named suite (the rescue-publish
+   Dockerfile ran ws-relay's suite — 6 tests where 5 were expected).
+13. **The staged build tree persists BETWEEN builds and `cp -a` never
+   deletes** — an untracked file staged once rides every subsequent
+   build with its original mtime (the #18/#19 wedge drop-in: git-clean
+   trees, three-week-old mtime inside fresh images, fingerprint
+   `2026-10-01 21:21`). The provenance guard (build.sh, upstream ∪
+   overlay allowed-set — mind the upstream-native whitelist, first live
+   run false-positived grub.cfg) refuses such builds; never bypass it,
+   and cut releases from merged main, not from a lane's dirty worktree.
+14. **A test that remediates before it asserts masks boot-path
    defects**: hw-check's wait-loop used to `virsh net-start` the
    default network itself, so the #14 kvm-enable early-exit (no virbr0
    at boot on real hardware, QEMU suite 182/0 green) was invisible in
