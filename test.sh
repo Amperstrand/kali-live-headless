@@ -728,10 +728,15 @@ else
     # guest). Real host-key drift is asserted explicitly in common_guest_checks
     # against the baked fingerprint, so the transport must not gate on it.
     rm -f "$SCRATCH/known_hosts"
-    SSH_OPTS=(-F none -i "$SSH_KEY" -p "$PORT" -o UserKnownHostsFile="$SCRATCH/known_hosts" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes kali@127.0.0.1)
+    # ServerAlive*: ConnectTimeout only covers connection SETUP — a guest
+    # command that blocks forever (e.g. virsh on a never-activating libvirtd
+    # socket) left the channel open indefinitely and wedged the suite
+    # (2026-10-24, 3/3 deterministic on bios3). timeout 120 is the outer
+    # deadline (worst legitimate guest command ≈ 85 s retry loop).
+    SSH_OPTS=(-F none -i "$SSH_KEY" -p "$PORT" -o UserKnownHostsFile="$SCRATCH/known_hosts" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o BatchMode=yes kali@127.0.0.1)
 
-    guest() { ssh "${SSH_OPTS[@]}" "$@" 2>/dev/null; }
-    guest_sudo() { printf 'kali\n' | ssh "${SSH_OPTS[@]}" "sudo -S -p '' $*" 2>/dev/null; }
+    guest() { timeout 120 ssh "${SSH_OPTS[@]}" "$@" 2>/dev/null; }
+    guest_sudo() { printf 'kali\n' | timeout 120 ssh "${SSH_OPTS[@]}" "sudo -S -p '' $*" 2>/dev/null; }
 
     boot_qemu() { # mode extra-args...
       local mode=$1; shift
@@ -1123,7 +1128,7 @@ DOCKERFILE
             [ "$v" = active ] && record pass "vmstore: mount service active" || record fail "vmstore: mount service ($v)"
             v=$(guest 'mount | grep " /mnt/klh-vmstore " | head -1')
             case "$v" in *fuseblk*|*ntfs*) record pass "vmstore: NTFS mounted at /mnt/klh-vmstore" ;; *) record fail "vmstore: NTFS mounted (got: $v)" ;; esac
-            v=$(guest 'virsh -c qemu:///system pool-list --all 2>/dev/null | awk "\$1==\"klh-vmstore\"{print \$2}"')
+            v=$(guest 'timeout 10 virsh -c qemu:///system pool-list --all 2>/dev/null | awk "\$1==\"klh-vmstore\"{print \$2}"')
             [ "$v" = active ] && record pass "vmstore: libvirt pool klh-vmstore active" || record fail "vmstore: libvirt pool ($v)"
             v=$(guest "md5sum /mnt/klh-vmstore/do-not-touch.txt /mnt/klh-vmstore/other/inner.txt 2>/dev/null | awk '{print \$1}' | paste -sd/")
             [ "$v" = "$VM_MARK1/$VM_MARK2" ] && record pass "vmstore: marker files readable + intact (in-guest)" || record fail "vmstore: marker files in-guest ($v)"
@@ -1186,7 +1191,7 @@ DOCKERFILE
           if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
             v=$(guest 'mount | grep -c " /mnt/klh-vmstore " || true')
             [ "$v" = "0" ] && record pass "vmstore: forensic gate kept the NTFS volume unmounted" || record fail "vmstore: forensic gate FAILED — NTFS mounted under noautomount"
-            v=$(guest 'virsh -c qemu:///system pool-list --all 2>/dev/null | grep -c klh-vmstore || true')
+            v=$(guest 'timeout 10 virsh -c qemu:///system pool-list --all 2>/dev/null | grep -c klh-vmstore || true')
             [ "$v" = "0" ] && record pass "vmstore: no pool defined under forensic boot" || record fail "vmstore: pool exists under forensic boot"
             timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu vmstore-forensic
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
@@ -1216,7 +1221,7 @@ DOCKERFILE
             [ "$v" = active ] && record pass "vmstore: no-config boot keeps the unit a clean no-op" || record fail "vmstore: no-config unit state ($v)"
             v=$(guest 'mount | grep -c " /mnt/klh-vmstore " || true')
             [ "$v" = "0" ] && record pass "vmstore: no-config boot mounts nothing" || record fail "vmstore: NTFS mounted WITHOUT vm-store.conf"
-            v=$(guest 'virsh -c qemu:///system pool-list --all 2>/dev/null | grep -c klh-vmstore || true')
+            v=$(guest 'timeout 10 virsh -c qemu:///system pool-list --all 2>/dev/null | grep -c klh-vmstore || true')
             [ "$v" = "0" ] && record pass "vmstore: no-config boot defines no pool" || record fail "vmstore: pool defined without vm-store.conf"
             timeout 30 ssh "${SSH_OPTS[@]}" 'sudo -n poweroff' >/dev/null 2>&1
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
