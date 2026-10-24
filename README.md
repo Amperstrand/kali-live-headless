@@ -320,6 +320,35 @@ stick keeps the same `npub` — its mesh address — across power cycles.
   mesh firewall (`fips-firewall.service`) enforces the baseline; the
   deployment side lives in the private overlay, not this repo.
 
+## TollGate: pay-per-use internet with Cashu (no SSID, no password)
+
+When the stick can't find its home Wi-Fi, it connects to any **open
+network** (lower autoconnect priority). If that network is a
+[TollGate](https://tollgate.me) — a Cashu-powered payment gateway — the
+stick automatically:
+
+1. Detects the TollGate on the gateway's `:2121` port
+2. Reads the mint URL and pricing from the advertisement
+3. Requests a Lightning invoice from the mint (NUT-04)
+4. On fakewallet/testnet mints, the invoice **auto-settles** (<1s)
+5. Mints Cashu tokens and pays the TollGate
+6. Gets internet access — zero manual steps
+
+The client (`tollgate-client`, 10 MB static Go binary built from
+[gonuts-tollgate](https://github.com/OpenTollGate/gonuts-tollgate))
+runs automatically via the `kali-live-tollgate` trigger when Wi-Fi
+associates. On normal (non-TollGate) networks it silently no-ops.
+
+**Long-term:** the Rust path (CDK / `tollgate-rs`) will replace the Go
+binary with the same CLI contract.
+
+**Threat model:** the TollGate identifies the stick by its Wi-Fi MAC
+address (standard TollGate behavior). The Cashu tokens are bearer
+instruments — physical access to the stick's wallet DB is game over,
+same as the PSK. The open-network profile has lower priority than the
+home PSK network, so the stick never roams to an open network when the
+known network is available.
+
 ## Deterministic per-machine identities (master salt + HKDF)
 
 One 256-bit **master salt** is generated on the stick's first boot and
