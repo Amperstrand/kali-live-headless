@@ -280,7 +280,22 @@ make_config_partition() {
     klh_warn "sfdisk not installed — skipping config partition (credential changes would need a rebuild)"
     return 0
   fi
-  stick_mb=$(( $(blockdev --getsize64 "$DEVPATH") / 1048576 ))
+  # blockdev can transiently fail with EBUSY while udev settles after the
+  # dd (16 min of writes) — an unguarded read here killed the script under
+  # set -e BEFORE the loud summary could print, twice shipping sticks with
+  # no config partition and no visible warning (2026-10-24). Retry, then
+  # degrade loudly instead of dying silently.
+  local devsize=0
+  for i in 1 2 3 4 5; do
+    devsize=$(blockdev --getsize64 "$DEVPATH" 2>/dev/null) && [ "$devsize" -gt 0 ] 2>/dev/null && break
+    devsize=0; sleep 1
+  done
+  if [ "$devsize" -gt 0 ] 2>/dev/null; then
+    stick_mb=$(( devsize / 1048576 ))
+  else
+    klh_warn "could not read $DEVPATH size (udev busy?) — skipping config partition"
+    return 0
+  fi
 
   # Reuse: a KLHCONFIG partition from a previous flash survives the dd (its
   # sectors sit past the ISO), but the dd RESTORES THE ISO'S OWN PARTITION
