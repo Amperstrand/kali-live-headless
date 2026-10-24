@@ -119,6 +119,7 @@ klh_load_config() {
   : "${VMSTORE_DIR:=vms}"
   : "${VMSTORE_RESERVED_MB:=20480}"
   : "${TORAM_ENTRY:=true}"
+  : "${SSHD_WG_ONLY:=false}"
   # FIPS_ENABLED=false ships the mesh dormant (no wg0, no enrollment, no
   # daemon peering) — overridable per stick via KLHCONFIG:/fips.conf.
   : "${FIPS_ENABLED:=true}"
@@ -189,6 +190,7 @@ klh_load_config() {
   printf '%s' "$VARIANT" | grep -Eq '^(minimal|default|light)$' \
     || klh_die "invalid VARIANT '$VARIANT' (minimal | default | light)"
   klh_validate_bool "$TORAM_ENTRY" || klh_die "invalid TORAM_ENTRY (true|false)"
+  klh_validate_bool "$SSHD_WG_ONLY" || klh_die "invalid SSHD_WG_ONLY (true|false)"
   [ -n "${WIFI_PSK:-}" ] || klh_die "WIFI_PSK not set in $f"
 }
 

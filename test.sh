@@ -1029,6 +1029,13 @@ else
       if sudo mount -o loop "$SCRATCH/cfg.img" "$CFG_MNT" 2>/dev/null; then
         printf 'HOSTNAME=klh-override\nWIFI_SSID=OverrideNet\nWIFI_PSK=OverridePassphrase123\nWIFI_KEYMGMT=wpa-psk\nWIFI_HIDDEN=false\nWIFI_REGDOM=DE\n' \
           | sudo tee "$CFG_MNT/headless-wifi.conf" >/dev/null
+        # The override fixture must also carry a master salt — without it,
+        # the derived-WireGuard path has nothing to derive FROM, and the
+        # "wg0 up with valid address" assert fails vacuously (the ONE
+        # remaining suite fail, v19–v23). A fixed test salt is fine: it
+        # never leaves the scratch dir.
+        printf '5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f\n' \
+          | sudo tee "$CFG_MNT/master.salt" >/dev/null
         sudo umount "$CFG_MNT"
         # direct-kernel boot (fast): this stage tests the override logic,
         # not the bootloader — the BIOS/UEFI stages cover that.
