@@ -246,6 +246,18 @@ if [ "$WG_ONLY" = true ] && [ -d /sys/class/net/wg0 ]; then
     fi
 fi
 
+# SSH rate limiting: reject >3 new connections/minute per source IP.
+# Password auth is already disabled; this blocks key-probing and DoS.
+# Rules are best-effort — if iptables isn't available the stick still
+# boots fine (sshd's own MaxAuthTries + publickey-only are the real gates).
+if command -v iptables >/dev/null 2>&1; then
+    iptables -C INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --set 2>/dev/null || {
+        iptables -I INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --set
+        iptables -I INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --update --seconds 60 --hitcount 4 -j DROP
+        log "ssh rate limiting: max 3 new connections/minute per source"
+    }
+fi
+
 # KVM/libvirt access for the live user (groups only exist on WITH_KVM builds)
 for grp in kvm libvirt libvirt-qemu; do
     if getent group "$grp" > /dev/null 2>&1; then
