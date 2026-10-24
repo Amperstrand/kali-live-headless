@@ -345,8 +345,11 @@ make_config_partition() {
       *[0-9]) newpart="${DEVPATH}p$newpart" ;;
       *)      newpart="${DEVPATH}$newpart"  ;;
     esac
-    blockdev --rereadpt "$DEVPATH" 2>/dev/null || true
-    for i in 1 2 3 4 5; do [ -b "$newpart" ] && break; sleep 1; done
+    partprobe "$DEVPATH" 2>/dev/null || blockdev --rereadpt "$DEVPATH" 2>/dev/null || true
+    # The kernel can take several seconds to create the device node (race
+    # condition hit on the 2026-10-24 v25 flash: partition was in the table
+    # but /dev/sdb3 didn't appear within 5s → "MISSING" despite success).
+    for i in $(seq 1 15); do [ -b "$newpart" ] && break; sleep 1; partprobe "$DEVPATH" 2>/dev/null || true; done
     if [ ! -b "$newpart" ]; then
       klh_warn "$newpart did not appear — skipping config partition"
       return 0
