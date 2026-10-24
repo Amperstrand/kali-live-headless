@@ -1,0 +1,140 @@
+#!/bin/sh
+# kali-live-tollgate-watchdog — the fail-safe for TollGate connectivity.
+#
+# The open-network profile (tollgate-open, priority -10) only engages when
+# the house PSK network is absent. When the stick DOES land on an open /
+# TollGate network, this watchdog enforces a deadline:
+#
+#   * internet reachable through it within KLH_TG_DEADLINE (default 180 s)
+#     -> state=paid/ok, nothing to do (journals once).
+#   * deadline passes with no internet -> FALL BACK: force the house PSK
+#     profile (nmcli con up), journal LOUDLY, record state=fell-back.
+#     The stick is back on the house wifi, reachable as usual.
+#   * (opt-in) KLH_TG_REBOOT=true: if even the fallback cannot restore any
+#     connectivity within another deadline, reboot — last resort, off by
+#     default because a reboot loop on flaky wifi is worse than a stick
+#     that stays up on the open network.
+#
+# Status (observability, e.g. for hw-check): /run/kali-live-headless/tollgate-status
+#   <mode> <iso8601-since> <state> <last-check-epoch>
+#   mode  = house | tollgate | other
+#   state = ok | waiting | fell-back | rebooting
+#
+# Testability: --once runs a single evaluation (no loop); KLH_NMCLI_FILE /
+# KLH_INET_PROBE_FILE / KLH_STATE_DIR / KLH_CLOCK_FILE let the unit tests
+# drive every scenario without NetworkManager (the vm-store fixture pattern).
+
+set -u
+
+TAG=kali-live-tollgate-watchdog
+DEADLINE=${KLH_TG_DEADLINE:-180}
+HOUSE_PROFILE=${KLH_TG_HOUSE_PROFILE:-headless-wifi}
+OPEN_PROFILE=${KLH_TG_OPEN_PROFILE:-tollgate-open}
+STATE_DIR=${KLH_STATE_DIR:-/run/kali-live-headless}
+TICK=${KLH_TG_TICK:-15}
+REBOOT=${KLH_TG_REBOOT:-false}
+
+log() { logger -t "$TAG" "$*" 2>/dev/null || echo "$TAG: $*" >&2; }
+now() {
+  if [ -r "${KLH_CLOCK_FILE:-}" ]; then cat "${KLH_CLOCK_FILE}"; else date +%s; fi
+}
+iso() { date -u -d "@$(now)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || now; }
+
+active_con() { # active NM connection name (wifi) or empty
+  if [ -r "${KLH_NMCLI_FILE:-}" ]; then
+    awk -F: '$2 ~ /wireless/ {print $1; exit}' "${KLH_NMCLI_FILE}"
+    return
+  fi
+  timeout 10 nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
+    | awk -F: '$2 ~ /wireless/ {print $1; exit}'
+}
+
+internet_ok() {
+  if [ -r "${KLH_INET_PROBE_FILE:-}" ]; then
+    [ "$(cat "${KLH_INET_PROBE_FILE}")" = ok ]
+    return
+  fi
+  timeout 8 wget -q -T 8 -O /dev/null http://1.1.1.com/ 2>/dev/null \
+    || timeout 8 wget -q -T 8 -O /dev/null http://neverssl.com/ 2>/dev/null
+}
+
+force_house() {
+  log "TOLLGATE FALLBACK: no internet after ${DEADLINE}s on the open network — forcing house profile '$HOUSE_PROFILE'"
+  if [ -r "${KLH_NMCLI_FILE:-}" ]; then
+    printf 'con-up %s\n' "$HOUSE_PROFILE" >> "${KLH_NMCLI_FILE}.calls"
+    return 0
+  fi
+  timeout 30 nmcli connection up id "$HOUSE_PROFILE" >/dev/null 2>&1
+}
+
+status_write() { # mode since state
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  printf '%s %s %s %s\n' "$1" "$2" "$3" "$(now)" > "$STATE_DIR/tollgate-status" 2>/dev/null || true
+}
+
+evaluate() {
+  con=$(active_con)
+  case "$con" in
+    "$HOUSE_PROFILE"|"") mode=house ;;
+    "$OPEN_PROFILE")     mode=tollgate ;;
+    *)                   mode=other ;;
+  esac
+
+  if [ "$mode" != tollgate ]; then
+    rm -f "$STATE_DIR/tollgate-since" 2>/dev/null || true
+    status_write "$mode" - ok
+    return 0
+  fi
+
+  # tollgate mode: deadline enforcement
+  since_file="$STATE_DIR/tollgate-since"
+  t=$(now)
+  if [ ! -f "$since_file" ]; then
+    printf '%s' "$t" > "$since_file" 2>/dev/null || true
+    log "on the open network ('$OPEN_PROFILE') — internet deadline ${DEADLINE}s starts"
+    status_write tollgate "$(iso)" waiting
+    return 0
+  fi
+  since=$(cat "$since_file" 2>/dev/null || echo "$t")
+  age=$(( t - since ))
+
+  if internet_ok; then
+    status_write tollgate "$(date -u -d "@$since" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$since")" ok
+    [ -f "$STATE_DIR/tollgate-ok-logged" ] && return 0
+    log "internet confirmed through the open network (paid/ok after ${age}s)"
+    : > "$STATE_DIR/tollgate-ok-logged" 2>/dev/null || true
+    return 0
+  fi
+
+  if [ "$age" -ge "$DEADLINE" ]; then
+    force_house
+    status_write tollgate "$(iso)" fell-back
+    rm -f "$since_file" "$STATE_DIR/tollgate-ok-logged" 2>/dev/null || true
+    if [ "$REBOOT" = true ]; then
+      # escalation only counts if even the house profile cannot connect:
+      # evaluate() on the next cycle in house mode without internet is the
+      # wifi-watchdog's domain; here we only reboot when NOTHING is active
+      con2=$(active_con)
+      if [ -z "$con2" ] || [ "$con2" = "$OPEN_PROFILE" ]; then
+        log "TOLLGATE ESCALATION: fallback did not take — rebooting (KLH_TG_REBOOT=true)"
+        status_write tollgate "$(iso)" rebooting
+        [ -r "${KLH_CLOCK_FILE:-}" ] || { sync; systemctl reboot; }
+      fi
+    fi
+    return 1
+  fi
+
+  status_write tollgate "$(iso)" waiting
+  return 0
+}
+
+if [ "${1:-}" = "--once" ]; then
+  evaluate
+  exit $?
+fi
+
+log "watchdog up: deadline=${DEADLINE}s house=$HOUSE_PROFILE open=$OPEN_PROFILE reboot=$REBOOT"
+while :; do
+  evaluate || true
+  sleep "$TICK"
+done
