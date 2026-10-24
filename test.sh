@@ -174,16 +174,16 @@ if [ -r "$REPO_DIR/config" ]; then
 else
   record skip "config" "not present — run ./configure.sh"
 fi
+LEAN_EXPECTED="false"
 
 # load config values if available (non-fatal)
 HOSTNAME_EXPECTED="kali-live" WIFI_SSID_EXPECTED="" PUBKEY_FP_EXPECTED="" SSH_KEY=""
 BOOT_DEFAULT_EXPECTED="live" LIVE_PASSWORD_MODE_EXPECTED="random" WITH_KVM_EXPECTED="true" WG_ENDPOINT_EXPECTED="" VARIANT_EXPECTED="minimal" TORAM_EXPECTED="true"
-LEAN_EXPECTED=${LEAN:-false}
 if [ -r "$REPO_DIR/config" ]; then
   rm -f "$SCRATCH/env" "$SCRATCH/pubkeypath"
   # shellcheck disable=SC1091
   ( set -a; source "$REPO_DIR/lib/common.sh"; klh_load_config "$REPO_DIR/config"; \
-    printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$HOSTNAME" "$WIFI_SSID" "$BOOT_DEFAULT" "$LIVE_PASSWORD_MODE" "$WITH_KVM" "${WG_ENDPOINT:-}" "$VARIANT" "$TORAM_ENTRY" > "$SCRATCH/env"; \
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$HOSTNAME" "$WIFI_SSID" "$BOOT_DEFAULT" "$LIVE_PASSWORD_MODE" "$WITH_KVM" "${WG_ENDPOINT:-}" "$VARIANT" "$TORAM_ENTRY" "${LEAN:-false}" > "$SCRATCH/env"; \
     printf '%s\n' "$(klh_expand_tilde "$SSH_PUBKEY_PATH")" > "$SCRATCH/pubkeypath" )
   HOSTNAME_EXPECTED=$(sed -n 1p "$SCRATCH/env")
   WIFI_SSID_EXPECTED=$(sed -n 2p "$SCRATCH/env")
@@ -193,6 +193,7 @@ if [ -r "$REPO_DIR/config" ]; then
   WG_ENDPOINT_EXPECTED=$(sed -n 6p "$SCRATCH/env")
   VARIANT_EXPECTED=$(sed -n 7p "$SCRATCH/env")
   TORAM_EXPECTED=$(sed -n 8p "$SCRATCH/env")
+  LEAN_EXPECTED=$(sed -n 9p "$SCRATCH/env")
   PUBKEY_PATH=$(cat "$SCRATCH/pubkeypath")
   if [ -r "$PUBKEY_PATH" ] && command -v ssh-keygen >/dev/null; then
     if PUBKEY_FP_EXPECTED=$(ssh-keygen -lf "$PUBKEY_PATH" 2>/dev/null | sed 's/^ *[0-9]* //'); then
