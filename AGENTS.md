@@ -67,6 +67,7 @@ drift is absorbed by bumping the pin, nothing else.
    defective #13s were caught exactly there, and each lesson is asserted by
    the tool now. It also recreates hook-owned unit enablement symlinks —
    extend that list when adding units the chroot hook enables.
+9. **Never trust `grep -c` on a log a live process is still writing** (hit twice on 2026-10-24: a promotion was counted 0 while the same grep's print showed it — output flush races the count): read-back and print the line, or wait for process exit, before deriving counts from live logs.
 10. **Verdict capture: use `tools/run-logged.sh`, never
    `echo "...rc=$?"` with a `$(date)` in the same string** — the command
    substitution runs first and resets `$?`; chains have recorded rc=0
