@@ -84,6 +84,13 @@ BRANCH=kali-rolling
 # KLHCONFIG:/rescue.conf RESCUE_ENABLED=true — never on by default.
 #WITH_RESCUE=true
 
+# LEAN profile (small image, pairs with VARIANT=minimal): strips
+# DEFAULT-Kali weight — the ~1GB firmware blob set (keeps
+# iwlwifi/realtek/atheros) and the kali-linux-core tools baseline —
+# while KEEPING the project stack: KVM/vmstore (WITH_KVM), WireGuard
+# mesh, FIPS daemon, rescue channel (WITH_RESCUE, any variant).
+#LEAN=false
+
 # FIPS mesh (v20 optionality): FIPS_ENABLED=false ships the mesh fully
 # dormant (no wg0, no enrollment, no daemon peering); flip per stick at
 # runtime with KLHCONFIG:/fips.conf — no rebuild.

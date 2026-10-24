@@ -211,15 +211,10 @@ fi
 # KVM stack: package list written only for WITH_KVM builds; the unit
 # files/scripts from the overlay are removed otherwise so nothing dead
 # ships in the ISO.
-# LEAN profile enforcement (must run BEFORE the WITH_KVM gate): the two
-# big levers on image size are the kali-linux-firmware whale (~1GB of
-# vendor blobs) and the qemu/libvirt stack — both useless on a stick
-# whose job is wifi+ssh+mesh.
-if [ "$LEAN" = true ] && [ "$WITH_KVM" = true ]; then
-    klh_warn "LEAN=true forces WITH_KVM=false (no qemu/libvirt in the image)"
-    WITH_KVM=false
-fi
-
+# LEAN profile: strips DEFAULT-KALI weight (the ~1GB firmware whale,
+# the kali-linux-core tools baseline, the desktop) while KEEPING the
+# project's own stack — KVM/vmstore ride WITH_KVM, mesh/rescue ride
+# their own knobs, on any variant.
 if [ "$WITH_KVM" = true ]; then
   cat > "$KLH_COMMON/package-lists/kvm.list.chroot" <<'EOF'
 ## KVM/libvirt stack (WITH_KVM=true builds) — see README "KVM"
@@ -401,7 +396,7 @@ DEB_SHA=$(sha256sum "$KLH_COMMON/packages.chroot/$FIPS_DEB" | cut -d' ' -f1)
 
 # Rescue channel: pinned cloudflared into the DEFAULT flavour only
 # (minimal keeps it out — see docs/fips-optionality-and-rescue-channel.md).
-if [ "$WITH_RESCUE" = true ] && [ "$VARIANT" = "default" ]; then
+if [ "$WITH_RESCUE" = true ]; then
     CFD_BIN="$KLH_COMMON/includes.chroot/usr/local/bin/cloudflared"
     mkdir -p "$(dirname "$CFD_BIN")"
     if curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \

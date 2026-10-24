@@ -18,3 +18,5 @@ sudo
 e2fsprogs
 ## WireGuard access channel (identical to the standard profile)
 wireguard-tools
+## BitLocker unlock for the NTFS vm store (rides the KVM stack)
+dislocker
