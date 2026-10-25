@@ -300,7 +300,16 @@ else
         # "wg0 up with valid address" assert fails vacuously (the ONE
         # remaining suite fail, v19–v23). A fixed test salt is fine: it
         # never leaves the scratch dir.
-        printf '5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f\n' \
+        # ONE literal feeds staging AND every expectation below (v27 gate
+        # 2026-10-25: the staged literal carried 15 '5b2f' reps = 60 chars,
+        # which klh_salt_valid REJECTS (<64 hex) — the guest rightly refused
+        # the salt, fell back to random identities, and the whole identity
+        # cluster failed against an expectation hashing 16 reps. The length
+        # guard makes that typo class impossible.)
+        FIXTURE_SALT='5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f'
+        [ "$(printf '%s' "$FIXTURE_SALT" | wc -c)" -eq 64 ] \
+          || { echo "stage-cde: FIXTURE_SALT must be exactly 64 hex chars" >&2; exit 2; }
+        printf '%s\n' "$FIXTURE_SALT" \
           | sudo tee "$CFG_MNT/master.salt" >/dev/null
         sudo umount "$CFG_MNT"
         # direct-kernel boot (fast): this stage tests the override logic,
@@ -351,7 +360,7 @@ else
             # guest (self-consistency, no host-side fingerprint knowledge
             # needed), and the fips seeding must actually have run (the
             # 2026-10-24 live finding: fips.yaml never existed).
-            _salt='5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f'
+            _salt="$FIXTURE_SALT"
             _npub_run=$(guest 'cat /run/kali-live-headless-npub 2>/dev/null')
             _npub_der=$(guest_sudo "python3 /usr/local/lib/kali-live-headless/derive_identity.py $_salt --machine --purpose fips 2>/dev/null | cut -f1")
             if [ -n "$_npub_run" ] && [ "$_npub_run" = "$_npub_der" ]; then
@@ -396,7 +405,7 @@ else
               else
                 record fail "blackbox: boot record persisted to KLHCONFIG" "no logs/boot-*.log with persistent=yes on the fixture disk"
               fi
-              _expdig=$(printf '%s\n' '5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f' | sha256sum | cut -c1-16)
+              _expdig=$(printf '%s\n' "$FIXTURE_SALT" | sha256sum | cut -c1-16)
               if [ -n "$_bbf" ] && sudo grep -q "salt_sha256 : $_expdig" "$_bbf" 2>/dev/null; then
                 record pass "blackbox: salt digest matches fixture salt"
               else
