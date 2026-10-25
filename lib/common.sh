@@ -217,3 +217,46 @@ klh_check_config_perms() {
   [ "$(stat -c '%a' "$f")" = "600" ] || \
     klh_warn "$f is mode $(stat -c '%a' "$f"); recommended: chmod 600 $f (it contains the Wi-Fi passphrase)"
 }
+
+# fetch_fips_deb — stage the pinned third-party payloads into live-build's
+# config tree just before `lb build` runs (call site: build.sh, after the
+# overlay staging step). Extracted verbatim from the inline block that
+# commit b9edeed ("build.sh FIPS extraction") replaced with a call but
+# never shipped — build #26 died rc=127 at the call site. Semantics kept:
+#   - FIPS mesh daemon .deb ALWAYS stages (runtime stays dormant without
+#     peer config; FIPS_ENABLED gates the wire, not the package).
+#   - Rescue-channel cloudflared stages for the DEFAULT flavour only
+#     (WITH_RESCUE; minimal keeps it out — docs/fips-optionality-and-rescue-channel.md).
+#   - Both sha256-verified against the pins above; mismatch = deliberate
+#     repin required, never a silent pass.
+# POSIX-safe: build.sh is bash but common.sh stays sh-clean (SC30xx).
+fetch_fips_deb() {
+  _fde_deb="fips_${FIPS_VERSION}_amd64.deb"
+  mkdir -p "$KLH_COMMON/packages.chroot"
+  if [ -f "$REPO_DIR/build/pkg/$_fde_deb" ]; then
+    install -m 0644 "$REPO_DIR/build/pkg/$_fde_deb" "$KLH_COMMON/packages.chroot/$_fde_deb"
+  else
+    klh_info "fetching FIPS $FIPS_VERSION (github release)"
+    curl -fsSL "https://github.com/jmcorgan/fips/releases/download/v${FIPS_VERSION}/${_fde_deb}" \
+        -o "$KLH_COMMON/packages.chroot/$_fde_deb" \
+        || klh_die "FIPS $FIPS_VERSION download failed (pin in lib/common.sh)"
+  fi
+  _fde_sha=$(sha256sum "$KLH_COMMON/packages.chroot/$_fde_deb" | cut -d' ' -f1)
+  [ "$_fde_sha" = "$FIPS_SHA256" ] \
+    || klh_die "FIPS deb sha256 mismatch (got $_fde_sha, want $FIPS_SHA256) — update the pin deliberately"
+  klh_ok "FIPS $FIPS_VERSION staged (sha256 verified)"
+
+  if [ "$WITH_RESCUE" = true ]; then
+    _fde_bin="$KLH_COMMON/includes.chroot/usr/local/bin/cloudflared"
+    mkdir -p "$(dirname "$_fde_bin")"
+    if curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
+            -o "$_fde_bin"; then
+      echo "$CLOUDFLARED_SHA256  $_fde_bin" | sha256sum --check --quiet \
+          || klh_die "cloudflared $CLOUDFLARED_VERSION sha256 mismatch — repin in lib/common.sh"
+      chmod 0755 "$_fde_bin"
+      klh_ok "rescue channel: cloudflared $CLOUDFLARED_VERSION verified+installed"
+    else
+      klh_die "cloudflared $CLOUDFLARED_VERSION download failed — check network or pin"
+    fi
+  fi
+}
