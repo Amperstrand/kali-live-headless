@@ -130,7 +130,10 @@ ensure_klhconfig_partition() {
     log "no KLHCONFIG found — creating one on /dev/$bootdev (self-healing)"
     printf 'start=%s, size=131072, type=0c\n' "$start" | sfdisk --force --append "/dev/$bootdev" >/dev/null 2>&1 \
         || { log "WARNING: could not create KLHCONFIG partition on /dev/$bootdev — identities will NOT persist"; return 0; }
-    partprobe "/dev/$bootdev" 2>/dev/null || blockdev --rereadpt "/dev/$bootdev" 2>/dev/null || true
+    # partx (util-linux, always present): partprobe is parted's and NOT in
+    # the minimal image, and blockdev --rereadpt defers on busy devices —
+    # proven live on the stick 2026-10-25 (table written, node never came)
+    partx -u "/dev/$bootdev" 2>/dev/null || blockdev --rereadpt "/dev/$bootdev" 2>/dev/null || true
     sleep 3
     newpart=$(klh_cfgpart "/dev/$bootdev")
     if [ -n "$newpart" ] && [ -b "$newpart" ]; then

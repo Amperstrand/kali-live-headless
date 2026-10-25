@@ -95,6 +95,15 @@ else
       sudo test -x "$SQ_MNT/usr/local/sbin/$s" && record pass "script executable: $s" || record fail "script executable: $s"
     done
 
+    # ---- KLHCONFIG tooling: dosfstools must be in the image or the
+    # first-boot auto-create can append a partition it can never format
+    # (found on hardware 2026-10-25: minimal shipped without mkfs.vfat)
+    if sudo test -x "$SQ_MNT/usr/sbin/mkfs.vfat" || sudo test -x "$SQ_MNT/usr/bin/mkfs.vfat"; then
+      record pass "KLHCONFIG: mkfs.vfat present (auto-create can format)"
+    else
+      record fail "KLHCONFIG: mkfs.vfat present" "dosfstools missing from the image — add it to the package lists"
+    fi
+
     # ---- blackbox forensic logging (2026-10-25): script + unit + enablement
     if sudo test -x "$SQ_MNT/usr/local/sbin/kali-live-blackbox"; then
       record pass "blackbox: script present+executable"
