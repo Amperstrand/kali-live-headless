@@ -199,6 +199,11 @@ drift is absorbed by bumping the pin, nothing else.
   compressor switched, boot-gate BIOS+UEFI, compare `time mksquashfs`.
   If green: hotpatch ~10 min, builds ~40 min shorter. Highest-leverage
   single experiment available.
+- **split test/stages/stage-cde.sh (653 lines)** into c/d/e modules —
+  deferred DELIBERATELY until after v26's gate run: the split is
+  mechanical but the gate hasn't executed once on the post-unification
+  suite; changing suite structure and gate-verifying it for the first
+  time in the same run would tangle a failure's causes.
 - ~~**Parallel boot stages**~~ — LANDED 2026-10-25: `tools/suite-parallel.sh`
   (see the build-time budget entry above).
 - **Mechanical verdict ledger** — test.sh should emit a machine-readable

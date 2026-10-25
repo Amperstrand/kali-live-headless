@@ -29,8 +29,6 @@ else
     . "$(dirname "$0")/../lib/kali-live-headless/klh-lib.sh"
 fi
 
-MOD=/usr/local/lib/kali-live-headless/derive_identity.py
-
 [ $# -ge 1 ] && [ -d "$1" ] || { echo "identity: no config mount — salt not created" >&2; exit 1; }
 SALT_FILE="$1/master.salt"
 

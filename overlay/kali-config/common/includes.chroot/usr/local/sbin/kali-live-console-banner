@@ -91,6 +91,7 @@ BANNER=$(printf '
  RSA host key:     %s
 %s
 %s
+%s
 ==============================================================
 ' "$HN" "$ADDRS" "$HN" "$FP_ED" "$FP_RSA" "$KLH_LINE" "$MESH_LINE" "${WG_LINE:-}")
 

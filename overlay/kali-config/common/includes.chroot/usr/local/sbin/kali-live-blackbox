@@ -44,7 +44,6 @@ else
 fi
 
 BB_MOUNT_DIR="${BB_MOUNT_DIR:-/run/klh-blackbox}"
-BB_LABEL="KLHCONFIG"
 BB_LOGS_REL="logs"
 BB_MAX_BOOTS=20
 BB_EVENTS_MAX=524288

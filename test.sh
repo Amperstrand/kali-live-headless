@@ -55,7 +55,7 @@ ISO_ARG="" SSH_KEY_ARG=""
     --level)       LEVEL=${2:?}; shift 2 ;;
     --no-uefi)     RUN_UEFI=false; shift ;;
     --no-forensic) RUN_FORENSIC=false; shift ;;
-    --iso)         ISO_ARG=${2:?}; shift 2 ;;
+    --iso)         ISO_ARG=${2:?}; shift 2 ;;  # shellcheck disable=SC2034  # consumed by the sourced stage modules
     --ssh-key)     SSH_KEY_ARG=${2:?}; shift 2 ;;
     -h|--help)     sed -n '2,30p' "$0"; exit 0 ;;
     *) klh_die "unknown option: $1" ;;
