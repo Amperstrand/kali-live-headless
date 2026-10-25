@@ -19,6 +19,14 @@ else
   # lost 40 min of BIOS wait plus three more stages that way. Reap pidfile
   # leftovers, then refuse to start if the port is still taken.
   PORT_OK=true
+  # Deterministic SMBIOS for every guest: default QEMU ships EMPTY DMI
+  # fields, machine_fingerprint() raises, and derive_identity silently
+  # failed in EVERY prior suite run — wg fell back to random and the old
+  # "wg0 up" assert passed vacuously (found in the 2026-10-26 v26 gate:
+  # KEYSOURCE=random despite a valid fixture salt; no assert could see it
+  # until the unification checks). A fixed uuid/serial pair also makes the
+  # fixture-salt identities STABLE and precomputable per guest.
+  KLH_SMBIOS=(-smbios type=1,uuid=4b4c482d-5145-4d55-4944-303130323334 -smbios type=1,serial=KLHQEMU1 -smbios type=2,serial=KLHQEMABRD1)
   # One QEMU hostfwd port per lane: concurrent suites in different worktrees
   # (this is a multi-agent repo now) must not fight over 2222 — and nobody
   # should ever need to kill another lane's QEMU to run their own gate.
@@ -84,7 +92,7 @@ else
       local mode=$1; shift
       local pidfile="$SCRATCH/qemu-$mode.pid" serial="$SCRATCH/serial-$mode.log"
       rm -f "$pidfile"
-      "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" \
+      "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" "${KLH_SMBIOS[@]}" \
         -cdrom "$ISO" -boot d \
         -device virtio-net-pci,netdev=net0 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$PORT-:22 \
         -drive file="$SCRATCH/witness.img",format=raw,if=virtio \
@@ -95,13 +103,26 @@ else
 
     kill_qemu() { local pid; pid=$(cat "$SCRATCH/qemu-$1.pid" 2>/dev/null || true); [ -n "$pid" ] && kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 0; }
 
-    wait_ssh() { # timeout_sec
+    wait_ssh() { # timeout_sec — waits for sshd AND for provision to settle.
+      # sshd comes up EARLY (live-config starts it before our oneshot
+      # finishes); under parallel-gate CPU contention provision ran 2min25s
+      # past SSH-up and every post-provision assert read empties (the
+      # 2026-10-26 v26 gate false-fail class). A green boot is provision
+      # DEAD (oneshot success) or failed — never left running.
       local deadline=$(( $(date +%s) + $1 ))
       while [ "$(date +%s)" -lt "$deadline" ]; do
-        if guest 'echo up' >/dev/null 2>&1; then return 0; fi
+        if guest 'echo up' >/dev/null 2>&1; then break; fi
         sleep 5
       done
-      return 1
+      guest 'echo up' >/dev/null 2>&1 || return 1
+      local settle=$(( $(date +%s) + 480 ))
+      while [ "$(date +%s)" -lt "$settle" ]; do
+        v=$(guest_sudo 'systemctl show -p SubState --value kali-live-headless-provision 2>/dev/null' 2>/dev/null || echo unknown)
+        [ "$v" = "dead" ] || [ "$v" = "failed" ] && return 0
+        sleep 5
+      done
+      echo "wait_ssh: provision did not settle (SubState=${v:-none}) after 480s — asserting anyway" >&2
+      return 0
     }
 
     common_guest_checks() { # mode
@@ -267,7 +288,7 @@ else
         # not the bootloader — the BIOS/UEFI stages cover that.
         if [ "$KERN_OK" = true ]; then
           pidfile="$SCRATCH/qemu-override.pid"; rm -f "$pidfile"
-          "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" \
+          "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" "${KLH_SMBIOS[@]}" \
             -kernel "$SCRATCH/vmlinuz" -initrd "$SCRATCH/initrd" \
             -append "boot=live username=kali hostname=kali console=ttyS0,115200" \
             -drive file="$ISO",format=raw,if=virtio,media=disk,readonly=on \
@@ -415,7 +436,7 @@ else
           truncate -s 64M "$SCRATCH/witness.img"
           WITNESS_MD5=$(md5sum "$SCRATCH/witness.img" | awk '{print $1}')
           pidfile="$SCRATCH/qemu-forensic.pid"; rm -f "$pidfile"
-          "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" \
+          "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" "${KLH_SMBIOS[@]}" \
             -kernel "$SCRATCH/vmlinuz" -initrd "$SCRATCH/initrd" \
             -append "boot=live username=kali hostname=kali console=ttyS0,115200 systemd.swap=no noautomount" \
             -drive file="$ISO",format=raw,if=virtio,media=disk,readonly=on \
@@ -515,7 +536,7 @@ DOCKERFILE
             local tag=$1; shift
             local pidfile="$SCRATCH/qemu-vmstore-$tag.pid"
             rm -f "$pidfile"
-            "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" \
+            "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" "${KLH_SMBIOS[@]}" \
               -kernel "$SCRATCH/vmlinuz" -initrd "$SCRATCH/initrd" \
               -append "boot=live username=kali hostname=kali console=ttyS0,115200 $*" \
               -drive file="$ISO",format=raw,if=virtio,media=disk,readonly=on \
@@ -614,7 +635,7 @@ DOCKERFILE
           # with a real NTFS volume sitting right there)
           pidfile3="$SCRATCH/qemu-vmstore-noconf.pid"
           rm -f "$pidfile3"
-          "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" \
+          "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" "${KLH_SMBIOS[@]}" \
             -kernel "$SCRATCH/vmlinuz" -initrd "$SCRATCH/initrd" \
             -append "boot=live username=kali hostname=kali console=ttyS0,115200" \
             -drive file="$ISO",format=raw,if=virtio,media=disk,readonly=on \
