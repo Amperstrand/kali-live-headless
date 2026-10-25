@@ -7,7 +7,7 @@ test, it is listed as **unproven** — do not trust it. Run:
     ./test.sh --iso output/iso-build<N>/kali-linux-rolling-live-amd64.iso   # suite
     tools/hw-check.sh                                                      # on hardware
 
-Last reviewed: 2026-10-23 (builds #17/#18 era; salt identities + BitLocker + FIPS daemon added).
+Last reviewed: 2026-10-25 (identity unification + stick registry + blackbox forensic logs).
 
 ## Access and authentication
 
@@ -38,6 +38,23 @@ Accepted, documented risks (see README for mitigations):
   EVERY machine the stick boots. Threat model: physical access to the stick
   is game over — rotate by deleting the file (salt deletion re-keys all
   identities; WG/mesh files rotate that machine) or rebuilding (PSK).
+* **Stick registry (2026-10-25+): per-stick salts are pre-generated and
+  recorded on the operator's workstation** at
+  `~/.local/share/kali-live-headless/stick-registry.tsv` (0600; the raw
+  stick serial is never stored — only its sha256, so a stolen registry
+  identifies nothing without the sticks). This concentrates the blast
+  radius: compromising the operator workstation compromises every stick's
+  identities. The registry path is OUTSIDE the repo by design and must
+  never be copied, committed, or logged (flash.sh prints only salt
+  digests). `flash.sh` seeds it automatically; first-boot self-generation
+  remains the fallback for dd-flashed sticks.
+* **Blackbox forensic logs (2026-10-25+): every boot writes a record to
+  `KLHCONFIG:/logs/`** — kernel cmdline (toram), salt digest, identity
+  outcomes, provision/watchdog journal lines, 15 s heartbeats, and a
+  clean-stop marker. The log contains SSID, IP, npub/wg-pub prefixes:
+  same threat model as the config partition itself (physical access is
+  game over). Without KLHCONFIG the blackbox degrades to RAM and says so
+  — the absence of a boot record is itself forensic evidence.
 * **BitLocker unlock is owner-consented and key-bounded.** Clear keys
   (suspended protection) or owner-supplied recovery passwords only — no
   TPM bypass exists or is attempted (sealed keys are unrecoverable from a

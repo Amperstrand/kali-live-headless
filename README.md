@@ -376,6 +376,36 @@ the wg pubkey and npub, so peers can be pre-enrolled on the hub. Plain
 Trail of Bits key-derivation guidance (variable data belongs in `info`,
 never in the salt position). Deleting `master.salt` re-keys everything.
 
+### Stick registry: known salts, tracked per stick (2026-10-25+)
+
+`flash.sh` now pre-seeds every stick it flashes with a **registered**
+salt instead of leaving first-boot generation to chance:
+
+    tools/stick-registry.sh list              # which sticks are known
+    tools/stick-registry.sh show --device /dev/sdX
+
+The registry (`~/.local/share/kali-live-headless/stick-registry.tsv`,
+mode 0600) maps `sha256(stick serial)` → salt and lives **outside this
+repo** — it holds the master secret of every stick you own, so treat the
+workstation like a root-password vault (see SECURITY.md). Only the salt
+*digest* ever appears in tool output or on-stick logs, which is enough to
+tie a boot record back to a registered stick. Sticks flashed with plain
+`dd` still self-generate a salt on first boot (unregistered, but equally
+strong).
+
+### Blackbox forensic logs (2026-10-25+)
+
+Every boot writes a record to `KLHCONFIG:/logs/boot-<ts>-<bootid>.log`:
+kernel cmdline (toram or not), medium backing store, salt digest, identity
+outcomes, the provision/watchdog journal stream, a 15 s heartbeat (so a
+hang point is visible), and a clean-stop marker. Bounded: last 20 boots +
+a capped `events.log`, ~1 MiB worst case; the writes are `sync`-flushed so
+a power cut preserves everything up to the cut. When the config partition
+is absent (toram with the stick pulled), the same log lives in RAM for the
+session and the record says `persistent=no` — an absent boot record is
+itself evidence. This exists because a stick vanished mid-incident on
+2026-10-24 and left nothing to autopsy.
+
 The FIPS daemon itself ships in the image (pinned upstream release,
 sha256-verified at build time), enabled at boot, dialing the staged default
 peer (`FIPS_PEER_ADDR` — our exit node) automatically.

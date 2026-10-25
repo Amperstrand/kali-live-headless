@@ -386,6 +386,26 @@ make_config_partition() {
     esac
     umount "$mnt" || true
     klh_ok "config partition $newpart (label KLHCONFIG, headless-wifi.conf written)"
+    # Per-stick master salt from the operator's registry (2026-10-25): a
+    # KNOWN, REGISTERED salt beats a random one generated on first boot —
+    # identities become precomputable and each stick's salt is on record
+    # (sha256-tied to the stick serial). Registry lives OUTSIDE the repo
+    # (~/.local/share/kali-live-headless/) and its salt never prints.
+    # Best effort: without it, the stick self-generates on first boot
+    # (identity-init) — same behavior as before this hook existed.
+    if [ -x "$REPO_DIR/tools/stick-registry.sh" ]; then
+      regrc=0
+      "$REPO_DIR/tools/stick-registry.sh" register --device "$DEVPATH" --build "${BUILD:-}" >/dev/null 2>&1 || regrc=$?
+      if [ "$regrc" = 0 ]; then
+        if "$REPO_DIR/tools/stick-registry.sh" apply --device "$DEVPATH" --build "${BUILD:-}" >/dev/null 2>&1; then
+          klh_ok "master.salt: seeded from the stick registry (deterministic identities)"
+        else
+          klh_warn "stick registered but salt apply failed — stick will self-generate one on first boot"
+        fi
+      else
+        klh_warn "stick registry: no serial / registry unavailable (rc=$regrc) — salt self-generates on first boot"
+      fi
+    fi
   else
     klh_warn "could not mount $part to write headless-wifi.conf"
   fi

@@ -2,6 +2,7 @@
 # Unit tests for derive_identity.py — determinism, divergence, formats,
 # and the openssl scalar->pubkey round-trip (proves the hand-built DER).
 set -u
+export PYTHONDONTWRITEBYTECODE=1  # drivers import overlay/ modules; never drop __pycache__ there
 PASS=0 FAIL=0
 ok()  { PASS=$((PASS+1)); echo "  ok: $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
