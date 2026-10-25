@@ -49,3 +49,23 @@ Brief: SPIKE-BRIEF.md. Research: docs/vmhost-base-os-research.md.
   output/build-console-d1.log (plain redirect, rc on next line), then
   KLH_TEST_PORT=22410 ./test.sh --stage bios gate.
 
+## M2 — first debian build attempt d1: fast failure, fixed (23:08→23:11)
+
+- State: d1 died in 12 SECONDS (run-logged verdict: build-d1 rc=1; log
+  timestamps mixed UTC/local — no hour gap). Root cause: upstream
+  cleanup_fs rm -rf's `.mirror` at stage [1/4] INSIDE the container before
+  lb config reads it → auto/config fell back to http://kali.download/kali →
+  dists/trixie/Release 404 → wget status 8 at build.sh:313.
+- Fix (commit 5362b0d): adapter now seds auto/config's two hardcoded
+  DEFAULTS (kali_mirror + public_kali_mirror) — tracked file, survives
+  cleanup, self-verified; .mirror no longer written. Container pre-flight:
+  trixie codename resolves in-container (network host), data/debian-cd/
+  trixie exists natively.
+- Validation: BASE=debian static 144/0 again; dry-run d2 rc=0 with both
+  mirror defaults verified in the staged tree.
+- d1b relaunched 23:11 local in tmux (deb-build-d1): past auto/config,
+  debootstrap resolving packages. MID-RUN EDIT BAN in force.
+- Next: wait out the ~2-3h build; then archive (automatic) +
+  KLH_TEST_PORT=22410 BASE=debian ./test.sh --stage bios --iso <archived>.
+
+
