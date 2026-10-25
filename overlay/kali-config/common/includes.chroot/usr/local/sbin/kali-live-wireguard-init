@@ -89,9 +89,10 @@ if [ -r "$SALT_FILE" ] && [ -x /usr/local/lib/kali-live-headless/derive_identity
         PUB=$(printf '%s\n' "$PRIV" | wg pubkey) || { echo "wireguard: wg pubkey failed on derived key" >&2; exit 1; }
         echo "wireguard: key derived from master salt (per-machine)" >&2
         # refresh the cache (keep a pinned TUNIP) so salt-less boots restore
-        # the same key rather than falling back to random
+        # the same key rather than falling back to random. KEYSOURCE records
+        # provenance for the suite + forensics (derived|random).
         { printf '# kali-live-headless wireguard identity - generated on first boot.\n# PRIVKEY IS A SECRET (plaintext, same threat model as the Wi-Fi PSK).\n# TUNIP is optional (set to pin the address instead of deriving it).\n'
-          printf 'PRIVKEY=%s\nPUBKEY=%s\n' "$PRIV" "$PUB"
+          printf 'KEYSOURCE=derived\nPRIVKEY=%s\nPUBKEY=%s\n' "$PRIV" "$PUB"
           [ -n "$TUNIP" ] && printf 'TUNIP=%s\n' "$TUNIP"; } > "$KV" 2>/dev/null || true
     fi
 fi
@@ -101,7 +102,7 @@ if [ -z "$PRIV" ] || [ -z "$PUB" ]; then
     PUB=$(printf '%s\n' "$PRIV" | wg pubkey) || { echo "wireguard: wg pubkey failed" >&2; exit 1; }
     # Persist BEFORE using it: an unpersisted key would silently rotate every
     # boot and break hub enrollment.
-    if ! printf '# kali-live-headless wireguard identity - generated on first boot.\n# PRIVKEY IS A SECRET (plaintext, same threat model as the Wi-Fi PSK).\n# TUNIP is optional (set to pin the address instead of deriving it).\nPRIVKEY=%s\nPUBKEY=%s\n' \
+    if ! printf '# kali-live-headless wireguard identity - generated on first boot.\n# PRIVKEY IS A SECRET (plaintext, same threat model as the Wi-Fi PSK).\n# TUNIP is optional (set to pin the address instead of deriving it).\nKEYSOURCE=random\nPRIVKEY=%s\nPUBKEY=%s\n' \
             "$PRIV" "$PUB" > "$KV" 2>/dev/null; then
         echo "wireguard: cannot persist identity to $KV" >&2
         exit 1

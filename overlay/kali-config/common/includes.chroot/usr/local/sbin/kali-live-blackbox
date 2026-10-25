@@ -119,6 +119,7 @@ bb_header() {
         printf 'medium      : %s\n' "${_medium:-none}"
         printf 'klhconfig   : %s (persistent=%s)\n' "${_cfgdev:-none}" "$_persist"
         printf 'salt_sha256 : %s\n' "$_saltdig"
+        printf 'wg_keysrc   : %s\n' "$(sed -n 's/^KEYSOURCE=//p' "$BB_MOUNT_DIR/wireguard.conf" 2>/dev/null | head -1 || echo unknown)"
         printf 'npub        : %s...\n' "$_npub"
         printf 'wg_pubkey   : %s...\n' "$_wgpub"
     } >> "$BB_BOOT_FILE" 2>/dev/null || true

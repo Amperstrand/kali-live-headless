@@ -5,12 +5,18 @@ find_iso() {
   # Prefer the newest archived build: archives are the versioned artifacts and
   # the slot is only a last-write convenience pointer (which a failed build can
   # leave stale). Fall back to the slot when nothing is archived yet.
+  # Both flavour names are checked: the minimal variant is the default now,
+  # and the original name-only lookup silently fell through to the slot for
+  # every minimal build (found 2026-10-25 pre-cut review).
   local newest
   newest=$(find "$REPO_DIR/output" -maxdepth 1 -type d -name 'iso-build*' 2>/dev/null \
     | sed 's/.*iso-build//' | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
-  if [ -n "$newest" ] && [ -f "$REPO_DIR/output/iso-build$newest/kali-linux-rolling-live-amd64.iso" ]; then
-    echo "$REPO_DIR/output/iso-build$newest/kali-linux-rolling-live-amd64.iso"
-    return
+  if [ -n "$newest" ]; then
+    for name in kali-linux-rolling-live-minimal-amd64.iso kali-linux-rolling-live-amd64.iso; do
+      if [ -f "$REPO_DIR/output/iso-build$newest/$name" ]; then
+        echo "$REPO_DIR/output/iso-build$newest/$name"; return
+      fi
+    done
   fi
   ls -t "$REPO_DIR"/output/kali-linux-*-live-*.iso 2>/dev/null | head -1 || true
 }
@@ -88,6 +94,43 @@ else
       s=$(basename "$s")
       sudo test -x "$SQ_MNT/usr/local/sbin/$s" && record pass "script executable: $s" || record fail "script executable: $s"
     done
+
+    # ---- blackbox forensic logging (2026-10-25): script + unit + enablement
+    if sudo test -x "$SQ_MNT/usr/local/sbin/kali-live-blackbox"; then
+      record pass "blackbox: script present+executable"
+    else
+      record fail "blackbox: script present+executable"
+    fi
+    if sudo test -f "$SQ_MNT/etc/systemd/system/kali-live-blackbox.service" \
+       && sudo test -L "$SQ_MNT/etc/systemd/system/multi-user.target.wants/kali-live-blackbox.service"; then
+      record pass "blackbox: unit present + enabled"
+    else
+      record fail "blackbox: unit present + enabled (missing unit or wants-symlink — hotpatch list drift?)"
+    fi
+
+    # ---- identity unification (2026-10-24/25): order of first-boot ops.
+    # The salt generator (identity-init) MUST run before any consumer
+    # (host_role_init) — the reverse order gave first boots a throwaway
+    # random npub that the second boot replaced.
+    _prov="$SQ_MNT/usr/local/sbin/kali-live-headless-provision"
+    _ii=$(sudo grep -n 'kali-live-identity-init "\$OVERRIDE_MNT"' "$_prov" | head -1 | cut -d: -f1)
+    _hr=$(sudo grep -n 'host_role_init.py "\$OVERRIDE_MNT"' "$_prov" | head -1 | cut -d: -f1)
+    if [ -n "$_ii" ] && [ -n "$_hr" ] && [ "$_ii" -lt "$_hr" ]; then
+      record pass "identity: salt generator runs before consumers (order)"
+    else
+      record fail "identity: salt generator runs before consumers (order)" "identity-init line $_ii vs host_role line $_hr"
+    fi
+    # the fips seeding prerequisite: the example config must be copied (the
+    # 2026-10-24 live finding: fips stayed disabled forever without it)
+    sudo grep -q 'fips.yaml.example.*fips.yaml\|cp .*fips.yaml' "$_prov" \
+      && record pass "identity: fips.yaml seeded from shipped example" \
+      || record fail "identity: fips.yaml seeded from shipped example"
+    # derive-wins: a valid salt must overwrite the cached wg key (never the
+    # reverse), and the key's provenance must be recorded for forensics
+    sudo grep -q 'KEYSOURCE=derived' "$SQ_MNT/usr/local/sbin/kali-live-wireguard-init" \
+      && record pass "identity: wg key provenance recorded (KEYSOURCE)" \
+      || record fail "identity: wg key provenance recorded (KEYSOURCE)"
+
     # WireGuard M1 + BitLocker unlock: packages installed in the image, and
     # the /etc/default staging carries the non-secret values when the
     # features are on (both runtime inits treat "not configured" as off).

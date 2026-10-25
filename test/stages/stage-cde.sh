@@ -303,9 +303,67 @@ else
                 record fail "override: wg0 up" "no wg0; wg0.conf Address: ${w:-none} — staged WG_TUNNET stale?"
               fi
             fi
+            # ---- identity unification end-to-end (2026-10-24/25): with a
+            # valid fixture salt aboard, EVERY identity must be derived from
+            # it — npub == derive_identity(salt, machine) computed INSIDE the
+            # guest (self-consistency, no host-side fingerprint knowledge
+            # needed), and the fips seeding must actually have run (the
+            # 2026-10-24 live finding: fips.yaml never existed).
+            _salt='5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f'
+            _npub_run=$(guest 'cat /run/kali-live-headless-npub 2>/dev/null')
+            _npub_der=$(guest_sudo "python3 /usr/local/lib/kali-live-headless/derive_identity.py $_salt --machine --purpose fips 2>/dev/null | cut -f1")
+            if [ -n "$_npub_run" ] && [ "$_npub_run" = "$_npub_der" ]; then
+              record pass "identity: npub == salt-derived npub (one entropy source)"
+            else
+              record fail "identity: npub == salt-derived npub" "run='$_npub_run' derived='$_npub_der'"
+            fi
+            if guest_sudo 'test -s /etc/fips/fips.key && test -f /etc/fips/fips.yaml' >/dev/null 2>&1; then
+              record pass "identity: fips seeded (fips.yaml + fips.key)"
+            else
+              record fail "identity: fips seeded (fips.yaml + fips.key)"
+            fi
+            if [ "$(guest_sudo 'systemctl is-enabled fips 2>/dev/null')" = "enabled" ]; then
+              record pass "identity: fips service enabled"
+            else
+              record fail "identity: fips service enabled"
+            fi
+            # ---- blackbox: the forensic boot record must exist IN the guest
+            # (RAM or persisted) with the salt digest — proving the recorder
+            # runs at all (2026-10-25 feature, first suite coverage here).
+            _bb=$(guest_sudo 'ls /run/klh-blackbox/logs/boot-*.log 2>/dev/null | head -1')
+            if [ -n "$_bb" ] && guest_sudo "grep -q 'salt_sha256' '$_bb'" >/dev/null 2>&1; then
+              record pass "blackbox: boot record written (guest $_bb)"
+            else
+              record fail "blackbox: boot record written" "no boot-*.log with salt_sha256 under /run/klh-blackbox/logs"
+            fi
             timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu override
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
             kill -9 "$QPID" 2>/dev/null || true
+            # ---- post-poweroff: what the guest WROTE to the config disk is
+            # the durable half of the story — key provenance + blackbox
+            # persistence + the salt itself untouched.
+            if sudo mount -o loop "$SCRATCH/cfg.img" "$CFG_MNT" 2>/dev/null; then
+              if sudo grep -q '^KEYSOURCE=derived' "$CFG_MNT/wireguard.conf" 2>/dev/null; then
+                record pass "override: wg key persisted with KEYSOURCE=derived"
+              else
+                record fail "override: wg key KEYSOURCE=derived" "$(sudo grep '^KEYSOURCE' "$CFG_MNT/wireguard.conf" 2>/dev/null || echo 'no wireguard.conf/KEYSOURCE')"
+              fi
+              _bbf=$(sudo ls "$CFG_MNT/logs"/boot-*.log 2>/dev/null | head -1)
+              if [ -n "$_bbf" ] && sudo grep -q 'persistent=yes' "$_bbf" 2>/dev/null; then
+                record pass "blackbox: boot record persisted to KLHCONFIG"
+              else
+                record fail "blackbox: boot record persisted to KLHCONFIG" "no logs/boot-*.log with persistent=yes on the fixture disk"
+              fi
+              _expdig=$(printf '%s\n' '5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f' | sha256sum | cut -c1-16)
+              if [ -n "$_bbf" ] && sudo grep -q "salt_sha256 : $_expdig" "$_bbf" 2>/dev/null; then
+                record pass "blackbox: salt digest matches fixture salt"
+              else
+                record fail "blackbox: salt digest matches fixture salt" "expected $_expdig in $_bbf"
+              fi
+              sudo umount "$CFG_MNT" 2>/dev/null || true
+            else
+              record fail "override: post-poweroff cfg.img remount" "cannot re-mount fixture disk for write-back asserts"
+            fi
           else
             record fail "override: booted to SSH" "timeout after ${BOOT_TIMEOUT}s — see $SCRATCH/serial-override.log"
             kill_qemu override
