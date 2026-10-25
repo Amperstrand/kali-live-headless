@@ -146,7 +146,63 @@ EOF
     grep -q '^kali-linux-core$' "$common/package-lists/headless.list.chroot" \
       && klh_die "debian adapter: kali-linux-core still in headless list"
   fi
-  klh_ok "debian adapter: selective firmware list staged; kali-only packages stripped"
+
+  # UPSTREAM-native lists carry names absent from trixie too (d1b: the
+  # virtualization list's virtualbox-guest-x11 — VirtualBox guest packages
+  # are gone from Debian — killed the chroot install pass 6 minutes in
+  # with 'Unable to locate package'). Guest-additions bits for running the
+  # live system AS a VM guest are irrelevant to our VM-HOST role anyway;
+  # drop the absent name, keep the resolvable rest upstream-identical.
+  if [ -f "$common/package-lists/virtualization.list.chroot" ]; then
+    sed -i '/^virtualbox-guest-x11$/d' "$common/package-lists/virtualization.list.chroot"
+    grep -q '^virtualbox-guest-x11$' "$common/package-lists/virtualization.list.chroot" \
+      && klh_die "debian adapter: virtualbox-guest-x11 still in virtualization list"
+  fi
+
+  klh_distro_verify_package_lists "$common"
+  klh_ok "debian adapter: selective firmware list staged; kali-only/absent packages stripped"
+}
+
+# Resolvability pre-flight: EVERY package named by every staged .list.chroot
+# (ours, upstream-native, generated) must exist in the target suite's
+# Packages indices — an absent name otherwise dies only at the chroot
+# install pass, minutes into the build (the d1b lesson). Indexes cache in
+# build/.klh-distro-idx (outside the upstream clone — its git clean would
+# wipe them); a fetch failure downgrades to a warning (the build itself
+# still fails loudly if something is truly missing).
+klh_distro_verify_package_lists() { # $1 = staged kali-config/common dir
+  # shellcheck disable=SC2154  # UPSTREAM_DIR/BRANCH/REPO_DIR set by build.sh
+  local common="$1" idx areas a f names missing="" pkg
+  idx="$REPO_DIR/build/.klh-distro-idx"
+  areas="main contrib non-free non-free-firmware"
+  mkdir -p "$idx"
+  for a in $areas; do
+    f="$idx/${BRANCH}-${a}-Packages.gz"
+    if [ ! -s "$f" ] || [ -n "$(find "$f" -mtime +1 2>/dev/null)" ]; then
+      curl -fsSL --max-time 120 \
+        "$KLH_DISTRO_DEFAULT_MIRROR/dists/$BRANCH/$a/binary-amd64/Packages.gz" -o "$f" \
+        || { klh_warn "package-index fetch failed for $a — skipping resolvability pre-flight"; return 0; }
+    fi
+  done
+  zcat "$idx/${BRANCH}-"*-Packages.gz | sed -n 's/^Package: //p' | sort -u > "$idx/${BRANCH}-names.txt"
+  [ -s "$idx/${BRANCH}-names.txt" ] || { klh_warn "empty package index — skipping resolvability pre-flight"; return 0; }
+  while IFS= read -r pkg; do
+    # empty lines and lb '!'-directives are the only skips left
+    case "$pkg" in ''|'!'*) continue ;; esac
+    grep -qx "$pkg" "$idx/${BRANCH}-names.txt" || missing="$missing $pkg"
+  done < <(awk -v arch="${ARCH:-amd64}" '
+      BEGIN { keep = 1 }
+      # live-build list conditionals: honor #if ARCHITECTURES guards so
+      # foreign-arch names (linux-headers-arm64 on an amd64 build) are not
+      # false-flagged (first pre-flight catch, 2026-10-26)
+      /^#if[[:space:]]+ARCHITECTURES/ { keep = ($0 ~ ("(^|[[:space:]])" arch "([[:space:]]|$)")) ? 1 : 0; next }
+      /^#endif/ { keep = 1; next }
+      keep { sub(/#.*/, ""); sub(/[[:space:]]+$/, ""); print }
+    ' "$common"/package-lists/*.list.chroot | sort -u)
+  if [ -n "$missing" ]; then
+    klh_die "debian adapter: packages named in staged lists but ABSENT from $BRANCH:$missing — map them in lib/distro/debian.sh (d1b lesson)"
+  fi
+  klh_ok "debian adapter: every staged package-list name resolves in $BRANCH ($(wc -l < "$idx/${BRANCH}-names.txt") packages indexed)"
 }
 
 klh_distro_engine_guard() {
