@@ -1,0 +1,34 @@
+#!/bin/sh
+# klh-apt-cache.hook.build — warm the package cache from the previous
+# build's harvest (2026-10-25). Upstream's stage [1/4] wipes cache/ before
+# every build, so live-build's own --cache-packages persistence never
+# survives to help the NEXT build. This hook restores the .debs our
+# build.sh harvested after the last successful build into lb's package
+# cache (cache/packages.chroot), where live-build seeds the chroot's
+# /var/cache/apt/archives before installing — same-version .debs are then
+# served from disk instead of the network.
+#
+# Fail-open by design: no harvest, wrong cwd, lb cache semantics change —
+# the build proceeds exactly as before this hook existed.
+#
+# Runs HOST-SIDE at the start of `lb build`, in the build checkout (cwd),
+# where .klh-apt-cache/ lives (upstream's clean wipes cache/, chroot/,
+# config/, .build/, binary/, local/ — a dotdir is not on its list).
+set -u
+
+CACHE_SRC=".klh-apt-cache"
+CACHE_DST="cache/packages.chroot"
+
+[ -d "$CACHE_SRC" ] || exit 0
+mkdir -p "$CACHE_DST" 2>/dev/null || exit 0
+
+n=0
+for f in "$CACHE_SRC"/*.deb; do
+    [ -e "$f" ] || break
+    if cp -n "$f" "$CACHE_DST/" 2>/dev/null; then
+        n=$((n + 1))
+    fi
+done
+echo "klh-apt-cache: restored $n debs into $CACHE_DST (apt should now install mostly from disk)"
+
+exit 0
