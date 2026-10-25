@@ -39,10 +39,13 @@ DRY_RUN=false
 log() {
     logger -t "$TAG" -- "$*" 2>/dev/null || true
     # console copy: only when writable (non-root dry-runs would otherwise
-    # spray redirect errors)
+    # spray redirect errors); --dry-run also echoes to stderr so an
+    # interactive operator SEES the refusal (rc alone hid the reason on
+    # the laptop, 2026-10-26)
     if [ -w /dev/console ]; then
         printf '[%s] %s\n' "$TAG" "$*" > /dev/console 2>/dev/null || true
     fi
+    [ "$DRY_RUN" = true ] && printf '[%s] %s\n' "$TAG" "$*" >&2
 }
 
 # ------------------------------------------------------------- config input
