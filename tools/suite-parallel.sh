@@ -20,7 +20,7 @@ REPO_DIR=$(cd "$(dirname "$0")/.." && pwd) || exit 1
 cd "$REPO_DIR" || exit 1
 
 JOBS=3
-STAGES="bios,override,uefi,forensic"
+STAGES="bios,override,uefi,forensic,vmstore"
 ISO_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
