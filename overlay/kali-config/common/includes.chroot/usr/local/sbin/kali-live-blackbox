@@ -140,7 +140,9 @@ bb_header() {
 
 bb_heartbeat() {
     _up=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo '?')
-    _wifi=$(nmcli -t -f TYPE,STATE,CONNECTION device status 2>/dev/null | grep -E '^wifi( |-)' | head -1)
+    # ^wifi: exact — 'wifi-p2p:disconnected' matched first and the
+    # heartbeat reported the WRONG adapter all day (v29 hardware record)
+    _wifi=$(nmcli -t -f TYPE,STATE,CONNECTION device status 2>/dev/null | grep -E '^wifi:' | head -1)
     bb_log "heartbeat: up=${_up}s wifi=${_wifi:-unknown}"
 }
 
@@ -150,9 +152,12 @@ bb_serve() {
     # stream the product's own journal tags into this boot's file
     _jargs=""
     for _t in $BB_TAGS; do _jargs="$_jargs -t $_t"; done
-    # -n 200: backfill the provision run (it runs BEFORE this service), then follow
+    # -n 200: backfill the provision run (it runs BEFORE this service), then
+    # follow. -o cat: message BODIES only — the default format emitted empty
+    # bodies in the v29 hardware record (the exact wg-init evidence we needed
+    # was captured as blank lines, 2026-10-26).
     # shellcheck disable=SC2086
-    journalctl -f -n 200 --no-pager $_jargs 2>/dev/null | while IFS= read -r _line; do
+    journalctl -f -n 200 --no-pager -o cat $_jargs 2>/dev/null | while IFS= read -r _line; do
         printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$_line" >> "$BB_BOOT_FILE" 2>/dev/null || true
     done &
     _jpid=$!

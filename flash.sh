@@ -242,8 +242,21 @@ else
   blockdev --rereadpt "$DEVPATH" 2>/dev/null || true
 
   klh_info "writing ISO to $DEVPATH (this can take several minutes)"
+  DD_START=$(date +%s)
   if ! dd if="$ISO" of="$DEVPATH" bs=4M iflag=fullblock conv=fsync status=progress; then
     klh_die "dd failed — the device may be unusable/removed; do not boot from it"
+  fi
+  DD_ELAPSED=$(( $(date +%s) - DD_START ))
+  ISO_MB=$(( $(stat -c %s "$ISO") / 1048576 ))
+  DD_RATE=$(( ISO_MB / (DD_ELAPSED > 0 ? DD_ELAPSED : 1) ))
+  # A USB2 port or a flaky cable writes at ~6 MB/s where USB3 does 60-400:
+  # the 2026-10-26 re-flash on a slow port FAILED verification (and a slow
+  # write is the classic signature of a bad port/cable/extension). Say it
+  # BEFORE the verify burns minutes discovering it.
+  if [ "$DD_RATE" -lt 15 ]; then
+    klh_warn "write rate only ${DD_RATE} MB/s — this smells like a USB2 port, bad cable, or a failing stick; verification failures below are likely NOT the ISO's fault. Try a direct USB3 port."
+  else
+    klh_info "write completed at ${DD_RATE} MB/s"
   fi
   sync
   blockdev --rereadpt "$DEVPATH" 2>/dev/null || true

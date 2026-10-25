@@ -49,8 +49,14 @@ else
 fi
 
 log() {
-    logger -t "$TAG" -- "$*" 2>/dev/null || true
-    printf '[%s] %s\n' "$TAG" "$*" > /dev/console 2>/dev/null || true
+    # /dev/kmsg FIRST: kernel-log lines are captured by the journal AND are
+    # readable early-boot (logger races journald startup, /dev/console output
+    # never reaches the journal at all — the 2026-10-26 auto-create failure
+    # on hardware left NO journal trace of its log lines for exactly this
+    # reason). Falls back to logger + console for non-root callers.
+    printf '<5>%s: %s\n' "$TAG" "$*" > /dev/kmsg 2>/dev/null \
+        || logger -t "$TAG" -- "$*" 2>/dev/null \
+        || true
 }
 
 conf_value() { # $1=file $2=KEY -> first plain KEY=value value
@@ -334,15 +340,21 @@ if [ "$WG_ONLY" = true ] && [ -d /sys/class/net/wg0 ]; then
     fi
 fi
 
-# SSH rate limiting: reject >3 new connections/minute per source IP.
-# Password auth is already disabled; this blocks key-probing and DoS.
+# SSH rate limiting: >7 new connections/minute per source IP gets dropped.
+# Password auth is already disabled; this blunts key-probing and DoS.
+# NOTE the threshold history: 3/min latched THREE legitimate consumers in
+# one day (2026-10-26: the operator's own ssh loop, the QEMU suite, and
+# the hardware battery — the recent module's --update refreshes the window
+# on every match, so ONE connection over threshold seals the source and
+# every retry re-seals it). 7/min keeps the brute-force value while leaving
+# room for automation; multiplexed clients (ControlMaster) are immune.
 # Rules are best-effort — if iptables isn't available the stick still
 # boots fine (sshd's own MaxAuthTries + publickey-only are the real gates).
 if command -v iptables >/dev/null 2>&1; then
     iptables -C INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --set 2>/dev/null || {
         iptables -I INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --set
-        iptables -I INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --update --seconds 60 --hitcount 4 -j DROP
-        log "ssh rate limiting: max 3 new connections/minute per source"
+        iptables -I INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --update --seconds 60 --hitcount 8 -j DROP
+        log "ssh rate limiting: max 7 new connections/minute per source"
     }
 fi
 

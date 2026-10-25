@@ -218,6 +218,34 @@ drift is absorbed by bumping the pin, nothing else.
   round-trip, socat forwards into a VM) is the last unproven README
   claim. Lives in the private overlay's lane.
 
+15. **The image's SSH rate limiter LATCHES** (2026-10-26, three victims in
+   one day: the operator's ssh loop, the QEMU suite, the hardware battery):
+   `iptables -m recent --update` refreshes the window on every match, so ONE
+   connection over threshold seals the source and every retry re-seals it.
+   Threshold is now 7/min; ANY repeat client of a stick (suite, hw-check,
+   scripts) must use ControlMaster multiplexing — one connection, immune.
+16. **Mode gates silently disable features**: `[ -x file ]` guards that fail
+   on a 100644 file shipped the feature dead with zero errors —
+   derive_identity.py was non-executable from v19 through v28, so the wg
+   salt-derivation NEVER ran and every key ever issued was the random
+   fallback (found 2026-10-26 via `sh -x` on a live guest). Stage-b now
+   asserts every runtime-gated executable bit; keep that list current when
+   adding `-x` guards.
+17. **sudo's HOME is /root** (2026-10-26): anything user-homed (the stick
+   registry!) resolved under sudo must go through SUDO_USER's passwd entry;
+   flash.sh's registry hook silently used root's empty registry otherwise.
+18. **Settle semantics**: a boot-stage's asserts must wait for a COMPLETION
+   sentinel (provision's `/run/kali-live-headless.settled`, its literal last
+   line), never for proxies — the banner file isn't ordered after provision,
+   and the blackbox dir appeared before its final stable activation; both
+   fired mid-provision and the asserts read a half-built machine twice.
+19. **`lsblk` lacks `-o END` on some hosts** — `/sys/block/<disk>/<part>/start`
+   + `/size` is the portable partition-end source (two scripts burned by
+   this on 2026-10-26).
+20. **A slow dd is a diagnosis** (2026-10-26): a flash writing at ~6 MB/s
+   failed verification — USB2 port or bad cable; flash.sh now warns on
+   <15 MB/s before the verify wastes minutes.
+
 ## Public-repo hygiene
 
 The repo is **public**. Nothing private may land here, ever: no PSKs, SSIDs,
