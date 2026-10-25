@@ -37,6 +37,17 @@
 #   kali-live-bitlocker-mount unmount /mntpoint
 
 set -u
+# canonical cfgpart/salt helpers (dedup 2026-10-25)
+# Source the canonical lib. The existence test (not `. file || . file`) is
+# deliberate: `.` is a POSIX special builtin, and a FAILING special builtin
+# is FATAL to the shell in POSIX mode (bash-as-/bin/sh) — the || fallback
+# would never run. Both paths are the same file in-image; the second makes
+# the script runnable straight from a checkout (tests, dry runs).
+if [ -f /usr/local/lib/kali-live-headless/klh-lib.sh ]; then
+    . /usr/local/lib/kali-live-headless/klh-lib.sh
+else
+    . "$(dirname "$0")/../lib/kali-live-headless/klh-lib.sh"
+fi
 
 FUSE_ROOT=/run/kali-live-headless/bitlocker
 ETC_DEFAULT=/etc/default/kali-live-headless
@@ -50,7 +61,7 @@ cfg_get() { sed -n "s/^$1=//p" "$ETC_DEFAULT" 2>/dev/null | head -n 1 | tr -d \'
 
 klh_conf() {  # print KLHCONFIG bitlocker.conf if a labeled partition exists
     part mnt
-    part=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}')
+    part=$(klh_cfgpart)
     [ -n "$part" ] || return 1
     mnt=$(mktemp -d)
     mount -o ro "$part" "$mnt" 2>/dev/null || { rmdir "$mnt" 2>/dev/null; return 1; }

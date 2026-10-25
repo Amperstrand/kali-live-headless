@@ -174,8 +174,24 @@ drift is absorbed by bumping the pin, nothing else.
   build N+1 while N's ISO is still wanted silently destroys N. Preserve first,
   then build.
 
-## Improvements backlog (2026-10-23 review; ranked by leverage)
+## Improvements backlog (2026-10-25 update; ranked by leverage)
 
+- **Build-time budget & cache layers (where the ~2h20m minimal build goes)**:
+  xz squashfs ~55m · debootstrap+chroot install ~45-70m (cold every time —
+  upstream stage [1/4] wipes chroot/, cache/, config/) · package download
+  ~5-15m · initrd/xorriso/verify ~15m. Landed 2026-10-25: **warm apt cache**
+  (`hooks/build/klh-apt-cache.hook.build` + build.sh post-build harvest into
+  `build/kali-live/.klh-apt-cache/` — upstream's clean list spares dotdirs),
+  which kills the download chunk after the first build. Still open, in order:
+  1. **zstd squashfs** (see below) — the single biggest cut.
+  2. **hot-chroot lane** — preserve chroot/ across builds (skip debootstrap
+     for iteration builds; upstream's unconditional wipe means this needs
+     either an upstream flag or our own `lb build` invocation on a preserved
+     tree — MUST stay a separate experimental path; release builds stay
+     cold-clean, provenance guard unchanged).
+  3. **parallel boot gates** — LANDED 2026-10-25 (`tools/suite-parallel.sh`,
+     jobs=3 default): halves post-build gate wall-clock; watch CPU on 8-core
+     hosts (2×4-vcpu guests is the ceiling).
 - **zstd squashfs experiment** — the hotpatch's ~55 min is nearly all
   xz recompression (full builds pay the same tax in their squashfs
   phase). The kernel has supported zstd squashfs for years and
@@ -183,10 +199,8 @@ drift is absorbed by bumping the pin, nothing else.
   compressor switched, boot-gate BIOS+UEFI, compare `time mksquashfs`.
   If green: hotpatch ~10 min, builds ~40 min shorter. Highest-leverage
   single experiment available.
-- **Parallel boot stages** — `KLH_TEST_PORT` exists; stages still run
-  40–60 min apiece, serialized. Two concurrent stages on distinct ports
-  (or the suite on ai-legion) halves gate wall-clock. Watch CPU: 2×4
-  vcpu guests on an 8-core host is the practical ceiling.
+- ~~**Parallel boot stages**~~ — LANDED 2026-10-25: `tools/suite-parallel.sh`
+  (see the build-time budget entry above).
 - **Mechanical verdict ledger** — test.sh should emit a machine-readable
   verdict line that `iso-archive.sh`/BUILDS.md rows consume; several
   rows were hand-typed and one chain lied (item 10). The ledger is only

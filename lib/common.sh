@@ -19,6 +19,16 @@ klh_warn() { printf 'WARNING: %s\n' "$*" >&2; }
 klh_info() { printf ' * %s\n' "$*"; }
 klh_ok()   { printf ' ✓ %s\n' "$*"; }
 
+# The canonical KLHCONFIG-partition + salt helpers live in ONE POSIX file
+# that also ships in the image (overlay/.../klh-lib.sh); bash-side scripts
+# get them by sourcing it here. flash.sh and tools/stick-registry.sh both
+# consumed their own diverging copies of this lookup before the 2026-10-25
+# dedup — same drift class as the in-image empty-salt incident.
+_klh_repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=overlay/kali-config/common/includes.chroot/usr/local/lib/kali-live-headless/klh-lib.sh
+. "$_klh_repo_dir/overlay/kali-config/common/includes.chroot/usr/local/lib/kali-live-headless/klh-lib.sh"
+unset _klh_repo_dir
+
 klh_require_cmd() {
   command -v "$1" >/dev/null 2>&1 || klh_die "'$1' is required but not found in PATH"
 }
