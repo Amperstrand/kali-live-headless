@@ -195,7 +195,13 @@ ln -sfn ../.klh-apt-cache "$UPSTREAM_DIR/cache/packages.chroot" 2>/dev/null || t
 # cap the persistent cache (full minimal set ~1200 debs / ~900MB; 4000
 # bounds disk while surviving several package-set experiments)
 if [ -d "$UPSTREAM_DIR/.klh-apt-cache" ]; then
-  _total=$(ls -1 "$UPSTREAM_DIR/.klh-apt-cache"/*.deb 2>/dev/null | wc -l)
+  # fail-proof count: `ls dir/*.deb | wc -l` under pipefail dies silently
+  # when the dir is empty (killed build #30 six minutes in — the block had
+  # never executed in a real build before, hotpatches skip build.sh)
+  _total=0
+  for _f in "$UPSTREAM_DIR/.klh-apt-cache"/*.deb; do
+    if [ -e "$_f" ]; then _total=$((_total + 1)); fi
+  done
   if [ "$_total" -gt 4000 ]; then
     ls -1t "$UPSTREAM_DIR/.klh-apt-cache"/*.deb 2>/dev/null | tail -n +"$((4000 + 1))" | while IFS= read -r _old; do rm -f "$_old"; done
   fi
