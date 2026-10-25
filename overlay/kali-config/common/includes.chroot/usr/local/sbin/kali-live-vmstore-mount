@@ -124,6 +124,16 @@ read_conf() { # -> echoes the conf file to stdout
         return 0
     fi
     [ -b "$CONF_SOURCE" ] || return 1
+    # ANOTHER service may already hold the partition mounted (the blackbox
+    # forensic log mounts KLHCONFIG rw at /run/klh-blackbox on current
+    # images, 2026-10-25) — a second ro mount of a rw-mounted device is
+    # REFUSED ("would change RO state"). Read through the existing mount
+    # when present; only mount our own ro view otherwise.
+    EXISTING_MNT=$(findmnt -no TARGET "$CONF_SOURCE" 2>/dev/null || true)
+    if [ -n "$EXISTING_MNT" ]; then
+        cat "$EXISTING_MNT/vm-store.conf" 2>/dev/null
+        return 0
+    fi
     tmp=$(mktemp -d /run/kali-live-vmstore-conf.XXXXXX 2>/dev/null) || return 2
     if mount -o ro "$CONF_SOURCE" "$tmp" 2>/dev/null; then
         cat "$tmp/vm-store.conf" 2>/dev/null
