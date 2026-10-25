@@ -314,10 +314,15 @@ klh_info "default boot entry: $BOOT_DEFAULT (auto-boots after 5s)"
 # implement: post-build recompression (unsquashfs + mksquashfs -comp zstd
 # + xorriso repack — the hotpatch tool already does extract/repack).
 if [ -n "$SQUASHFS_COMP" ]; then
-    klh_die "--zstd is NOT IMPLEMENTED (the previous wiring was a silent no-op that built xz while claiming zstd) — see the backlog: post-build recompression via the hotpatch extract/repack path"
-fi
-if false; then
+    # lb config exposes --chroot-squashfs-compression-type natively (see
+    # lb_config(1)); inject it into auto/config's lb invocation before the
+    # build runs. The old sed was a no-op placeholder.
     if [ "$SQUASHFS_COMP" = zstd ]; then
+        if ! grep -q 'chroot-squashfs-compression-type' "$UPSTREAM_DIR/auto/config" 2>/dev/null; then
+            sed -i 's/^  --bootappend-live /  --chroot-squashfs-compression-type zstd \\\n  --bootappend-live /' "$UPSTREAM_DIR/auto/config"
+        fi
+        grep -q 'chroot-squashfs-compression-type zstd' "$UPSTREAM_DIR/auto/config" 2>/dev/null \
+            || klh_die "failed to inject zstd compression into auto/config (sed pattern drifted?)"
         export KLH_SQUASHFS_COMP=zstd
         klh_info "SQUASHFS: zstd (EXPERIMENTAL — boot-gate before flashing)"
     fi
