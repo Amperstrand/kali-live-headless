@@ -36,6 +36,12 @@ REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib/common.sh
 source "$REPO_DIR/lib/common.sh"
 
+# Suite asserts are BASE-aware (os-release ID, package names, ISO naming):
+# load the same distro adapter the build used (BASE env, default kali —
+# matching build.sh's default).
+BASE="${BASE:-kali}"
+klh_load_distro "$BASE"
+
 # Per-run scratch: concurrent suite runs (multi-agent repo — this happened:
 # 2026-10-23, two lanes' runs shared witness.img/serial logs/baked-fp files
 # and cross-contaminated each other's verdicts) must not share state.
@@ -79,7 +85,7 @@ case "$LEVEL" in
   boot|full)   : ;;
   *) klh_die "unknown --level/--stage '$LEVEL' (static | content | bios | override | uefi | forensic | vmstore | boot)" ;;
 esac
-klh_info "level: $LEVEL (static = no VM, content = + ISO inspection, boot = + QEMU boots)"
+klh_info "level: $LEVEL (static = no VM, content = + ISO inspection, boot = + QEMU boots); BASE=$KLH_BASE"
 
 PASS=0 FAIL=0 SKIP=0
 section() { printf '\n=== %s ===\n' "$*"; }
