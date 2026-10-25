@@ -135,7 +135,7 @@ else
       # (gate-4: 'SubState=unknown' for 480s while the guest was healthy).
       local deadline=$(( $(date +%s) + $1 ))
       while [ "$(date +%s)" -lt "$deadline" ]; do
-        if guest 'test -s /etc/issue.d/kali-live-headless.issue' >/dev/null 2>&1; then
+        if guest 'test -d /run/klh-blackbox/logs' >/dev/null 2>&1; then
           return 0
         fi
         sleep 5
@@ -306,7 +306,7 @@ else
         # the salt, fell back to random identities, and the whole identity
         # cluster failed against an expectation hashing 16 reps. The length
         # guard makes that typo class impossible.)
-        FIXTURE_SALT='5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f'
+        FIXTURE_SALT='5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f5b2f'
         [ "$(printf '%s' "$FIXTURE_SALT" | wc -c)" -eq 64 ] \
           || { echo "stage-cde: FIXTURE_SALT must be exactly 64 hex chars" >&2; exit 2; }
         printf '%s\n' "$FIXTURE_SALT" \
