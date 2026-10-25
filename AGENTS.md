@@ -199,11 +199,13 @@ drift is absorbed by bumping the pin, nothing else.
   compressor switched, boot-gate BIOS+UEFI, compare `time mksquashfs`.
   If green: hotpatch ~10 min, builds ~40 min shorter. Highest-leverage
   single experiment available.
-- **split test/stages/stage-cde.sh (653 lines)** into c/d/e modules —
-  deferred DELIBERATELY until after v26's gate run: the split is
-  mechanical but the gate hasn't executed once on the post-unification
-  suite; changing suite structure and gate-verifying it for the first
-  time in the same run would tangle a failure's causes.
+- ~~**split test/stages/stage-cde.sh**~~ — LANDED externally (0266acf),
+  which is also how Stage F got dropped: RUN_VMSTORE parsed, nothing
+  consumed it, `--stage vmstore` passed vacuously. Restored as
+  test/stages/stage-f-vmstore.sh + wired into suite-parallel's default
+  list (2026-10-26, vm-store-m1 lane). LESSON: every stage split must
+  diff the RUN_* flag set against the modules that consume it — a parsed
+  flag with no consumer IS a vacuous pass.
 - ~~**Parallel boot stages**~~ — LANDED 2026-10-25: `tools/suite-parallel.sh`
   (see the build-time budget entry above).
 - **Mechanical verdict ledger** — test.sh should emit a machine-readable
