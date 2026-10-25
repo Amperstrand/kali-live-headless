@@ -354,7 +354,17 @@ else
             # was (wrongly) living in common_guest_checks, which the override
             # stage never calls.
             if [ -n "${WG_ENDPOINT_EXPECTED:-}" ]; then
+              # boot-time wg-quick fails when DNS can't resolve the endpoint
+              # yet (provision runs pre-network; the ensure timer exists for
+              # exactly this). Mirror the product's own self-healing: nudge
+              # one ensure pass, then judge — the interface, not the boot
+              # instant, is the contract.
               v=$(guest 'ip -4 addr show wg0 2>/dev/null | grep -oE "inet [0-9.]+" | cut -d" " -f2')
+              if [ -z "$v" ]; then
+                guest_sudo '/usr/local/sbin/kali-live-wireguard-init --ensure' >/dev/null 2>&1 || true
+                sleep 3
+                v=$(guest 'ip -4 addr show wg0 2>/dev/null | grep -oE "inet [0-9.]+" | cut -d" " -f2')
+              fi
               if [ -n "$v" ] && printf '%s' "$v" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
                 record pass "override: wg0 up with valid address" "$v"
               elif [ -n "$v" ]; then
