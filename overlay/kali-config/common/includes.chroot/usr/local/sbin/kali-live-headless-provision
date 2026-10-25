@@ -214,7 +214,15 @@ peers:
 EOFPEER
             fi
             systemctl enable fips fips-dns >/dev/null 2>&1 || true
-            systemctl restart fips >/dev/null 2>&1 || true
+            # --no-block: a plain `systemctl restart` from INSIDE the running
+            # provision job waits for the started unit — and the fips daemon
+            # dials its staged peer at startup, blocking provision for the
+            # whole dial timeout. Found 2026-10-26 in the override stage: the
+            # first run of this block ever (it needs a VALID salt — every
+            # earlier boot skipped it: no salt, or the <32-byte fixture salt
+            # derive refuses) hung provision 14+ minutes past 'mesh identity
+            # ready' every time.
+            systemctl --no-block restart fips >/dev/null 2>&1 || true
             log "fips mesh identity derived and seeded; peer $PEER_ADDR"
         fi
     fi
