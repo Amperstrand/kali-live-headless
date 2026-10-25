@@ -237,29 +237,18 @@ else
       fi
 
       # The server must accept publickey ONLY. A client that offers no auth
-      # methods reports the methods the server would have allowed.
-      # These auth-negative probes open their OWN transports (ControlPath=none
-      # — a muxed session would ride the kali master and "succeed"), which
-      # makes them count against provision's SSH rate limiter (>3 new/min).
-      # A DROP is ambiguous (also "not logged in"), so on anything but a
-      # clean verdict: wait out the 60s window and probe ONCE more.
-      ssh_probe() { # $1 = extra ssh opts...; output on stdout
-        local out
-        out=$(timeout 20 ssh -F none -p "$PORT" -o NumberOfPasswordPrompts=0 -o ConnectTimeout=10 \
-              -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ControlPath=none "$@" 2>&1 || true)
-        case "$out" in
-          *Permission\ denied*) printf '%s\n' "$out"; return 0 ;;
-          *) sleep 65
-             timeout 20 ssh -F none -p "$PORT" -o NumberOfPasswordPrompts=0 -o ConnectTimeout=10 \
-               -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ControlPath=none "$@" 2>&1 || true ;;
-        esac
-      }
+      # Auth-negative probes run INSIDE the guest against its own sshd
+      # (guest->127.0.0.1): a real SSH handshake with real rejection, but a
+      # fresh source IP — the host-side limiter's recent list (--update on
+      # every match, so one connection over threshold LATCHES the block
+      # forever: each retry refreshes the window) can never sabotage the
+      # probe. The old host-side probes were the last flaky class.
       local meth
-      meth=$(ssh_probe -o PubkeyAuthentication=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no kali@127.0.0.1 true)
-      echo "$meth" | grep -q 'Permission denied (publickey)' && record pass "$mode: password auth rejected (publickey only)" || record fail "$mode: password auth rejected - got: $meth"
+      meth=$(guest 'ssh -o BatchMode=yes -o PubkeyAuthentication=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o NumberOfPasswordPrompts=0 -o ConnectTimeout=8 -o StrictHostKeyChecking=no kali@127.0.0.1 true 2>&1' || true)
+      echo "$meth" | grep -q 'Permission denied (publickey)' && record pass "$mode: password auth rejected (publickey only)" || record fail "$mode: password auth rejected - got: $(printf '%s' "$meth" | tail -1)"
 
       local roottry
-      roottry=$(ssh_probe root@127.0.0.1 true)
+      roottry=$(guest 'ssh -o BatchMode=yes -o NumberOfPasswordPrompts=0 -o ConnectTimeout=8 -o StrictHostKeyChecking=no root@127.0.0.1 true 2>&1' || true)
       echo "$roottry" | grep -q 'Permission denied' && record pass "$mode: root login rejected" || record fail "$mode: root login rejected" "got: $(printf '%s' "$roottry" | tail -1)"
 
       v=$(guest 'swapon --show --noheadings 2>/dev/null')
