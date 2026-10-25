@@ -100,6 +100,11 @@ DOCKERFILE
           # ---- boot 1: live cmdline, store must come up
           QPID=$(vmstore_boot live "")
           if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
+            for _ in $(seq 1 60); do
+              guest 'test -f /run/kali-live-headless.settled' >/dev/null 2>&1 && break
+              sleep 5
+            done
+            guest 'test -f /run/kali-live-headless.settled' >/dev/null 2>&1               && record pass "vmstore: guest settled before asserts"               || record fail "vmstore: guest settled before asserts" "provision sentinel never appeared"
             record pass "vmstore: booted to SSH (live cmdline)"
             v=$(guest 'systemctl is-active kali-live-vmstore-mount')
             [ "$v" = active ] && record pass "vmstore: mount service active" || record fail "vmstore: mount service ($v)"
