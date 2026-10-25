@@ -75,7 +75,15 @@ section() { printf '\n=== %s ===\n' "$*"; }
 
 SSH_OPTS=(-F none -i "$SSH_KEY" -o UserKnownHostsFile="$EVID/known_hosts" \
   -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes \
-  -o ServerAliveInterval=15 -o ServerAliveCountMax=3 kali@"$HOST")
+  -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+  -o ControlMaster=auto -o ControlPath="$EVID/ssh-%p" -o ControlPersist=900 \
+  kali@"$HOST")
+# ^ ControlMaster is CORRECTNESS here, not speed: the image arms SSH rate
+# limiting (>3 new connections/min per source, iptables recent whose
+# --update REFRESHES the window on every match — one connection over
+# threshold latches the block), and this battery makes 30+ connections.
+# Without multiplexing it fails itself ~5 checks in (2026-10-26: 5/27).
+# The auth-negative probe below keeps its own transport (ControlPath=none).
 # Every guest call is time-bounded: an unresponsive guest (the wedged-libvirtd
 # class that hung the QEMU suite three times on 2026-10-23/24 — ConnectTimeout
 # only bounds connection, not a stalled remote command) degrades to an empty
@@ -111,6 +119,7 @@ echo "$eff" | grep -q '^permitrootlogin no'        && record pass "effective Per
 echo "$eff" | grep -q '^pubkeyauthentication yes'  && record pass "effective PubkeyAuthentication yes"  || record fail "effective PubkeyAuthentication yes"
 meth=$(ssh -F none -o PubkeyAuthentication=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no \
         -o NumberOfPasswordPrompts=0 -o ConnectTimeout=10 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no \
+        -o ControlPath=none \
         kali@"$HOST" true 2>&1 || true)
 echo "$meth" | grep -q 'Permission denied (publickey)' && record pass "password auth rejected (publickey only)" || record fail "password auth rejected — got: $meth"
 
@@ -177,8 +186,13 @@ if [ -n "$npub" ]; then
   v=$(guest "grep -o 'npub1[023456789acdefghjklmnpqrstuvwxyz]\\{20,\\}' /etc/issue.d/kali-live-headless.issue 2>/dev/null | head -1 || true")
   [ "$v" = "$npub" ] && record pass "console banner shows the npub" || record fail "console banner shows the npub (got '${v:-none}')"
   if [ -n "$klh_part" ]; then
-    # read ONLY the public line off the config partition (never FIPS_NSEC)
-    v=$(guest_sudo "mount -o ro /dev/$klh_part /mnt 2>/dev/null && grep '^FIPS_NPUB=' /mnt/host-role.conf 2>/dev/null | cut -d= -f2; umount /mnt 2>/dev/null" | tail -1)
+    # read ONLY the public line off the config partition (never FIPS_NSEC).
+    # The blackbox service keeps KLHCONFIG mounted rw,sync at /run/klh-blackbox
+    # — a second mount -o ro of the same vfat dies with "would change RO
+    # state" and the ERROR TEXT lands in $v (2026-10-26: the check failed
+    # itself on a healthy identity). Prefer the existing mount; fall back to
+    # our own only when the blackbox isn't holding it.
+    v=$(guest_sudo "grep '^FIPS_NPUB=' /run/klh-blackbox/host-role.conf 2>/dev/null | cut -d= -f2 || { mount -o ro /dev/$klh_part /mnt 2>/dev/null && grep '^FIPS_NPUB=' /mnt/host-role.conf 2>/dev/null | cut -d= -f2; umount /mnt 2>/dev/null; }" | tail -1)
     [ "$v" = "$npub" ] && record pass "KLHCONFIG identity matches (persistent npub)" || record fail "KLHCONFIG identity matches (want $npub, got '${v:-none}')"
   else
     record fail "KLHCONFIG partition present" "npub exists but no config partition — where does it persist? (reboot = new identity)"
@@ -519,8 +533,18 @@ section "FIPS mesh (derived identity, our exit node)"
 fipsd=$(guest 'systemctl is-active fips 2>/dev/null')
 if [ "$fipsd" = active ]; then
   record pass "fips daemon active"
+  # no staged peer => no links is the DESIGNED state, not a defect (the
+  # 2026-10-26 battery failed itself on a healthy boot: FIPS_PEER_ADDR
+  # empty in this build means the daemon correctly has nothing to dial)
+  PEERSTAGED=$(guest 'test -n "$(sed -n s/^FIPS_PEER_ADDR=[^\" ].*/set/p /etc/default/kali-live-headless)" && echo yes || echo no')
   v=$(guest 'sudo -n fipsctl show links 2>/dev/null | grep -c \"state\": \"connected\"" || true')
-  [ "${v:-0}" -ge 1 ] 2>/dev/null && record pass "fips: at least one mesh link up" "$v link(s)" || record fail "fips: mesh link up" "0 connected links — check the peer/exit"
+  if [ "$PEERSTAGED" != yes ]; then
+    record info "fips: no peer staged in this build — 0 links is expected (set FIPS_PEER_ADDR to mesh)"
+  elif [ "${v:-0}" -ge 1 ] 2>/dev/null; then
+    record pass "fips: at least one mesh link up" "$v link(s)"
+  else
+    record fail "fips: mesh link up" "0 connected links — check the peer/exit"
+  fi
   v=$(guest 'sudo -n cat /etc/fips/fips.pub 2>/dev/null || true')
   if [ -n "$v" ]; then
     record pass "fips identity present" "${v:0:16}…"
