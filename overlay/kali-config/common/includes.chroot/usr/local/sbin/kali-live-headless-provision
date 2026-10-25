@@ -105,49 +105,44 @@ fi
 # persists lives on it: master.salt (deterministic identities!), Wi-Fi
 # override, BitLocker consent, vm-store.conf, rescue opt-in. Instead of
 # silently degrading, CREATE the partition on the boot device.
-#
-# Safety: we only touch the device that backs /run/live/medium (never any
-# other disk), only if there's no KLHCONFIG partition anywhere, and only
-# if there's free space past the ISO.
-O_DEV=""
-_cfgpart=$(klh_cfgpart)
-if [ -z "$_cfgpart" ]; then
-    _mediumpath=$(findmnt -n -o SOURCE /run/live/medium 2>/dev/null || true)
-    if [ -n "$_mediumpath" ]; then
-        _bootdev=$(lsblk -no PKNAME "$(basename "$_mediumpath" | sed 's|/dev/||')" 2>/dev/null | head -1)
-        if [ -n "$_bootdev" ] && [ -b "/dev/$_bootdev" ]; then
-            # verify it's a USB/removable device
-            if lsblk -dno TRAN "/dev/$_bootdev" 2>/dev/null | grep -q "usb"; then
-                _isosize=$(blockdev --getsize64 "/dev/$_bootdev" 2>/dev/null || echo 0)
-                _devsize=$(blockdev --getsize64 "/dev/$_bootdev" 2>/dev/null || echo 0)
-                _isoend=$(( (_isosize + 1048575) / 1048576 + 1 ))  # MiB-aligned, past ISO
-                _devmb=$(( _devsize / 1048576 ))
-                if [ "$_devmb" -gt $(( _isoend + 64 )) ]; then
-                    _start=$(( _isoend * 2048 ))
-                    log "no KLHCONFIG found — creating one on /dev/$_bootdev (self-healing)"
-                    if printf 'start=%s, size=131072, type=0c\n' "$_start" | sfdisk --force --append "/dev/$_bootdev" >/dev/null 2>&1; then
-                        partprobe "/dev/$_bootdev" 2>/dev/null || blockdev --rereadpt "/dev/$_bootdev" 2>/dev/null || true
-                        sleep 3
-                        _newpart=$(klh_cfgpart "/dev/$_bootdev")
-                        if [ -n "$_newpart" ] && [ -b "$_newpart" ]; then
-                            mkfs.vfat -n KLHCONFIG "$_newpart" >/dev/null 2>&1
-                            O_DEV=$(klh_cfgpart)
-                            log "KLHCONFIG partition created: $O_DEV (identities will persist from now on)"
-                        else
-                            log "WARNING: KLHCONFIG partition appended but device node not found — identities will NOT persist this boot"
-                        fi
-                    else
-                        log "WARNING: could not create KLHCONFIG partition on /dev/$_bootdev — identities will NOT persist"
-                    fi
-                else
-                    log "WARNING: no KLHCONFIG partition and no free space on /dev/$_bootdev — identities will NOT persist"
-                fi
-            fi
-        fi
+ensure_klhconfig_partition() {
+    # Safety: we only touch the device that backs /run/live/medium (never
+    # any other disk), only if there's no KLHCONFIG partition anywhere, and
+    # only if there's free space past the ISO. Prints the config partition
+    # dev on success (empty otherwise). POSIX sh: no `local` — the vars
+    # below are uniquely named to avoid leaking into the caller's scope.
+    cfgpart=$(klh_cfgpart)
+    [ -z "$cfgpart" ] || { printf '%s\n' "$cfgpart"; return 0; }
+
+    mediumpath=$(findmnt -n -o SOURCE /run/live/medium 2>/dev/null || true)
+    [ -n "$mediumpath" ] || return 0
+    bootdev=$(lsblk -no PKNAME "$(basename "$mediumpath" | sed 's|/dev/||')" 2>/dev/null | head -1)
+    [ -n "$bootdev" ] && [ -b "/dev/$bootdev" ] || return 0
+    # verify it's a USB/removable device (never partition an internal disk)
+    lsblk -dno TRAN "/dev/$bootdev" 2>/dev/null | grep -q "usb" || return 0
+    isosize=$(blockdev --getsize64 "/dev/$bootdev" 2>/dev/null || echo 0)
+    devsize=$(blockdev --getsize64 "/dev/$bootdev" 2>/dev/null || echo 0)
+    isoend=$(( (isosize + 1048575) / 1048576 + 1 ))  # MiB-aligned, past ISO
+    devmb=$(( devsize / 1048576 ))
+    [ "$devmb" -gt $(( isoend + 64 )) ] \
+        || { log "WARNING: no KLHCONFIG partition and no free space on /dev/$bootdev — identities will NOT persist"; return 0; }
+    start=$(( isoend * 2048 ))
+    log "no KLHCONFIG found — creating one on /dev/$bootdev (self-healing)"
+    printf 'start=%s, size=131072, type=0c\n' "$start" | sfdisk --force --append "/dev/$bootdev" >/dev/null 2>&1 \
+        || { log "WARNING: could not create KLHCONFIG partition on /dev/$bootdev — identities will NOT persist"; return 0; }
+    partprobe "/dev/$bootdev" 2>/dev/null || blockdev --rereadpt "/dev/$bootdev" 2>/dev/null || true
+    sleep 3
+    newpart=$(klh_cfgpart "/dev/$bootdev")
+    if [ -n "$newpart" ] && [ -b "$newpart" ]; then
+        mkfs.vfat -n KLHCONFIG "$newpart" >/dev/null 2>&1
+        log "KLHCONFIG partition created: $(klh_cfgpart) (identities will persist from now on)"
+        klh_cfgpart
+        return 0
     fi
-else
-    O_DEV="$_cfgpart"
-fi
+    log "WARNING: KLHCONFIG partition appended but device node not found — identities will NOT persist this boot"
+    return 0
+}
+O_DEV=$(ensure_klhconfig_partition)
 
 # ---------------------------------------------------- host-role mesh identity
 # Persistent FIPS mesh identity (nsec/npub + name): generated on FIRST boot,

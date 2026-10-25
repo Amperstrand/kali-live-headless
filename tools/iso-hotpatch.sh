@@ -168,10 +168,27 @@ enable_unit() { # $1=unit $2=target.wants-dir-name
   [ -e "/out/rootfs/etc/systemd/system/$1" ] || return 0
   ln -sfn "/etc/systemd/system/$1" "/out/rootfs/etc/systemd/system/$2/$1"
 }
-for u in libvirtd.service kali-live-kvm-enable.service kali-live-kvm-firewall.service kali-live-vmstore-mount.service kali-live-tollgate-watchdog.service kali-live-blackbox.service; do
-  enable_unit "$u" multi-user.target.wants
-done
-enable_unit virtlogd.socket sockets.target.wants
+# DERIVE the list from the chroot hook instead of hand-copying it (found
+# 2026-10-25: the hand list covered 6 of the hook's 15 units and silently
+# omitted provision/banner/wifi-watchdog/rescue — OUR units, which nothing
+# but the hook enables; any symlink loss in extraction/repack would have
+# shipped a dead provisioner). The hook is the single source of truth;
+# timers go to timers.target.wants, sockets to sockets.target.wants,
+# everything else to multi-user. enable_unit skips units absent from the
+# rootfs, so KVM-gated units fall out naturally.
+HOOK_SRC="$REPO_DIR/overlay/kali-config/common/hooks/live/zz-headless-configure.hook.chroot"
+if [ ! -f "$HOOK_SRC" ]; then
+  echo "HOTPATCH FAIL: cannot find the chroot hook to derive unit enablement from: $HOOK_SRC" >&2
+  FAIL=1
+else
+  grep -oE 'systemctl enable [a-zA-Z0-9@._-]+' "$HOOK_SRC" | awk '{print $3}' | sort -u | while IFS= read -r u; do
+    case "$u" in
+      *.timer) enable_unit "$u" timers.target.wants ;;
+      *.socket) enable_unit "$u" sockets.target.wants ;;
+      *) enable_unit "$u" multi-user.target.wants ;;
+    esac
+  done
+fi
 for f in /out/rootfs/usr/local/sbin/kali-live-*; do
     [ -e "$f" ] && chmod 0755 "$f"
 done
@@ -257,7 +274,9 @@ for f in /out/check/usr/local/sbin/kali-live-*; do
   [ "$(stat -c %a "$f")" = "755" ] || { echo "  MODE MISMATCH: $f not 0755"; FAIL=1; }
 done
 # unit enablement symlinks must exist in the repacked image (hotpatch
-# cannot run the chroot hook; recreate = the block above)
+# cannot run the chroot hook; recreation = the derived block above). Spot-
+# check the three whose absence has historically wedged boots; the derived
+# block covers the full hook list by construction.
 if [ "$KVM" = true ]; then
   for link in multi-user.target.wants/kali-live-vmstore-mount.service \
               multi-user.target.wants/kali-live-kvm-firewall.service \
@@ -265,6 +284,15 @@ if [ "$KVM" = true ]; then
     [ -L "/out/rootfs/etc/systemd/system/$link" ] || { echo "  ENABLE MISMATCH: $link not a symlink"; FAIL=1; }
   done
 fi
+# the always-on identity of the image: provision + banner + watchdog +
+# blackbox must be enabled in EVERY repack (the 2026-10-25 drift review:
+# the old hand list omitted them)
+for link in multi-user.target.wants/kali-live-headless-provision.service \
+            multi-user.target.wants/kali-live-console-banner.service \
+            multi-user.target.wants/kali-live-wifi-watchdog.service \
+            multi-user.target.wants/kali-live-blackbox.service; do
+  [ -L "/out/rootfs/etc/systemd/system/$link" ] || { echo "  ENABLE MISMATCH: $link not a symlink"; FAIL=1; }
+done
 [ "$FAIL" -eq 0 ] || { echo "verification FAILED"; exit 1; }
 echo "  all $(wc -l < /out/scope.txt) scoped files verified inside the new ISO"
 

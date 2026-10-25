@@ -1,4 +1,7 @@
 # (end Stage A)
+# shellcheck disable=SC2034  # *_EXPECTED vars set here are consumed by
+# stage-b/stage-cde, which test.sh sources into the SAME shell after this
+# file — shellcheck analyzing this file alone cannot see those uses.
 
 # Stage modules are SOURCED by test.sh — a stage sourcing a stage (or
 # itself) is an infinite recursion that exhausts bash's stack and dies as
@@ -176,6 +179,25 @@ if [ -x "$ROLE_INIT" ] && command -v python3 >/dev/null 2>&1; then
 else
   record fail "host-role identity generator present+executable"
 fi
+
+# shellcheck at WARNING level over everything we ship or run: this is the
+# gate that would have caught the console-banner 7-format/8-args bug BEFORE
+# commit (found in the 2026-10-25 dead-code/drift review — the KLHCONFIG
+# banner line silently dropped the WireGuard line from every future boot).
+for f in "$REPO_DIR"/overlay/kali-config/common/includes.chroot/usr/local/sbin/* \
+         "$REPO_DIR"/overlay/kali-config/common/hooks/live/*.chroot \
+         "$REPO_DIR"/overlay/kali-config/common/hooks/build/*.build \
+         "$REPO_DIR"/tools/*.sh "$REPO_DIR"/lib/*.sh "$REPO_DIR"/build.sh \
+         "$REPO_DIR"/flash.sh "$REPO_DIR"/test.sh; do
+  # only shell-shebang files: python CLIs legitimately live in sbin
+  # (kali-live-wg-enroll) and must not be parsed as shell
+  head -n1 "$f" | grep -qE '^#![^ ]*(ba|z|da)?sh' || continue
+  if shellcheck -S warning "$f" 2>/dev/null; then
+    record pass "shellcheck $(basename "$f")"
+  else
+    record fail "shellcheck $(basename "$f")" "$(shellcheck -S warning -f gcc "$f" 2>/dev/null | grep -m1 warning)"
+  fi
+done
 
 # Unit tests that are hermetic (no VM, no docker, no hardware) run as part
 # of EVERY level — a green suite must include its unit suites (the

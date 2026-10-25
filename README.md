@@ -351,10 +351,12 @@ known network is available.
 
 ## Deterministic per-machine identities (master salt + HKDF)
 
-One 256-bit **master salt** is generated on the stick's first boot and
-persisted to its `KLHCONFIG` partition (`master.salt` — plaintext, same
-threat model as the Wi-Fi PSK: it IS the master secret for every identity
-below). Every identity is then **derived**, never stored:
+One 256-bit **master salt** lives on the stick's `KLHCONFIG` partition
+(`master.salt` — plaintext, same threat model as the Wi-Fi PSK: it IS the
+master secret for every identity below). `flash.sh` **pre-seeds it from
+the per-stick registry** (see below); sticks flashed with plain `dd`
+generate one on first boot instead. Every identity is then **derived**,
+never stored:
 
     HKDF-SHA256(ikm = master salt, salt = constant,
                 info = "klh-headless/v1/<purpose>/<machine fingerprint>")
