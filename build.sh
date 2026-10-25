@@ -307,16 +307,17 @@ fi
 [ -f "$GRUB_CFG" ] && sed -i "s/^set default=.*/set default=$([ "$BOOT_DEFAULT" = forensic ] && echo 1 || echo 0)/" "$GRUB_CFG"
 klh_info "default boot entry: $BOOT_DEFAULT (auto-boots after 5s)"
 
-# Optional zstd squashfs: the kernel supports it (CONFIG_SQUASHFS_ZSTD=y),
-# mksquashfs supports it, and compression is significantly faster (the
-# experiment: xz ~30min on the full rootfs vs zstd minutes). Tradeoff:
-# ~10-15% larger image. Pass --zstd to try it; default remains xz until
-# boot-gated.
+# Optional zstd squashfs: NOT IMPLEMENTED — and now it says so. The old
+# stub exported an env var nothing consumed and ran a sed that replaced a
+# string with ITSELF: --zstd silently built xz (2026-10-26: #30 "zstd"
+# build verified as xz on the artifact — an hour of belief wasted). To
+# implement: post-build recompression (unsquashfs + mksquashfs -comp zstd
+# + xorriso repack — the hotpatch tool already does extract/repack).
 if [ -n "$SQUASHFS_COMP" ]; then
-    # lb config doesn't expose the compressor directly; we patch the
-    # auto/config script's lb config invocation before the build runs
+    klh_die "--zstd is NOT IMPLEMENTED (the previous wiring was a silent no-op that built xz while claiming zstd) — see the backlog: post-build recompression via the hotpatch extract/repack path"
+fi
+if false; then
     if [ "$SQUASHFS_COMP" = zstd ]; then
-        sed -i 's/--bootappend-live /--bootappend-live /' "$UPSTREAM_DIR/auto/config"
         export KLH_SQUASHFS_COMP=zstd
         klh_info "SQUASHFS: zstd (EXPERIMENTAL — boot-gate before flashing)"
     fi
