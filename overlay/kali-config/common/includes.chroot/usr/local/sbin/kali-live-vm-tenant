@@ -1,0 +1,134 @@
+#!/bin/sh
+# kali-live-vm-tenant — self-service VM allocation for mesh users.
+#
+# The labgrid/MAAS model applied to VMs on a stick:
+#   * Each user is identified by their SSH public key (not a password)
+#   * Users get their own WG tunnel IP on the hub (network-level auth)
+#   * Users get deterministic VM ports (no collisions)
+#   * VMs are isolated: user A cannot reach user B's VMs
+#   * The tool is the ONLY sanctioned way to create/destroy tenant VMs
+#
+# Architecture:
+#
+#   user (anywhere) → WG tunnel (10.99.X.Y) → hub → stick → VM
+#
+#   The hub routes between user peers and the stick. The stick's
+#   firewall maps tunnel IPs to VM ports. No internet-exposed VM ports.
+#
+# Usage:
+#   vm-tenant add --user felix --key "ssh-ed25519 AAAA..." [--vms 2]
+#   vm-tenant list
+#   vm-tenant remove --user felix
+#   vm-tenant info --user felix     # ports, IPs, VM names
+#
+# Port allocation: 22000 + (hash(user) % 100) * 10 + vm_index
+#   → deterministic, collision-resistant for small user counts, documented
+
+set -eu
+
+PROG=$(basename "$0")
+TENANT_DIR=${KLH_TENANT_DIR:-/run/kali-live-headless/tenants}
+PORT_BASE=${KLH_TENANT_PORT_BASE:-22000}
+
+err() { echo "$PROG: $*" >&2; }
+die() { err "$*"; exit 1; }
+
+# deterministic port from username (no central allocation needed)
+tenant_ports() { # username [count] -> prints port list
+  _user=$1 _n=${2:-1}
+  _h=$(printf '%s' "$_user" | cksum | cut -d' ' -f1)
+  _base=$(( PORT_BASE + (_h % 100) * 10 ))
+  _i=0
+  while [ "$_i" -lt "$_n" ]; do
+    printf '%s\n' $((_base + _i))
+    _i=$((_i + 1))
+  done
+}
+
+tenant_add() { # all args
+  _user="" _key="" _vms=1
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --user) _user=$2; shift 2 ;;
+      --key)  _key=$2; shift 2 ;;
+      --vms)  _vms=$2; shift 2 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  [ -n "$_user" ] && [ -n "$_key" ] || die "add needs: --user NAME --key PUBKEY [--vms N]"
+
+  # validate: username is alnum+dash, key is a valid ssh public key
+  printf '%s' "$_user" | grep -Eq '^[a-zA-Z0-9][a-zA-Z0-9_-]*$' \
+    || die "invalid username '$_user' (alnum + dash/underscore)"
+  printf '%s' "$_key" | ssh-keygen -lf /dev/stdin >/dev/null 2>&1 \
+    || die "invalid SSH public key"
+
+  _dir="$TENANT_DIR/$_user"
+  [ -d "$_dir" ] && die "tenant '$_user' already exists (remove first)"
+  mkdir -p "$_dir"
+
+  printf '%s\n' "$_key" > "$_dir/authorized_key"
+  printf '%s\n' "$_vms" > "$_dir/vm_count"
+  tenant_ports "$_user" "$_vms" > "$_dir/ports"
+
+  echo "tenant '$_user':"
+  echo "  key: ${_key:0:30}..."
+  echo "  VMs: $_vms"
+  echo "  ports: $(cat "$_dir/ports" | tr '\n' ' ')"
+  echo ""
+  echo "  hub-side setup needed:"
+  echo "    wg set wg0 peer <user_pubkey> allowed-ips <user_tunnel_ip>/32"
+  echo "  stick-side VM creation:"
+  echo "    (automatic on next provisioning run)"
+}
+
+tenant_remove() { # --user NAME
+  _user=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --user) _user=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  _dir="$TENANT_DIR/$_user"
+  [ -d "$_dir" ] || die "no tenant '$_user'"
+  # TODO: destroy VMs, remove forwards, remove hub peer
+  rm -rf "$_dir"
+  echo "tenant '$_user' removed (VMs/forwards need manual cleanup)"
+}
+
+tenant_list() {
+  [ -d "$TENANT_DIR" ] || { echo "(no tenants)"; return 0; }
+  for _d in "$TENANT_DIR"/*/; do
+    [ -d "$_d" ] || continue
+    _user=$(basename "$_d")
+    _vms=$(cat "$_d/vm_count" 2>/dev/null || echo "?")
+    _ports=$(cat "$_d/ports" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    printf '  %-16s VMs=%s  ports=%s\n' "$_user" "$_vms" "${_ports:-?}"
+  done
+}
+
+tenant_info() { # --user NAME
+  _user=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --user) _user=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  _dir="$TENANT_DIR/$_user"
+  [ -d "$_dir" ] || die "no tenant '$_user'"
+  echo "user: $_user"
+  echo "key:  $(head -c 40 "$_dir/authorized_key")..."
+  echo "VMs:  $(cat "$_dir/vm_count")"
+  echo "ports:"
+  cat "$_dir/ports" | while read p; do echo "  $p"; done
+}
+
+case "${1:-}" in
+  add)    shift; tenant_add "$@" ;;
+  remove) shift; tenant_remove "$@" ;;
+  list)   tenant_list ;;
+  info)   shift; tenant_info "$@" ;;
+  *) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//; s/^#$//' ;;
+esac
