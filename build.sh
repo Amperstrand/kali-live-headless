@@ -56,7 +56,7 @@ FORCE_RECLONE=false
 DRY_RUN=false
 KEEP_ARTIFACTS=false
 ARCHIVE=true
-SQUASHFS_COMP=""
+SQUASHFS_COMP="zstd"
 OPT_OUT="" OPT_VARIANT="" OPT_ARCH="" OPT_BRANCH="" OPT_REF="" OPT_NUMBER=""
 
 usage() {
@@ -96,6 +96,7 @@ EOF
     -R|--ref)          OPT_REF=${2:?}; shift 2 ;;
     --keep-artifacts)  KEEP_ARTIFACTS=true; shift ;;
     --zstd)            SQUASHFS_COMP=zstd; shift ;;
+    --xz)              SQUASHFS_COMP=xz; shift ;;
     --number)          OPT_NUMBER=${2:?}; shift 2 ;;
     --no-archive)      ARCHIVE=false; shift ;;
     --keep-secrets)    KEEP_SECRETS=true; shift ;;
@@ -307,27 +308,21 @@ fi
 [ -f "$GRUB_CFG" ] && sed -i "s/^set default=.*/set default=$([ "$BOOT_DEFAULT" = forensic ] && echo 1 || echo 0)/" "$GRUB_CFG"
 klh_info "default boot entry: $BOOT_DEFAULT (auto-boots after 5s)"
 
-# Optional zstd squashfs: NOT IMPLEMENTED — and now it says so. The old
-# stub exported an env var nothing consumed and ran a sed that replaced a
-# string with ITSELF: --zstd silently built xz (2026-10-26: #30 "zstd"
-# build verified as xz on the artifact — an hour of belief wasted). To
-# implement: post-build recompression (unsquashfs + mksquashfs -comp zstd
-# + xorriso repack — the hotpatch tool already does extract/repack).
-if [ -n "$SQUASHFS_COMP" ]; then
-    # lb config exposes --chroot-squashfs-compression-type natively (see
-    # lb_config(1)); inject it into auto/config's lb invocation before the
-    # build runs. The old sed was a no-op placeholder.
-    if [ "$SQUASHFS_COMP" = zstd ]; then
-        if ! grep -q 'chroot-squashfs-compression-type' "$UPSTREAM_DIR/auto/config" 2>/dev/null; then
-            sed -i 's/^  --bootappend-live /  --chroot-squashfs-compression-type zstd \\\n  --bootappend-live /' "$UPSTREAM_DIR/auto/config"
-        fi
-        grep -q 'chroot-squashfs-compression-type zstd' "$UPSTREAM_DIR/auto/config" 2>/dev/null \
-            || klh_die "failed to inject zstd compression into auto/config (sed pattern drifted?)"
-        export KLH_SQUASHFS_COMP=zstd
-        klh_info "SQUASHFS: zstd (EXPERIMENTAL — boot-gate before flashing)"
-    fi
-else
+# zstd squashfs: NOW THE DEFAULT (BIOS-boot-gated 2026-10-25, build #40:
+# 263/0, +3.3% size, ~15min compression vs ~30-55min xz — the full
+# evidence in docs/zstd-squashfs-experiment-notes.md). --xz opts back to
+# the old compressor for comparison or forensics.
+if [ "$SQUASHFS_COMP" = xz ]; then
     export KLH_SQUASHFS_COMP=xz
+    klh_info "SQUASHFS: xz (explicit --xz)"
+else
+    if ! grep -q 'chroot-squashfs-compression-type' "$UPSTREAM_DIR/auto/config" 2>/dev/null; then
+        sed -i 's/^  --bootappend-live /  --chroot-squashfs-compression-type zstd \\\n  --bootappend-live /' "$UPSTREAM_DIR/auto/config"
+    fi
+    grep -q 'chroot-squashfs-compression-type zstd' "$UPSTREAM_DIR/auto/config" 2>/dev/null \
+        || klh_die "failed to inject zstd compression into auto/config (sed pattern drifted?)"
+    export KLH_SQUASHFS_COMP=zstd
+    klh_info "SQUASHFS: zstd (default; boot-gated #40)"
 fi
 
 # Optional "Live (load to RAM)" entry: live-boot's toram copies the whole
