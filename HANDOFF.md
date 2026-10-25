@@ -68,4 +68,23 @@ Brief: SPIKE-BRIEF.md. Research: docs/vmhost-base-os-research.md.
 - Next: wait out the ~2-3h build; then archive (automatic) +
   KLH_TEST_PORT=22410 BASE=debian ./test.sh --stage bios --iso <archived>.
 
+## M3 — d1b second fast failure → pre-flight guard (23:18→23:41)
+
+- State: d1b died 6 min in at the chroot install pass:
+  `E: Unable to locate package virtualbox-guest-x11` (upstream-native
+  virtualization.list.chroot; VirtualBox guest pkgs are GONE from Debian).
+  Recon had audited OUR overlay lists but not upstream's native ones.
+- Fix (commit 56023ce): adapter maps it away + NEW resolvability
+  pre-flight — every name in every staged .list.chroot checked against the
+  suite's actual Packages indices (cached daily in build/.klh-distro-idx,
+  outside the clone; #if ARCHITECTURES-aware via awk; its first run caught
+  the arm-only linux-headers names immediately).
+- Validation: BASE=kali static 144/0 + BASE=debian static 144/0; dry-run d3
+  green — "every staged package-list name resolves in trixie (69908
+  packages indexed)".
+- d1c launched 23:41 local (tmux deb-build-d1): debootstrap resolving
+  dependencies again. Edit ban in force until it exits.
+- Next: monitor; on success the wrapper archives automatically → BIOS gate
+  on port 22410.
+
 

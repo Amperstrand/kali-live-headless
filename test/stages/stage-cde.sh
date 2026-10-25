@@ -196,7 +196,9 @@ else
       [ "$v" = "active" ] && record pass "$mode: avahi-daemon active" || record fail "$mode: avahi-daemon active ($v)"
 
       v=$(guest 'systemctl show -p ActiveState,Result --value kali-live-headless-provision 2>/dev/null | paste -sd/')
-      [ "$v" = "active/success" ] && record pass "$mode: provision service succeeded" || record fail "$mode: provision service ($v)"
+      [ "$v" = "active/success" ] \
+        && record pass "$mode: provision service succeeded" \
+        || record fail "$mode: provision service" "state '$v' (want active/success) — journal: $(guest 'journalctl -u kali-live-headless-provision --no-pager -n 5 2>/dev/null | tail -2 | tr "\n" ";"' 2>/dev/null)"
 
       v=$(guest 'systemctl is-active kali-live-wifi-watchdog')
       [ "$v" = "active" ] && record pass "$mode: wifi watchdog active" || record fail "$mode: wifi watchdog active ($v)"
