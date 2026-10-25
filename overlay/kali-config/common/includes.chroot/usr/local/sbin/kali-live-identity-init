@@ -17,13 +17,25 @@
 # secret, so provision must not log the value; this prints only a prefix).
 
 set -u
+# canonical cfgpart/salt helpers (dedup 2026-10-25)
+# Source the canonical lib. The existence test (not `. file || . file`) is
+# deliberate: `.` is a POSIX special builtin, and a FAILING special builtin
+# is FATAL to the shell in POSIX mode (bash-as-/bin/sh) — the || fallback
+# would never run. Both paths are the same file in-image; the second makes
+# the script runnable straight from a checkout (tests, dry runs).
+if [ -f /usr/local/lib/kali-live-headless/klh-lib.sh ]; then
+    . /usr/local/lib/kali-live-headless/klh-lib.sh
+else
+    . "$(dirname "$0")/../lib/kali-live-headless/klh-lib.sh"
+fi
 
 MOD=/usr/local/lib/kali-live-headless/derive_identity.py
 
 [ $# -ge 1 ] && [ -d "$1" ] || { echo "identity: no config mount — salt not created" >&2; exit 1; }
 SALT_FILE="$1/master.salt"
 
-if [ -r "$SALT_FILE" ]; then
+S=$(klh_salt_of "$SALT_FILE")
+if [ -n "$S" ] || [ -e "$SALT_FILE" ]; then
     if [ ! -s "$SALT_FILE" ]; then
         # 0 bytes can only be a broken write (found live 2026-10-24: a
         # manually-seeded empty master.salt was accepted by every consumer's
@@ -33,8 +45,7 @@ if [ -r "$SALT_FILE" ]; then
         rm -f "$SALT_FILE"
     else
         # existing salt: sanity-check shape, nothing to do
-        S=$(head -n1 "$SALT_FILE" | tr -d '"' )
-        printf '%s' "$S" | grep -qE '^[0-9a-fA-F]{64,}$' \
+        klh_salt_valid "$S" \
             || { echo "identity: $SALT_FILE malformed (not >=64 hex chars) — refusing; delete it to re-key" >&2; exit 1; }
         echo "salt-present"
         exit 0

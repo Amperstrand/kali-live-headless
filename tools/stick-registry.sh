@@ -103,7 +103,18 @@ cmd_note_build() { # $1=hash $2=build
 }
 
 cfg_partition_of() { # $1=disk -> partition dev with label KLHCONFIG
-    lsblk -rno NAME,LABEL "$1" 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}'
+    # canonical helper (same file that ships in the image — dedup 2026-10-25;
+    # the existence-test sourcing pattern matters: a failing `.` special
+    # builtin is FATAL to POSIX-mode shells, so never use `try || fallback`)
+    _klh_repo=$(cd "$(dirname "$0")/.." && pwd)
+    if [ -f "$_klh_repo/overlay/kali-config/common/includes.chroot/usr/local/lib/kali-live-headless/klh-lib.sh" ]; then
+        # shellcheck disable=SC1090
+        . "$_klh_repo/overlay/kali-config/common/includes.chroot/usr/local/lib/kali-live-headless/klh-lib.sh"
+        klh_cfgpart "$1"
+    else
+        lsblk -rno NAME,LABEL "$1" 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}'
+    fi
+    unset _klh_repo
 }
 
 cmd_apply() {

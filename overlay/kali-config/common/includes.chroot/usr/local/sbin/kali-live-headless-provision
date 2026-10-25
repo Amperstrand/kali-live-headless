@@ -34,6 +34,19 @@ GEN=/usr/local/sbin/kali-live-headless-wifi-gen
 TEMPLATE=$CFG_DIR/headless-wifi.nmconnection.in
 NM_PROFILE=/etc/NetworkManager/system-connections/headless-wifi.nmconnection
 OVERRIDE_MNT=/run/kali-live-headless-config
+# canonical helpers (cfgpart discovery + salt reading) — the 2026-10-25
+# dedup: this script alone carried FOUR copies of the partition lookup and
+# TWO salt readers; the empty-salt incident was that drift.
+# Source the canonical lib. The existence test (not `. file || . file`) is
+# deliberate: `.` is a POSIX special builtin, and a FAILING special builtin
+# is FATAL to the shell in POSIX mode (bash-as-/bin/sh) — the || fallback
+# would never run. Both paths are the same file in-image; the second makes
+# the script runnable straight from a checkout (tests, dry runs).
+if [ -f /usr/local/lib/kali-live-headless/klh-lib.sh ]; then
+    . /usr/local/lib/kali-live-headless/klh-lib.sh
+else
+    . "$(dirname "$0")/../lib/kali-live-headless/klh-lib.sh"
+fi
 
 log() {
     logger -t "$TAG" -- "$*" 2>/dev/null || true
@@ -57,7 +70,7 @@ valid_regdom() {
 
 # ------------------------------------------------ boot-medium config override
 O_HOST=""; O_SSID=""; O_PSK=""; O_KEYMGMT=""; O_HIDDEN=""; O_REGDOM=""
-O_DEV=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2 == "KLHCONFIG" { print "/dev/" $1; exit }')
+O_DEV=$(klh_cfgpart)
 if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
    && mkdir -p "$OVERRIDE_MNT" 2>/dev/null \
    && mount -o ro "$O_DEV" "$OVERRIDE_MNT" 2>/dev/null; then
@@ -97,7 +110,7 @@ fi
 # other disk), only if there's no KLHCONFIG partition anywhere, and only
 # if there's free space past the ISO.
 O_DEV=""
-_cfgpart=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}')
+_cfgpart=$(klh_cfgpart)
 if [ -z "$_cfgpart" ]; then
     _mediumpath=$(findmnt -n -o SOURCE /run/live/medium 2>/dev/null || true)
     if [ -n "$_mediumpath" ]; then
@@ -115,10 +128,10 @@ if [ -z "$_cfgpart" ]; then
                     if printf 'start=%s, size=131072, type=0c\n' "$_start" | sfdisk --force --append "/dev/$_bootdev" >/dev/null 2>&1; then
                         partprobe "/dev/$_bootdev" 2>/dev/null || blockdev --rereadpt "/dev/$_bootdev" 2>/dev/null || true
                         sleep 3
-                        _newpart=$(lsblk -rno NAME,LABEL "/dev/$_bootdev" 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}')
+                        _newpart=$(klh_cfgpart "/dev/$_bootdev")
                         if [ -n "$_newpart" ] && [ -b "$_newpart" ]; then
                             mkfs.vfat -n KLHCONFIG "$_newpart" >/dev/null 2>&1
-                            O_DEV=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}')
+                            O_DEV=$(klh_cfgpart)
                             log "KLHCONFIG partition created: $O_DEV (identities will persist from now on)"
                         else
                             log "WARNING: KLHCONFIG partition appended but device node not found — identities will NOT persist this boot"
@@ -178,8 +191,9 @@ if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
         cp /usr/share/fips/fips.yaml.example /etc/fips/fips.yaml 2>/dev/null || true
     fi
     SALT_FILE="$OVERRIDE_MNT/master.salt"
-    if [ -r "$SALT_FILE" ] && [ -s "$SALT_FILE" ] && [ -f /etc/fips/fips.yaml ]; then
-        SALT=$(head -n1 "$SALT_FILE" | tr -d '"')
+    SALT=$(klh_salt_of "$SALT_FILE")
+    klh_salt_valid "$SALT" || SALT=""
+    if [ -n "$SALT" ] && [ -f /etc/fips/fips.yaml ]; then
         DERIVED=$(python3 /usr/local/lib/kali-live-headless/derive_identity.py "$SALT" --machine --purpose fips 2>/dev/null || true)
         NSEC=$(printf '%s' "$DERIVED" | cut -f2)
         if [ -n "$NSEC" ]; then
@@ -276,12 +290,13 @@ MODE=$(printf '%s' "$MODE" | tr -d \'\")
 # every boot); random rotates per boot. Choose per deployment.
 if [ "$MODE" = derived ]; then
     _cfgmnt=""
-    _odev=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}')
+    _odev=$(klh_cfgpart)
     if [ -n "$_odev" ] && mkdir -p /run/klh-derive && mount -o ro "$_odev" /run/klh-derive 2>/dev/null; then
         _cfgmnt=/run/klh-derive
     fi
-    if [ -n "$_cfgmnt" ] && [ -s "$_cfgmnt/master.salt" ]; then
-        _salt=$(head -n1 "$_cfgmnt/master.salt" | tr -d '"')
+    _salt=$(klh_salt_of "$_cfgmnt/master.salt")
+    klh_salt_valid "$_salt" || _salt=""
+    if [ -n "$_salt" ]; then
         PW=$(python3 /usr/local/lib/kali-live-headless/derive_identity.py "$_salt" --machine --purpose console 2>/dev/null)
     fi
     [ -n "$_cfgmnt" ] && umount "$_cfgmnt" 2>/dev/null; rmdir /run/klh-derive 2>/dev/null

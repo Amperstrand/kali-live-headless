@@ -301,7 +301,7 @@ make_config_partition() {
   # sectors sit past the ISO), but the dd RESTORES THE ISO'S OWN PARTITION
   # TABLE, orphaning it. Detect any surviving label first; if found, use
   # that partition (fresh fs) instead of appending a second one.
-  part=$(lsblk -rno NAME,LABEL "$DEVPATH" 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}')
+  part=$(klh_cfgpart "$DEVPATH")
   if [ -n "$part" ] && [ -b "$part" ]; then
     klh_info "existing KLHCONFIG partition found ($part) — reformatting it"
     newpart=$part
