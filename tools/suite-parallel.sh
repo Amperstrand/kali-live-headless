@@ -50,6 +50,14 @@ if pgrep -f "build\.sh --number" >/dev/null 2>&1; then
   echo "REFUSED: a build is in flight ($(pgrep -f 'build\.sh --number' | head -1)) — its squashfs phase starves the guests. Re-run when it completes." >&2
   exit 3
 fi
+# same for OTHER gates: two parallel gates = 6-8 guests on an 8-core host,
+# every stage crawls past every budget and both sides read it as unexplained
+# contention (happened twice on 2026-10-26 — a user-launched gate overlapped
+# an agent-launched one). One gate at a time per host.
+if pgrep -f "tools/suite-parallel\.sh" | grep -v "^$$\$" >/dev/null 2>&1; then
+  OTHER=$(pgrep -f "tools/suite-parallel\.sh" | grep -vw "$$" | head -1)
+  [ -n "$OTHER" ] && { echo "REFUSED: another gate is already running (pid $OTHER) — one gate per host at a time." >&2; exit 3; }
+fi
 
 CORES=$(nproc 2>/dev/null || echo 4)
 if [ "$CORES" -lt 8 ]; then
