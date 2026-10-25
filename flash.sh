@@ -393,6 +393,11 @@ make_config_partition() {
     # (~/.local/share/kali-live-headless/) and its salt never prints.
     # Best effort: without it, the stick self-generates on first boot
     # (identity-init) — same behavior as before this hook existed.
+    # the registry lives in the INVOKING user's home; sudo's HOME is /root
+    # (found live 2026-10-26: the hook silently used root's empty registry)
+    if [ -n "${SUDO_USER:-}" ]; then
+      export KLH_STICK_REGISTRY="$(getent passwd "$SUDO_USER" | cut -d: -f6)/.local/share/kali-live-headless/stick-registry.tsv"
+    fi
     if [ -x "$REPO_DIR/tools/stick-registry.sh" ]; then
       regrc=0
       "$REPO_DIR/tools/stick-registry.sh" register --device "$DEVPATH" --build "${BUILD:-}" >/dev/null 2>&1 || regrc=$?
