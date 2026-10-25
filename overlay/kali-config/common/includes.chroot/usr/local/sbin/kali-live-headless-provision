@@ -350,13 +350,18 @@ fi
 # room for automation; multiplexed clients (ControlMaster) are immune.
 # Rules are best-effort — if iptables isn't available the stick still
 # boots fine (sshd's own MaxAuthTries + publickey-only are the real gates).
-if command -v iptables >/dev/null 2>&1; then
-    iptables -C INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --set 2>/dev/null || {
-        iptables -I INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --set
-        iptables -I INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --update --seconds 60 --hitcount 8 -j DROP
-        log "ssh rate limiting: max 7 new connections/minute per source"
-    }
-fi
+# IPv6 gap fix (2026-10-25): the stick has global IPv6 addresses and SSH
+# accepts both protocols, but the rate limiter was IPv4-only — anyone
+# connecting via IPv6 bypassed it entirely. Mirror the rules into ip6tables.
+for IPT in iptables ip6tables; do
+    if command -v "$IPT" >/dev/null 2>&1; then
+        "$IPT" -C INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --set 2>/dev/null || {
+            "$IPT" -I INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --set
+            "$IPT" -I INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --update --seconds 60 --hitcount 8 -j DROP
+            log "ssh rate limiting ($IPT): max 7 new connections/minute per source"
+        }
+    fi
+done
 
 # KVM/libvirt access for the live user (groups only exist on WITH_KVM builds)
 for grp in kvm libvirt libvirt-qemu; do
