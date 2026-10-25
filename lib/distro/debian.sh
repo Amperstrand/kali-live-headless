@@ -84,11 +84,17 @@ klh_distro_prepare_upstream() {
   #    via dists/$dist/Release and feeds --mirror-bootstrap/-debian-installer
   #    (overridden later by our -m passthrough); $public_kali_mirror becomes
   #    --mirror-binary — the sources.list the SHIPPED image uses. A debian
-  #    image must not point its users at http.kali.org.
+  #    image must not point its users at http.kali.org. NOTE: both DEFAULTS
+  #    must be sed'd (not just a .mirror file — d1 lesson: upstream's
+  #    cleanup_fs rm -rf's .mirror at stage [1/4] INSIDE the container,
+  #    before lb config ever sees it; the hardcoded fallback then 404'd
+  #    dists/trixie/Release on the kali mirror, wget status 8).
+  sed -i "s|^  kali_mirror=http://kali.download/kali|  kali_mirror=$KLH_DISTRO_DEFAULT_MIRROR|" "$cfg"
   sed -i "s|^public_kali_mirror=.*|public_kali_mirror=$KLH_DISTRO_DEFAULT_MIRROR|" "$cfg"
+  grep -q "^  kali_mirror=$KLH_DISTRO_DEFAULT_MIRROR\$" "$cfg" \
+    || klh_die "debian adapter: kali_mirror default swap failed (auto/config drifted?)"
   grep -q "^public_kali_mirror=$KLH_DISTRO_DEFAULT_MIRROR" "$cfg" \
     || klh_die "debian adapter: public-mirror swap failed (auto/config drifted?)"
-  printf '%s\n' "$KLH_DISTRO_DEFAULT_MIRROR" > "$UPSTREAM_DIR/.mirror"
 
   # 3) ISO metadata / .disk/info identity.
   sed -i 's|--iso-application "Kali Linux"|--iso-application "Debian"|' "$cfg"

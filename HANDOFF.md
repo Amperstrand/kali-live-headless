@@ -28,3 +28,24 @@ Brief: SPIKE-BRIEF.md. Research: docs/vmhost-base-os-research.md.
 - Blockers: none. No in-flight docker builds at start (checked).
 - Next: adapter layer (lib/distro/), build.sh wiring, suite BASE-awareness;
   BASE=kali static must stay 136/0 before any debian build.
+
+## M1 — adapter layer + wiring, regression-green (2026-10-26 ~01:45)
+
+- State: commit 69632d5 pushed (branch modularity/debian-base).
+  New: lib/distro/{kali,debian}.sh, klh_load_distro() in lib/common.sh,
+  build.sh adapter wiring (branch/mirror defaults, prepare_upstream,
+  stage_package_lists, engine guard, manifest base line), BASE-aware
+  test.sh + stages a/b/cde, config.example BASE doc.
+- Validation: BASE=kali static **144/0** = baseline 136/0 + exactly 8 new
+  adapter asserts (regression-free); BASE=debian static **144/0**.
+  `BASE=debian ./build.sh --dry-run --number 1` rc=0 — staged tree verified:
+  auto/config keyring/mirror/iso-identity seds landed, .mirror written,
+  SUPPORTED_BRANCHES admits trixie, selective firmware list staged,
+  kali-linux-core stripped, provenance guard green, secrets staged+scrubbed,
+  manifest says `base : debian (Debian trixie)`.
+- Blockers: none. Engine keyring guard verified logic-only (docker requires
+  sudo here; guard falls back sudo -n — proven interactively earlier).
+- Next: `BASE=debian ./build.sh --number 1` in tmux →
+  output/build-console-d1.log (plain redirect, rc on next line), then
+  KLH_TEST_PORT=22410 ./test.sh --stage bios gate.
+
