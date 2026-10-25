@@ -143,7 +143,7 @@ else
       # (gate-4: 'SubState=unknown' for 480s while the guest was healthy).
       local deadline=$(( $(date +%s) + $1 ))
       while [ "$(date +%s)" -lt "$deadline" ]; do
-        if guest 'test -d /run/klh-blackbox/logs' >/dev/null 2>&1; then
+        if guest 'test -f /run/kali-live-headless.settled' >/dev/null 2>&1; then
           return 0
         fi
         sleep 5
@@ -378,7 +378,7 @@ else
             else
               record fail "identity: npub == salt-derived npub" "run='$_npub_run' derived='$_npub_der'"
             fi
-            if guest_sudo 'test -s /etc/fips/fips.key && test -f /etc/fips/fips.yaml' >/dev/null 2>&1; then
+            if guest_sudo 'test -s /etc/fips/fips.pub && test -f /etc/fips/fips.yaml && systemctl is-active fips >/dev/null' >/dev/null 2>&1; then
               record pass "identity: fips seeded (fips.yaml + fips.key)"
             else
               record fail "identity: fips seeded (fips.yaml + fips.key)"

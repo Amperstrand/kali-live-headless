@@ -443,4 +443,9 @@ if command -v systemctl > /dev/null 2>&1; then
 fi
 
 log "provisioning complete (hostname=$(hostname), user=$USER)"
+# The suite's settle signal: written at the very END, after every step.
+# Earlier markers (blackbox logs dir appearing before its final stable
+# activation, the banner file not being ordered after provision) fired
+# mid-run and the assert stage read a half-provisioned machine.
+: > /run/kali-live-headless.settled
 exit 0
