@@ -93,7 +93,20 @@ else
     # deadline (worst legitimate guest command ≈ 85 s retry loop).
     SSH_OPTS=(-F none -i "$SSH_KEY" -p "$PORT" -o UserKnownHostsFile="$SCRATCH/known_hosts" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o BatchMode=yes kali@127.0.0.1)
 
-    guest() { timeout 120 ssh "${SSH_OPTS[@]}" "$@" 2>/dev/null; }
+    guest() {
+      timeout 120 ssh "${SSH_OPTS[@]}" "$@" 2>/dev/null
+      local rc=$?
+      # retry TRANSPORT failures only (ssh rc 255 = no connection): the very
+      # first call after settle can bounce off the sshd restart window or a
+      # loaded host (gate-4: exactly one failed assert per stage, all later
+      # calls green). A command's own rc (0-254) is returned untouched and
+      # NEVER re-executed — mutating commands must not run twice.
+      if [ "$rc" -eq 255 ]; then
+        timeout 120 ssh "${SSH_OPTS[@]}" "$@" 2>/dev/null
+        return $?
+      fi
+      return "$rc"
+    }
     guest_sudo() { printf 'kali\n' | timeout 120 ssh "${SSH_OPTS[@]}" "sudo -S -p '' $*" 2>/dev/null; }
 
     boot_qemu() { # mode extra-args...
@@ -111,35 +124,24 @@ else
 
     kill_qemu() { local pid; pid=$(cat "$SCRATCH/qemu-$1.pid" 2>/dev/null || true); [ -n "$pid" ] && kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 0; }
 
-    wait_ssh() { # timeout_sec — waits for sshd AND for provision to settle.
-      # sshd comes up EARLY (live-config starts it before our oneshot
-      # finishes); under parallel-gate CPU contention provision ran 2min25s
-      # past SSH-up and every post-provision assert read empties (the
-      # 2026-10-26 v26 gate false-fail class). A green boot is provision
-      # DEAD (oneshot success) or failed — never left running.
+    wait_ssh() { # timeout_sec — waits for sshd, then for the boot to SETTLE.
+      # sshd starts long before the provision oneshot finishes; asserts that
+      # ran mid-provision read empties (gate-1/4 class). Settle = the console
+      # banner's issue file: the banner unit is After=provision AND waits for
+      # an address — when /etc/issue.d/kali-live-headless.issue exists, the
+      # machine is provisioned AND networked. Deliberately NOT sudo-based:
+      # guest_sudo pipes the console password, which provision CHANGES
+      # mid-run, so sudo probes are unreliable exactly when we need them
+      # (gate-4: 'SubState=unknown' for 480s while the guest was healthy).
       local deadline=$(( $(date +%s) + $1 ))
       while [ "$(date +%s)" -lt "$deadline" ]; do
-        if guest 'echo up' >/dev/null 2>&1; then break; fi
+        if guest 'test -s /etc/issue.d/kali-live-headless.issue' >/dev/null 2>&1; then
+          return 0
+        fi
         sleep 5
       done
-      guest 'echo up' >/dev/null 2>&1 || return 1
-      local settle=$(( $(date +%s) + 480 ))
-      while [ "$(date +%s)" -lt "$settle" ]; do
-        v=$(guest_sudo 'systemctl show -p SubState --value kali-live-headless-provision 2>/dev/null' 2>/dev/null || echo unknown)
-        [ "$v" = "dead" ] || [ "$v" = "failed" ] && break
-        sleep 5
-      done
-      # provision ENDS by restarting sshd — the first connection right after
-      # "dead" lands in the re-listen window and bounces (exactly one failed
-      # assert per stage in the 2026-10-26 gate, everything after it green).
-      # Wait for sshd to answer again before handing control to the asserts.
-      local listen=$(( $(date +%s) + 60 ))
-      while [ "$(date +%s)" -lt "$listen" ]; do
-        guest 'echo up' >/dev/null 2>&1 && return 0
-        sleep 3
-      done
-      echo "wait_ssh: provision did not settle (SubState=${v:-none}) after 480s — asserting anyway" >&2
-      return 0
+      echo "wait_ssh: boot did not settle (no banner issue file) after $1s — asserting anyway" >&2
+      return 1
     }
 
     common_guest_checks() { # mode
