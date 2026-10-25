@@ -82,7 +82,10 @@ TOTAL_PASS=0; TOTAL_FAIL=0; FAILED_STAGES=""
 while IFS= read -r line; do
   s=$(printf '%s' "$line" | awk '{print $2}')
   rc=$(printf '%s' "$line" | awk '{print $3}' | cut -d= -f2)
-  vp=$(sed -n 's/^VERDICT PASS pass=\([0-9]*\) fail=\([0-9]*\).*/\1 \2/p' "$RUNDIR/$s.log" 2>/dev/null)
+  # VERDICT PASS|FAIL pass=N fail=M — both carry counts (the first cut of
+  # this parser matched PASS only, so FAIL runs printed pass=? fail=? and
+  # 0/0 totals: a failing gate must still show its real numbers)
+  vp=$(sed -n 's/^VERDICT \(PASS\|FAIL\) pass=\([0-9]*\) fail=\([0-9]*\).*/\2 \3/p' "$RUNDIR/$s.log" 2>/dev/null)
   p=$(printf '%s' "$vp" | awk '{print $1}'); f=$(printf '%s' "$vp" | awk '{print $2}')
   TOTAL_PASS=$((TOTAL_PASS + ${p:-0})); TOTAL_FAIL=$((TOTAL_FAIL + ${f:-0}))
   if [ "$rc" = 0 ] && printf '%s' "$vp" | grep -qE '^[0-9]+ 0$'; then
