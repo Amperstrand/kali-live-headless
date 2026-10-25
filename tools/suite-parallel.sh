@@ -47,6 +47,9 @@ if [ "$CORES" -lt 8 ]; then
   echo "WARNING: only $CORES cores — dropping concurrency to 2" >&2
   JOBS=2
 fi
+# concurrent guests stretch boot well past the serial budgets — tell the
+# stages to scale their wait budgets accordingly
+export KLH_BOOT_SCALE=2
 
 STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
 RUNDIR="output/suite-parallel-$STAMP"
