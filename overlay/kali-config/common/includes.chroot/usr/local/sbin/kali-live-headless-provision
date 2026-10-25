@@ -34,10 +34,29 @@ GEN=/usr/local/sbin/kali-live-headless-wifi-gen
 TEMPLATE=$CFG_DIR/headless-wifi.nmconnection.in
 NM_PROFILE=/etc/NetworkManager/system-connections/headless-wifi.nmconnection
 OVERRIDE_MNT=/run/kali-live-headless-config
+# canonical helpers (cfgpart discovery + salt reading) — the 2026-10-25
+# dedup: this script alone carried FOUR copies of the partition lookup and
+# TWO salt readers; the empty-salt incident was that drift.
+# Source the canonical lib. The existence test (not `. file || . file`) is
+# deliberate: `.` is a POSIX special builtin, and a FAILING special builtin
+# is FATAL to the shell in POSIX mode (bash-as-/bin/sh) — the || fallback
+# would never run. Both paths are the same file in-image; the second makes
+# the script runnable straight from a checkout (tests, dry runs).
+if [ -f /usr/local/lib/kali-live-headless/klh-lib.sh ]; then
+    . /usr/local/lib/kali-live-headless/klh-lib.sh
+else
+    . "$(dirname "$0")/../lib/kali-live-headless/klh-lib.sh"
+fi
 
 log() {
-    logger -t "$TAG" -- "$*" 2>/dev/null || true
-    printf '[%s] %s\n' "$TAG" "$*" > /dev/console 2>/dev/null || true
+    # /dev/kmsg FIRST: kernel-log lines are captured by the journal AND are
+    # readable early-boot (logger races journald startup, /dev/console output
+    # never reaches the journal at all — the 2026-10-26 auto-create failure
+    # on hardware left NO journal trace of its log lines for exactly this
+    # reason). Falls back to logger + console for non-root callers.
+    printf '<5>%s: %s\n' "$TAG" "$*" > /dev/kmsg 2>/dev/null \
+        || logger -t "$TAG" -- "$*" 2>/dev/null \
+        || true
 }
 
 conf_value() { # $1=file $2=KEY -> first plain KEY=value value
@@ -57,7 +76,7 @@ valid_regdom() {
 
 # ------------------------------------------------ boot-medium config override
 O_HOST=""; O_SSID=""; O_PSK=""; O_KEYMGMT=""; O_HIDDEN=""; O_REGDOM=""
-O_DEV=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2 == "KLHCONFIG" { print "/dev/" $1; exit }')
+O_DEV=$(klh_cfgpart)
 if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
    && mkdir -p "$OVERRIDE_MNT" 2>/dev/null \
    && mount -o ro "$O_DEV" "$OVERRIDE_MNT" 2>/dev/null; then
@@ -86,6 +105,54 @@ if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
     rmdir "$OVERRIDE_MNT" 2>/dev/null || true
 fi
 
+# ------------------------------------------------- KLHCONFIG auto-creation
+# Self-healing: if the stick was flashed with plain dd (no flash.sh), the
+# ISO's partition table has no KLHCONFIG partition, and EVERYTHING that
+# persists lives on it: master.salt (deterministic identities!), Wi-Fi
+# override, BitLocker consent, vm-store.conf, rescue opt-in. Instead of
+# silently degrading, CREATE the partition on the boot device.
+ensure_klhconfig_partition() {
+    # Safety: we only touch the device that backs /run/live/medium (never
+    # any other disk), only if there's no KLHCONFIG partition anywhere, and
+    # only if there's free space past the ISO. Prints the config partition
+    # dev on success (empty otherwise). POSIX sh: no `local` — the vars
+    # below are uniquely named to avoid leaking into the caller's scope.
+    cfgpart=$(klh_cfgpart)
+    [ -z "$cfgpart" ] || { printf '%s\n' "$cfgpart"; return 0; }
+
+    mediumpath=$(findmnt -n -o SOURCE /run/live/medium 2>/dev/null || true)
+    [ -n "$mediumpath" ] || return 0
+    bootdev=$(lsblk -no PKNAME "$(basename "$mediumpath" | sed 's|/dev/||')" 2>/dev/null | head -1)
+    [ -n "$bootdev" ] && [ -b "/dev/$bootdev" ] || return 0
+    # verify it's a USB/removable device (never partition an internal disk)
+    lsblk -dno TRAN "/dev/$bootdev" 2>/dev/null | grep -q "usb" || return 0
+    isosize=$(blockdev --getsize64 "/dev/$bootdev" 2>/dev/null || echo 0)
+    devsize=$(blockdev --getsize64 "/dev/$bootdev" 2>/dev/null || echo 0)
+    isoend=$(( (isosize + 1048575) / 1048576 + 1 ))  # MiB-aligned, past ISO
+    devmb=$(( devsize / 1048576 ))
+    [ "$devmb" -gt $(( isoend + 64 )) ] \
+        || { log "WARNING: no KLHCONFIG partition and no free space on /dev/$bootdev — identities will NOT persist"; return 0; }
+    start=$(( isoend * 2048 ))
+    log "no KLHCONFIG found — creating one on /dev/$bootdev (self-healing)"
+    printf 'start=%s, size=131072, type=0c\n' "$start" | sfdisk --force --append "/dev/$bootdev" >/dev/null 2>&1 \
+        || { log "WARNING: could not create KLHCONFIG partition on /dev/$bootdev — identities will NOT persist"; return 0; }
+    # partx (util-linux, always present): partprobe is parted's and NOT in
+    # the minimal image, and blockdev --rereadpt defers on busy devices —
+    # proven live on the stick 2026-10-25 (table written, node never came)
+    partx -u "/dev/$bootdev" 2>/dev/null || blockdev --rereadpt "/dev/$bootdev" 2>/dev/null || true
+    sleep 3
+    newpart=$(klh_cfgpart "/dev/$bootdev")
+    if [ -n "$newpart" ] && [ -b "$newpart" ]; then
+        mkfs.vfat -n KLHCONFIG "$newpart" >/dev/null 2>&1
+        log "KLHCONFIG partition created: $(klh_cfgpart) (identities will persist from now on)"
+        klh_cfgpart
+        return 0
+    fi
+    log "WARNING: KLHCONFIG partition appended but device node not found — identities will NOT persist this boot"
+    return 0
+}
+O_DEV=$(ensure_klhconfig_partition)
+
 # ---------------------------------------------------- host-role mesh identity
 # Persistent FIPS mesh identity (nsec/npub + name): generated on FIRST boot,
 # persisted to KLHCONFIG, reused on every later boot. The ISO ships NO
@@ -94,12 +161,22 @@ fi
 if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
    && mkdir -p "$OVERRIDE_MNT" 2>/dev/null \
    && mount -o rw "$O_DEV" "$OVERRIDE_MNT" 2>/dev/null; then
+    # The salt MUST exist before any consumer runs (identity-init creates
+    # it on first boot). The original order ran host_role_init first: on a
+    # first boot with no pre-seeded salt, host_role saw no salt, generated
+    # a throwaway RANDOM identity, and only then did identity-init create
+    # the salt — so boot #1 carried a random npub that boot #2 replaced
+    # (found in the 2026-10-25 pre-cut review; flashed sticks dodge it via
+    # registry pre-seeding, dd-flashed sticks hit it every first boot).
+    if [ -x /usr/local/sbin/kali-live-identity-init ]; then
+        /usr/local/sbin/kali-live-identity-init "$OVERRIDE_MNT" >/dev/null 2>&1 || true
+    fi
     if NPUB=$(/usr/local/lib/kali-live-headless/host_role_init.py "$OVERRIDE_MNT" 2>/dev/null) \
        && [ -n "$NPUB" ]; then
         echo "$NPUB" > /run/kali-live-headless-npub 2>/dev/null || true
         log "host-role mesh identity ready: $NPUB"
     else
-        log "host-role identity not provisioned (non-fatal — no generator or unwritable medium)"
+        log "WARNING: no KLHCONFIG config mount — mesh identity NOT provisioned, WireGuard identity NOT provisioned, console password will change every boot, Wi-Fi override unavailable, BitLocker unlock unavailable. Re-flash with ./flash.sh or let the auto-creation above handle it on next boot."
     fi
 
     # --------------------------------------------------- FIPS mesh identity
@@ -107,12 +184,20 @@ if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
     # salt + fingerprint -> nsec) and point it at the staged default peer
     # (our exit node). The fips deb ships enabled-but-not-started; we also
     # enable fips-dns so .fips resolution works from boot.
-    if [ -x /usr/local/sbin/kali-live-identity-init ]; then
-        /usr/local/sbin/kali-live-identity-init "$OVERRIDE_MNT" >/dev/null 2>&1 || true
+    # (identity-init already ran above, BEFORE host_role — the salt exists
+    # by this point; the duplicate call that used to live here was the
+    # ordering bug fixed in the 2026-10-25 pre-cut review.)
+    # The fips deb ships only /usr/share/fips/fips.yaml.example — nothing
+    # ever copied it to /etc/fips/fips.yaml, so the seeding below skipped
+    # itself and fips stayed disabled on every boot (found live 2026-10-24:
+    # fips.service inactive, /etc/fips/ empty except fips.nft).
+    if [ ! -f /etc/fips/fips.yaml ] && [ -f /usr/share/fips/fips.yaml.example ]; then
+        cp /usr/share/fips/fips.yaml.example /etc/fips/fips.yaml 2>/dev/null || true
     fi
     SALT_FILE="$OVERRIDE_MNT/master.salt"
-    if [ -r "$SALT_FILE" ] && [ -f /etc/fips/fips.yaml ]; then
-        SALT=$(head -n1 "$SALT_FILE" | tr -d '"')
+    SALT=$(klh_salt_of "$SALT_FILE")
+    klh_salt_valid "$SALT" || SALT=""
+    if [ -n "$SALT" ] && [ -f /etc/fips/fips.yaml ]; then
         DERIVED=$(python3 /usr/local/lib/kali-live-headless/derive_identity.py "$SALT" --machine --purpose fips 2>/dev/null || true)
         NSEC=$(printf '%s' "$DERIVED" | cut -f2)
         if [ -n "$NSEC" ]; then
@@ -135,7 +220,15 @@ peers:
 EOFPEER
             fi
             systemctl enable fips fips-dns >/dev/null 2>&1 || true
-            systemctl restart fips >/dev/null 2>&1 || true
+            # --no-block: a plain `systemctl restart` from INSIDE the running
+            # provision job waits for the started unit — and the fips daemon
+            # dials its staged peer at startup, blocking provision for the
+            # whole dial timeout. Found 2026-10-26 in the override stage: the
+            # first run of this block ever (it needs a VALID salt — every
+            # earlier boot skipped it: no salt, or the <32-byte fixture salt
+            # derive refuses) hung provision 14+ minutes past 'mesh identity
+            # ready' every time.
+            systemctl --no-block restart fips >/dev/null 2>&1 || true
             log "fips mesh identity derived and seeded; peer $PEER_ADDR"
         fi
     fi
@@ -209,12 +302,13 @@ MODE=$(printf '%s' "$MODE" | tr -d \'\")
 # every boot); random rotates per boot. Choose per deployment.
 if [ "$MODE" = derived ]; then
     _cfgmnt=""
-    _odev=$(lsblk -rno NAME,LABEL 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}')
+    _odev=$(klh_cfgpart)
     if [ -n "$_odev" ] && mkdir -p /run/klh-derive && mount -o ro "$_odev" /run/klh-derive 2>/dev/null; then
         _cfgmnt=/run/klh-derive
     fi
-    if [ -n "$_cfgmnt" ] && [ -r "$_cfgmnt/master.salt" ]; then
-        _salt=$(head -n1 "$_cfgmnt/master.salt" | tr -d '"')
+    _salt=$(klh_salt_of "$_cfgmnt/master.salt")
+    klh_salt_valid "$_salt" || _salt=""
+    if [ -n "$_salt" ]; then
         PW=$(python3 /usr/local/lib/kali-live-headless/derive_identity.py "$_salt" --machine --purpose console 2>/dev/null)
     fi
     [ -n "$_cfgmnt" ] && umount "$_cfgmnt" 2>/dev/null; rmdir /run/klh-derive 2>/dev/null
@@ -231,6 +325,37 @@ if [ "$MODE" = random ]; then
         printf '%s:%s\n' "$USER" "$PW" | chpasswd > /dev/null 2>&1 \
             && log "console password for '$USER' randomized (SSH remains key-only; sudo is passwordless)"
     fi
+fi
+
+# M2: optionally bind sshd to wg0 only (close the LAN-facing ssh hole).
+# Requires the WireGuard tunnel to be up — the wg-ensure timer brings it
+# within 30s; sshd restarts when it lands.
+WG_ONLY=$(sed -n 's/^SSHD_WG_ONLY=//p' /etc/default/kali-live-headless 2>/dev/null | head -n1 | tr -d '"')
+if [ "$WG_ONLY" = true ] && [ -d /sys/class/net/wg0 ]; then
+    WG_ADDR=$(ip -4 addr show wg0 2>/dev/null | grep -oE 'inet [0-9.]+' | cut -d' ' -f2)
+    if [ -n "$WG_ADDR" ]; then
+        printf 'ListenAddress %s\n' "$WG_ADDR" > /etc/ssh/sshd_config.d/0010-wg-only.conf
+        systemctl restart ssh 2>/dev/null || true
+        log "sshd bound to wg0 only ($WG_ADDR) — LAN hole closed"
+    fi
+fi
+
+# SSH rate limiting: >7 new connections/minute per source IP gets dropped.
+# Password auth is already disabled; this blunts key-probing and DoS.
+# NOTE the threshold history: 3/min latched THREE legitimate consumers in
+# one day (2026-10-26: the operator's own ssh loop, the QEMU suite, and
+# the hardware battery — the recent module's --update refreshes the window
+# on every match, so ONE connection over threshold seals the source and
+# every retry re-seals it). 7/min keeps the brute-force value while leaving
+# room for automation; multiplexed clients (ControlMaster) are immune.
+# Rules are best-effort — if iptables isn't available the stick still
+# boots fine (sshd's own MaxAuthTries + publickey-only are the real gates).
+if command -v iptables >/dev/null 2>&1; then
+    iptables -C INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --set 2>/dev/null || {
+        iptables -I INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --set
+        iptables -I INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m recent --name sshprobe --update --seconds 60 --hitcount 8 -j DROP
+        log "ssh rate limiting: max 7 new connections/minute per source"
+    }
 fi
 
 # KVM/libvirt access for the live user (groups only exist on WITH_KVM builds)
@@ -330,4 +455,9 @@ if command -v systemctl > /dev/null 2>&1; then
 fi
 
 log "provisioning complete (hostname=$(hostname), user=$USER)"
+# The suite's settle signal: written at the very END, after every step.
+# Earlier markers (blackbox logs dir appearing before its final stable
+# activation, the banner file not being ordered after provision) fired
+# mid-run and the assert stage read a half-provisioned machine.
+: > /run/kali-live-headless.settled
 exit 0

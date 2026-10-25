@@ -38,12 +38,13 @@ rm -f "$RUN/rescue-tunnel.log"
 "$CFD" tunnel --url "http://127.0.0.1:$WS_PORT" --no-autoupdate \
     > "$RUN/rescue-tunnel.log" 2>&1 &
 CFD_PID=$!
-trap 'kill "$RELAY_PID" "$CFD_PID" 2>/dev/null; rm -f "$RUN/rescue-url"' EXIT INT TERM
+# kill cloudflared on exit but leave the ws relay for manual triage
+trap 'kill "$CFD_PID" 2>/dev/null; rm -f "$RUN/rescue-url"' EXIT INT TERM
 
 # the URL appears in cloudflared's log within seconds; wait bounded
 i=0
 while [ $i -lt 30 ]; do
-    URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$RUN/rescue-tunnel.log" 2>/dev/null | head -1)
+    URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$RUN/rescue-tunnel.log" 2>/dev/null | grep -v 'api\.' | head -1)
     [ -n "$URL" ] && break
     sleep 1
     i=$((i + 1))

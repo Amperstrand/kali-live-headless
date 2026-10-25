@@ -52,15 +52,26 @@ row() { # build -> one line of the table
   if [ -f "$iso" ]; then
     size=$(numfmt --to=iec "$(stat -c '%s' "$iso")")
     date=$(stat -c '%y' "$iso" | cut -d. -f1)
-    sha=$(cut -d' ' -f1 "$iso.sha512sum" 2>/dev/null | cut -c1-12)
+    # guard each sidecar: under `set -euo pipefail` an ungated `cut`/`sed`
+    # on a MISSING file kills the whole table mid-print with rc=1 and no
+    # message — a partial archive (sidecars stripped) must degrade to "-",
+    # not truncate the run
+    if [ -f "$iso.sha512sum" ]; then
+      sha=$(cut -d' ' -f1 "$iso.sha512sum" | cut -c1-12)
+    else
+      sha="-"
+    fi
   else
     size="MISSING"; date="-"; sha="-"
   fi
-  verdict=$(sed -n 's/^- \*\*Verdict:\*\* //p' "$d/INDEX.md" 2>/dev/null | head -1)
-  [ -n "$verdict" ] || verdict=$(awk '/^## Verdict/{getline; while ($0 ~ /^[[:space:]]*$/) getline; print; exit}' "$d/INDEX.md" 2>/dev/null | cut -c1-60)
-  # strip markdown bold + backticks so the table stays readable
-  verdict=${verdict//\*\*/}
-  verdict=$(printf '%s' "$verdict" | tr -d '\140')
+  verdict=""
+  if [ -f "$d/INDEX.md" ]; then
+    verdict=$(sed -n 's/^- \*\*Verdict:\*\* //p' "$d/INDEX.md" | head -1)
+    [ -n "$verdict" ] || verdict=$(awk '/^## Verdict/{getline; while ($0 ~ /^[[:space:]]*$/) getline; print; exit}' "$d/INDEX.md" | cut -c1-60)
+    # strip markdown bold + backticks so the table stays readable
+    verdict=${verdict//\*\*/}
+    verdict=$(printf '%s' "$verdict" | tr -d '\140')
+  fi
   printf ' %-4s %-9s %-20s %-13s %s\n' "#$b" "$size" "$date" "${sha:--}" "${verdict:-_unrecorded_}"
 }
 

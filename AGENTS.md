@@ -67,6 +67,7 @@ drift is absorbed by bumping the pin, nothing else.
    defective #13s were caught exactly there, and each lesson is asserted by
    the tool now. It also recreates hook-owned unit enablement symlinks —
    extend that list when adding units the chroot hook enables.
+9. **Never trust `grep -c` on a log a live process is still writing** (hit twice on 2026-10-24: a promotion was counted 0 while the same grep's print showed it — output flush races the count): read-back and print the line, or wait for process exit, before deriving counts from live logs.
 10. **Verdict capture: use `tools/run-logged.sh`, never
    `echo "...rc=$?"` with a `$(date)` in the same string** — the command
    substitution runs first and resets `$?`; chains have recorded rc=0
@@ -173,8 +174,24 @@ drift is absorbed by bumping the pin, nothing else.
   build N+1 while N's ISO is still wanted silently destroys N. Preserve first,
   then build.
 
-## Improvements backlog (2026-10-23 review; ranked by leverage)
+## Improvements backlog (2026-10-25 update; ranked by leverage)
 
+- **Build-time budget & cache layers (where the ~2h20m minimal build goes)**:
+  xz squashfs ~55m · debootstrap+chroot install ~45-70m (cold every time —
+  upstream stage [1/4] wipes chroot/, cache/, config/) · package download
+  ~5-15m · initrd/xorriso/verify ~15m. Landed 2026-10-25: **warm apt cache**
+  (`hooks/build/klh-apt-cache.hook.build` + build.sh post-build harvest into
+  `build/kali-live/.klh-apt-cache/` — upstream's clean list spares dotdirs),
+  which kills the download chunk after the first build. Still open, in order:
+  1. **zstd squashfs** (see below) — the single biggest cut.
+  2. **hot-chroot lane** — preserve chroot/ across builds (skip debootstrap
+     for iteration builds; upstream's unconditional wipe means this needs
+     either an upstream flag or our own `lb build` invocation on a preserved
+     tree — MUST stay a separate experimental path; release builds stay
+     cold-clean, provenance guard unchanged).
+  3. **parallel boot gates** — LANDED 2026-10-25 (`tools/suite-parallel.sh`,
+     jobs=3 default): halves post-build gate wall-clock; watch CPU on 8-core
+     hosts (2×4-vcpu guests is the ceiling).
 - **zstd squashfs experiment** — the hotpatch's ~55 min is nearly all
   xz recompression (full builds pay the same tax in their squashfs
   phase). The kernel has supported zstd squashfs for years and
@@ -182,10 +199,13 @@ drift is absorbed by bumping the pin, nothing else.
   compressor switched, boot-gate BIOS+UEFI, compare `time mksquashfs`.
   If green: hotpatch ~10 min, builds ~40 min shorter. Highest-leverage
   single experiment available.
-- **Parallel boot stages** — `KLH_TEST_PORT` exists; stages still run
-  40–60 min apiece, serialized. Two concurrent stages on distinct ports
-  (or the suite on ai-legion) halves gate wall-clock. Watch CPU: 2×4
-  vcpu guests on an 8-core host is the practical ceiling.
+- **split test/stages/stage-cde.sh (653 lines)** into c/d/e modules —
+  deferred DELIBERATELY until after v26's gate run: the split is
+  mechanical but the gate hasn't executed once on the post-unification
+  suite; changing suite structure and gate-verifying it for the first
+  time in the same run would tangle a failure's causes.
+- ~~**Parallel boot stages**~~ — LANDED 2026-10-25: `tools/suite-parallel.sh`
+  (see the build-time budget entry above).
 - **Mechanical verdict ledger** — test.sh should emit a machine-readable
   verdict line that `iso-archive.sh`/BUILDS.md rows consume; several
   rows were hand-typed and one chain lied (item 10). The ledger is only
@@ -198,13 +218,44 @@ drift is absorbed by bumping the pin, nothing else.
   round-trip, socat forwards into a VM) is the last unproven README
   claim. Lives in the private overlay's lane.
 
+15. **The image's SSH rate limiter LATCHES** (2026-10-26, three victims in
+   one day: the operator's ssh loop, the QEMU suite, the hardware battery):
+   `iptables -m recent --update` refreshes the window on every match, so ONE
+   connection over threshold seals the source and every retry re-seals it.
+   Threshold is now 7/min; ANY repeat client of a stick (suite, hw-check,
+   scripts) must use ControlMaster multiplexing — one connection, immune.
+16. **Mode gates silently disable features**: `[ -x file ]` guards that fail
+   on a 100644 file shipped the feature dead with zero errors —
+   derive_identity.py was non-executable from v19 through v28, so the wg
+   salt-derivation NEVER ran and every key ever issued was the random
+   fallback (found 2026-10-26 via `sh -x` on a live guest). Stage-b now
+   asserts every runtime-gated executable bit; keep that list current when
+   adding `-x` guards.
+17. **sudo's HOME is /root** (2026-10-26): anything user-homed (the stick
+   registry!) resolved under sudo must go through SUDO_USER's passwd entry;
+   flash.sh's registry hook silently used root's empty registry otherwise.
+18. **Settle semantics**: a boot-stage's asserts must wait for a COMPLETION
+   sentinel (provision's `/run/kali-live-headless.settled`, its literal last
+   line), never for proxies — the banner file isn't ordered after provision,
+   and the blackbox dir appeared before its final stable activation; both
+   fired mid-provision and the asserts read a half-built machine twice.
+19. **`lsblk` lacks `-o END` on some hosts** — `/sys/block/<disk>/<part>/start`
+   + `/size` is the portable partition-end source (two scripts burned by
+   this on 2026-10-26).
+20. **A slow dd is a diagnosis** (2026-10-26): a flash writing at ~6 MB/s
+   failed verification — USB2 port or bad cable; flash.sh now warns on
+   <15 MB/s before the verify wastes minutes.
+
 ## Public-repo hygiene
 
 The repo is **public**. Nothing private may land here, ever: no PSKs, SSIDs,
 BSSIDs (geolocatable — one was scrubbed + history-rewritten 2026-10-21;
 pre-rewrite bundle: `~/backups/kali-live-headless-pre-rewrite-20261021.bundle`),
-LAN IPs, host keys, private SSH keys. Before any push that adds docs or
-diagnostics, grep the diff for MAC patterns
+LAN IPs, host keys, private SSH keys. The **stick registry**
+(`~/.local/share/kali-live-headless/stick-registry.tsv`) holds every stick's
+master salt: it lives OUTSIDE the repo on purpose — never copy, commit, or
+print its contents (tools print digests only). Before any push that adds
+docs or diagnostics, grep the diff for MAC patterns
 (`([0-9a-f]{2}:){5}[0-9a-f]{2}`) and private IP ranges. History rewrites
 require a fresh bundle in `~/backups/` first and a force-push to origin.
 

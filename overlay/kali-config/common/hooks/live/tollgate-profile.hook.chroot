@@ -1,0 +1,34 @@
+#!/bin/sh
+# Generate the open-network NM profile that lets the stick connect to
+# TollGate APs (and any open network) when the PSK network isn't found.
+# autoconnect-priority: HIGHER = preferred in NetworkManager. The PSK
+# profile keeps the default 0 (preferred); this profile is -10 so the
+# house wifi ALWAYS wins when it is visible — the stick only hunts open
+# networks when the house network is gone. (Shipped inverted as +10 in
+# e6815aa: the stick preferred ANY open AP over the house wifi.)
+set -u
+
+NM_DIR=/etc/NetworkManager/system-connections
+mkdir -p "$NM_DIR"
+
+cat > "$NM_DIR/tollgate-open.nmconnection" <<'EOF'
+[connection]
+id=tollgate-open
+type=802-11-wireless
+autoconnect=true
+autoconnect-priority=-10
+
+[802-11-wireless]
+mode=infrastructure
+ssid=
+key-mgmt=
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+EOF
+
+chmod 0600 "$NM_DIR/tollgate-open.nmconnection"
+echo "tollgate: open-network profile installed (priority 10 — PSK network wins)"
