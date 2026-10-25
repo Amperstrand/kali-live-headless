@@ -55,18 +55,30 @@ usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 done
 
 # ------------------------------------------------------------- source image
+klh_find_iso() { # $1 = build number -> its archived ISO (either flavour;
+  # the minimal variant is the default now, and this name-only lookup made
+  # every hotpatch of a minimal build die at the door — found 2026-10-26)
+  local b="$1" name
+  for name in kali-linux-rolling-live-minimal-amd64.iso kali-linux-rolling-live-amd64.iso; do
+    if [ -f "$OUT_DIR/iso-build$b/$name" ]; then
+      printf '%s\n' "$OUT_DIR/iso-build$b/$name"
+      return 0
+    fi
+  done
+  return 1
+}
+
 if [ -n "$ISO_ARG" ]; then
   SRC=$(realpath "$ISO_ARG")
   [ -f "$SRC" ] || klh_die "ISO not found: $ISO_ARG"
 elif [ -n "$BUILD" ]; then
-  SRC="$OUT_DIR/iso-build$BUILD/kali-linux-rolling-live-amd64.iso"
-  [ -f "$SRC" ] || klh_die "build $BUILD is not archived at $SRC"
+  SRC=$(klh_find_iso "$BUILD") || klh_die "build $BUILD is not archived (looked for both flavour names under $OUT_DIR/iso-build$BUILD/)"
 else
   newest=$(find "$OUT_DIR" -maxdepth 1 -type d -name 'iso-build*' 2>/dev/null \
     | sed 's/.*iso-build//' | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
   [ -n "$newest" ] || klh_die "no archived build to hotpatch (run ./build.sh first)"
   BUILD=$newest
-  SRC="$OUT_DIR/iso-build$newest/kali-linux-rolling-live-amd64.iso"
+  SRC=$(klh_find_iso "$newest") || klh_die "build $newest is not archived (both flavour names tried)"
 fi
 SRC=$(realpath "$SRC")
 ISO_NAME=$(basename "$SRC")
