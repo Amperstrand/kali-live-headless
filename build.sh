@@ -515,30 +515,36 @@ if [ "$SELF_HASH_NOW" != "$SELF_HASH_START" ]; then
 fi
 
 # ------------------------------------------------- apt cache harvest
-# Warm-build support (2026-10-25): the chroot still exists post-build
-# (upstream cleans at the START of the next run), and its
-# /var/cache/apt/archives holds every .deb this build downloaded. Save
-# them into the build checkout's .klh-apt-cache/ (upstream's clean list
-# does not touch dotdirs) so the klh-apt-cache.hook.build hook can restore
-# them into live-build's package cache next build — the chroot install
-# phase then reads mostly from disk. Fail-open: nothing here may fail a
-# successful build.
-HARVEST_SRC="$UPSTREAM_DIR/chroot/var/cache/apt/archives"
+# Warm-build support (2026-10-25): live-build persists every .deb it
+# installed into cache/packages.chroot (verified: 884 debs / 878MB on the
+# v27 build) — but upstream's stage [1/4] wipes cache/ at the START of the
+# next build, so that cache never helps twice. Save the debs into the
+# build checkout's .klh-apt-cache/ (a dotdir upstream's clean list spares)
+# so the klh-apt-cache.hook.build hook can restore them next build.
+# NOTE: the FIRST cut harvested chroot/var/cache/apt/archives — a dir lb
+# CLEANS before exiting (the v26/v27 builds ran cold because of it; found
+# 2026-10-26 by catching cache/packages.chroot populated mid-build).
+# Fail-open: nothing here may fail a successful build.
+HARVEST_SRC="$UPSTREAM_DIR/cache/packages.chroot"
+HARVEST_SRC2="$UPSTREAM_DIR/chroot/var/cache/apt/archives"
 HARVEST_DST="$UPSTREAM_DIR/.klh-apt-cache"
-if [ -d "$HARVEST_SRC" ]; then
-  mkdir -p "$HARVEST_DST" 2>/dev/null || true
-  _n=0
-  for _d in "$HARVEST_SRC"/*.deb; do
+mkdir -p "$HARVEST_DST" 2>/dev/null || true
+_n=0
+for _dir in "$HARVEST_SRC" "$HARVEST_SRC2"; do
+  [ -d "$_dir" ] || continue
+  for _d in "$_dir"/*.deb; do
     [ -e "$_d" ] || break
     cp -n "$_d" "$HARVEST_DST/" 2>/dev/null && _n=$((_n + 1))
   done
-  # cap: keep the newest 4000 debs (a full minimal set is ~1200; the cap
-  # bounds disk while still surviving several package-set experiments)
+done
+# cap: keep the newest 4000 debs (a full minimal set is ~1200; the cap
+# bounds disk while still surviving several package-set experiments)
+if [ -d "$HARVEST_DST" ]; then
   _total=$(ls -1 "$HARVEST_DST"/*.deb 2>/dev/null | wc -l)
   if [ "$_total" -gt 4000 ]; then
     ls -1t "$HARVEST_DST"/*.deb 2>/dev/null | tail -n +"$((4000 + 1))" | while IFS= read -r _old; do rm -f "$_old"; done
   fi
-  klh_ok "apt cache harvested: $_n new debs ($_total total in .klh-apt-cache — next build restores them via the build hook)"
+  [ "$_n" -gt 0 ] && klh_ok "apt cache harvested: $_n new debs ($_total total in .klh-apt-cache — next build restores them via the build hook)"
 fi
 
 # ------------------------------------------------------------- archive
