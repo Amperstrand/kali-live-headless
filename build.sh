@@ -181,6 +181,26 @@ klh_ok "upstream kali-live at $UPSTREAM_SHA (ref $KALI_LIVE_REF)"
 KLH_COMMON="$UPSTREAM_DIR/kali-config/common"
 mkdir -p "$KLH_COMMON"
 
+# ------------------------------------------------- apt cache (warm builds)
+# Upstream's build.sh ENDS with `cleanup_fs` (its line 629: rm -rf cache/
+# chroot/ config/ ... after EVERY successful build) — live-build's own
+# cache/packages.chroot persistence never survives to the next build, and
+# two post-flight harvest designs missed the window (v26: harvested a dir
+# lb had cleaned; v27: 884 debs wiped at build end). The fix is a symlink:
+# lb populates cache/packages.chroot THROUGH the link into the dotdir,
+# cleanup_fs rm -rf's the symlink, and the dotdir persists — next build lb
+# re-reads the same content natively (no restore hook needed).
+mkdir -p "$UPSTREAM_DIR/.klh-apt-cache" "$UPSTREAM_DIR/cache" 2>/dev/null || true
+ln -sfn ../.klh-apt-cache "$UPSTREAM_DIR/cache/packages.chroot" 2>/dev/null || true
+# cap the persistent cache (full minimal set ~1200 debs / ~900MB; 4000
+# bounds disk while surviving several package-set experiments)
+if [ -d "$UPSTREAM_DIR/.klh-apt-cache" ]; then
+  _total=$(ls -1 "$UPSTREAM_DIR/.klh-apt-cache"/*.deb 2>/dev/null | wc -l)
+  if [ "$_total" -gt 4000 ]; then
+    ls -1t "$UPSTREAM_DIR/.klh-apt-cache"/*.deb 2>/dev/null | tail -n +"$((4000 + 1))" | while IFS= read -r _old; do rm -f "$_old"; done
+  fi
+fi
+
 klh_info "overlaying repo customizations into kali-config/common/"
 cp -a "$OVERLAY_DIR/." "$KLH_COMMON/"
 
@@ -512,39 +532,6 @@ fi
 SELF_HASH_NOW=$(sha256sum "$0" | cut -d' ' -f1)
 if [ "$SELF_HASH_NOW" != "$SELF_HASH_START" ]; then
   klh_die "build.sh was EDITED while this build ran (hash changed). The build SUCCEEDED; the ISO is safe in $STAGE_OUT — re-run the post-build steps by hand: tools/iso-archive.sh --iso $STAGE_OUT/*.iso --build $BUILD_NUM, then ./test.sh --iso <the archived iso>"
-fi
-
-# ------------------------------------------------- apt cache harvest
-# Warm-build support (2026-10-25): live-build persists every .deb it
-# installed into cache/packages.chroot (verified: 884 debs / 878MB on the
-# v27 build) — but upstream's stage [1/4] wipes cache/ at the START of the
-# next build, so that cache never helps twice. Save the debs into the
-# build checkout's .klh-apt-cache/ (a dotdir upstream's clean list spares)
-# so the klh-apt-cache.hook.build hook can restore them next build.
-# NOTE: the FIRST cut harvested chroot/var/cache/apt/archives — a dir lb
-# CLEANS before exiting (the v26/v27 builds ran cold because of it; found
-# 2026-10-26 by catching cache/packages.chroot populated mid-build).
-# Fail-open: nothing here may fail a successful build.
-HARVEST_SRC="$UPSTREAM_DIR/cache/packages.chroot"
-HARVEST_SRC2="$UPSTREAM_DIR/chroot/var/cache/apt/archives"
-HARVEST_DST="$UPSTREAM_DIR/.klh-apt-cache"
-mkdir -p "$HARVEST_DST" 2>/dev/null || true
-_n=0
-for _dir in "$HARVEST_SRC" "$HARVEST_SRC2"; do
-  [ -d "$_dir" ] || continue
-  for _d in "$_dir"/*.deb; do
-    [ -e "$_d" ] || break
-    cp -n "$_d" "$HARVEST_DST/" 2>/dev/null && _n=$((_n + 1))
-  done
-done
-# cap: keep the newest 4000 debs (a full minimal set is ~1200; the cap
-# bounds disk while still surviving several package-set experiments)
-if [ -d "$HARVEST_DST" ]; then
-  _total=$(ls -1 "$HARVEST_DST"/*.deb 2>/dev/null | wc -l)
-  if [ "$_total" -gt 4000 ]; then
-    ls -1t "$HARVEST_DST"/*.deb 2>/dev/null | tail -n +"$((4000 + 1))" | while IFS= read -r _old; do rm -f "$_old"; done
-  fi
-  [ "$_n" -gt 0 ] && klh_ok "apt cache harvested: $_n new debs ($_total total in .klh-apt-cache — next build restores them via the build hook)"
 fi
 
 # ------------------------------------------------------------- archive

@@ -20,6 +20,10 @@ CACHE_SRC=".klh-apt-cache"
 CACHE_DST="cache/packages.chroot"
 
 [ -d "$CACHE_SRC" ] || exit 0
+# build.sh now SYMLINKS cache/packages.chroot at the dotdir — lb reads it
+# natively and this restore is a no-op (same inode). Keep it for the
+# symlink-less fallback (fresh clones, manual lb runs).
+[ "$CACHE_DST" -ef "$CACHE_SRC" ] && exit 0
 mkdir -p "$CACHE_DST" 2>/dev/null || exit 0
 
 n=0
