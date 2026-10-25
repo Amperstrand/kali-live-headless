@@ -144,6 +144,16 @@ fi
 if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
    && mkdir -p "$OVERRIDE_MNT" 2>/dev/null \
    && mount -o rw "$O_DEV" "$OVERRIDE_MNT" 2>/dev/null; then
+    # The salt MUST exist before any consumer runs (identity-init creates
+    # it on first boot). The original order ran host_role_init first: on a
+    # first boot with no pre-seeded salt, host_role saw no salt, generated
+    # a throwaway RANDOM identity, and only then did identity-init create
+    # the salt — so boot #1 carried a random npub that boot #2 replaced
+    # (found in the 2026-10-25 pre-cut review; flashed sticks dodge it via
+    # registry pre-seeding, dd-flashed sticks hit it every first boot).
+    if [ -x /usr/local/sbin/kali-live-identity-init ]; then
+        /usr/local/sbin/kali-live-identity-init "$OVERRIDE_MNT" >/dev/null 2>&1 || true
+    fi
     if NPUB=$(/usr/local/lib/kali-live-headless/host_role_init.py "$OVERRIDE_MNT" 2>/dev/null) \
        && [ -n "$NPUB" ]; then
         echo "$NPUB" > /run/kali-live-headless-npub 2>/dev/null || true
@@ -157,9 +167,9 @@ if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
     # salt + fingerprint -> nsec) and point it at the staged default peer
     # (our exit node). The fips deb ships enabled-but-not-started; we also
     # enable fips-dns so .fips resolution works from boot.
-    if [ -x /usr/local/sbin/kali-live-identity-init ]; then
-        /usr/local/sbin/kali-live-identity-init "$OVERRIDE_MNT" >/dev/null 2>&1 || true
-    fi
+    # (identity-init already ran above, BEFORE host_role — the salt exists
+    # by this point; the duplicate call that used to live here was the
+    # ordering bug fixed in the 2026-10-25 pre-cut review.)
     # The fips deb ships only /usr/share/fips/fips.yaml.example — nothing
     # ever copied it to /etc/fips/fips.yaml, so the seeding below skipped
     # itself and fips stayed disabled on every boot (found live 2026-10-24:

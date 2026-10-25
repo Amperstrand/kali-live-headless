@@ -203,6 +203,12 @@ find "$REPO_DIR/overlay" -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 for f in "$REPO_DIR"/tools/*.sh; do
   if bash -n "$f" 2>/dev/null || sh -n "$f" 2>/dev/null; then record pass "sh -n tools/$(basename "$f")"; else record fail "sh -n tools/$(basename "$f")"; fi
 done
+# stage modules themselves: a stage with a syntax error would only explode
+# at boot/content level — minutes-to-hours in — so parse them here (the
+# self-recursion class taught that stage bugs surface far too late).
+for f in "$REPO_DIR"/test/stages/*.sh; do
+  if bash -n "$f" 2>/dev/null; then record pass "bash -n $(basename "$f")"; else record fail "bash -n $(basename "$f")" "$(bash -n "$f" 2>&1 | head -1)"; fi
+done
 
 # systemd unit sanity
 UNITS=(kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-blackbox)
