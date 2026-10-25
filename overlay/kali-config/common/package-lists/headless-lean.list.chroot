@@ -16,6 +16,9 @@ openssl
 ca-certificates
 sudo
 e2fsprogs
+## FAT32 for the KLHCONFIG partition (auto-create + flash reuse; found
+## missing from minimal on hardware 2026-10-25: partition appended, no fs)
+dosfstools
 ## WireGuard access channel (identical to the standard profile)
 wireguard-tools
 ## BitLocker unlock for the NTFS vm store (rides the KVM stack)
