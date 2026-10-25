@@ -9,6 +9,14 @@ elif [ "$RUN_QEMU" != true ]; then
   record skip "qemu" "disabled via --skip-qemu"
 else
   if [ -w /dev/kvm ]; then ACCEL=kvm; CPU=(-cpu host); BOOT_TIMEOUT=480; CD_BOOT_TIMEOUT=2400; else ACCEL=tcg; CPU=(); BOOT_TIMEOUT=1800; CD_BOOT_TIMEOUT=4800; klh_warn "no /dev/kvm — using TCG emulation (slow)"; fi
+  # Parallel gates (tools/suite-parallel.sh) export KLH_BOOT_SCALE: 3-4
+  # concurrent guests stretch userspace boot well past the serial budgets
+  # (the 2026-10-26 gate: override's DHCP completed AFTER its 480s direct-
+  # kernel budget ran out — guest fully healthy at the login prompt).
+  if [ -n "${KLH_BOOT_SCALE:-}" ]; then
+    BOOT_TIMEOUT=$(( BOOT_TIMEOUT * KLH_BOOT_SCALE ))
+    CD_BOOT_TIMEOUT=$(( CD_BOOT_TIMEOUT * KLH_BOOT_SCALE ))
+  fi
   record pass "qemu accel" "$ACCEL"
   klh_info "CD-ROM boots (BIOS/UEFI) allow ${CD_BOOT_TIMEOUT}s: the ISO's ~226MB initrd crawls over emulated ATAPI; direct-kernel boots (override/forensic) get ${BOOT_TIMEOUT}s"
 
@@ -118,8 +126,17 @@ else
       local settle=$(( $(date +%s) + 480 ))
       while [ "$(date +%s)" -lt "$settle" ]; do
         v=$(guest_sudo 'systemctl show -p SubState --value kali-live-headless-provision 2>/dev/null' 2>/dev/null || echo unknown)
-        [ "$v" = "dead" ] || [ "$v" = "failed" ] && return 0
+        [ "$v" = "dead" ] || [ "$v" = "failed" ] && break
         sleep 5
+      done
+      # provision ENDS by restarting sshd — the first connection right after
+      # "dead" lands in the re-listen window and bounces (exactly one failed
+      # assert per stage in the 2026-10-26 gate, everything after it green).
+      # Wait for sshd to answer again before handing control to the asserts.
+      local listen=$(( $(date +%s) + 60 ))
+      while [ "$(date +%s)" -lt "$listen" ]; do
+        guest 'echo up' >/dev/null 2>&1 && return 0
+        sleep 3
       done
       echo "wait_ssh: provision did not settle (SubState=${v:-none}) after 480s — asserting anyway" >&2
       return 0
