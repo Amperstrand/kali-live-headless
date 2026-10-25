@@ -1,0 +1,172 @@
+#!/bin/sh
+# kali-live-blackbox — persistent forensic boot log on the stick's config
+# partition (KLHCONFIG). Born from the 2026-10-24 incident: a stick
+# rebooted and never came back, and there was ZERO evidence to say why —
+# live systems keep everything in RAM, so a hang, a Wi-Fi failure or a
+# shutdown wedge leaves nothing behind.
+#
+# Design:
+#   * KLHCONFIG (vfat, by LABEL — never a raw medium device) is mounted
+#     rw,sync: every write flushes, so a power cut mid-boot still leaves
+#     the lines written before it. The salt/configs on the same partition
+#     are never touched; all output goes under logs/.
+#   * One file per boot: logs/boot-<epoch>-<bootid>.log, plus a bounded
+#     global logs/events.log. Rotation: last 20 boots, events.log halved
+#     past 512 KiB. Worst-case stick usage stays ~1 MiB.
+#   * Streams: journalctl -f for the product's own tags (provision,
+#     wifi-watchdog, tollgate — the producers need no changes), a
+#     heartbeat every 15 s (WHERE a hang stopped becomes visible), and a
+#     boot header with the facts forensics actually needs: kernel cmdline
+#     (toram or not), medium backing store, salt digest (sha256 prefix —
+#     never the salt), npub, wg pubkey.
+#   * No KLHCONFIG (toram with the stick pulled, dd-flashed stick): logs
+#     to /run (RAM) so a live SSH session can still read this boot; the
+#     header says PERSISTENT=no so the gap is itself evidence.
+#   * NEVER fatal: every failure degrades to console + RAM. A logger that
+#     can break boot is worse than no logger.
+#
+# Usage:  kali-live-blackbox serve          (systemd, foreground loop)
+#         kali-live-blackbox header         (write boot header once)
+#         kali-live-blackbox log "message"  (one event line)
+#         BB_MOUNT_DIR (default /run/klh-blackbox) may be pre-populated by
+#         tests/callers; if it is already a mountpoint it is used as-is.
+set -u
+
+BB_MOUNT_DIR="${BB_MOUNT_DIR:-/run/klh-blackbox}"
+BB_LABEL="KLHCONFIG"
+BB_LOGS_REL="logs"
+BB_MAX_BOOTS=20
+BB_EVENTS_MAX=524288
+BB_HEARTBEAT_S=15
+BB_TAGS="kali-live-headless kali-live-wifi-watchdog kali-live-tollgate-watchdog"
+
+bb_mount() {
+    # already mounted (or a test fixture): use it
+    if mountpoint -q "$BB_MOUNT_DIR" 2>/dev/null; then return 0; fi
+    _dev=$(lsblk -rno NAME,LABEL 2>/dev/null | awk -v l="$BB_LABEL" '$2==l{print "/dev/"$1; exit}')
+    [ -n "$_dev" ] || return 1
+    mkdir -p "$BB_MOUNT_DIR" 2>/dev/null || return 1
+    # sync: flush each write (power-cut forensics); the partition is small
+    # and write volume is ~1 KiB/15 s, so the FAT wear/latency cost is fine
+    mount -o rw,sync -t vfat "$_dev" "$BB_MOUNT_DIR" 2>/dev/null || return 1
+    return 0
+}
+
+bb_persistent() { mountpoint -q "$BB_MOUNT_DIR" 2>/dev/null && [ -e "$BB_MOUNT_DIR/.klh-blackbox-ok" ]; }
+
+bb_log() { # $1 message -> global events log + this boot's log
+    _line="[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $1"
+    mkdir -p "$BB_MOUNT_DIR/$BB_LOGS_REL" 2>/dev/null || true
+    printf '%s\n' "$_line" >> "$BB_MOUNT_DIR/$BB_LOGS_REL/events.log" 2>/dev/null || true
+    printf '%s\n' "$_line" >> "$BB_BOOT_FILE" 2>/dev/null || true
+}
+
+bb_bootfile() {
+    mkdir -p "$BB_MOUNT_DIR/$BB_LOGS_REL" 2>/dev/null || true
+    _bid=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '-' | cut -c1-8)
+    [ -n "$_bid" ] || _bid=unknown
+    BB_BOOT_FILE="$BB_MOUNT_DIR/$BB_LOGS_REL/boot-$(date -u '+%Y%m%dT%H%M%SZ')-$_bid.log"
+}
+
+bb_rotate() {
+    _dir="$BB_MOUNT_DIR/$BB_LOGS_REL"
+    # keep the newest $BB_MAX_BOOTS boot files
+    ls -1t "$_dir"/boot-*.log 2>/dev/null | tail -n +"$((BB_MAX_BOOTS + 1))" | while IFS= read -r f; do
+        rm -f "$f" 2>/dev/null || true
+    done
+    # halve events.log past the cap (keep the newest half)
+    if [ -f "$_dir/events.log" ]; then
+        _sz=$(wc -c < "$_dir/events.log" 2>/dev/null || echo 0)
+        if [ "$_sz" -gt "$BB_EVENTS_MAX" ]; then
+            _tmp="$_dir/events.log.tmp"
+            tail -n +$(( $(wc -l < "$_dir/events.log" 2>/dev/null || echo 0) / 2 )) "$_dir/events.log" > "$_tmp" 2>/dev/null \
+                && mv "$_tmp" "$_dir/events.log" 2>/dev/null || rm -f "$_tmp" 2>/dev/null
+            bb_log "blackbox: events.log rotated (was ${_sz}B)"
+        fi
+    fi
+}
+
+bb_header() {
+    bb_bootfile
+    _cmdline=$(cat /proc/cmdline 2>/dev/null)
+    case "$_cmdline" in *toram*) _toram=yes ;; *) _toram=no ;; esac
+    _medium=$(findmnt -n -o SOURCE,FSTYPE /run/live/medium 2>/dev/null | tr '\n' ' ')
+    _cfgdev=$(lsblk -rno NAME,LABEL 2>/dev/null | awk -v l="$BB_LABEL" '$2==l{print "/dev/"$1; exit}')
+    if bb_mount; then
+        : > "$BB_MOUNT_DIR/.klh-blackbox-ok" 2>/dev/null || true
+        _persist=yes
+    else
+        mkdir -p "$BB_MOUNT_DIR" 2>/dev/null || true
+        _persist=no
+    fi
+    bb_bootfile
+    _saltdig="none"
+    if [ -s "$BB_MOUNT_DIR/master.salt" ]; then
+        # hash, never the secret: ties a boot to the operator's stick
+        # registry without exposing the salt in a log file
+        _saltdig=$(sha256sum "$BB_MOUNT_DIR/master.salt" 2>/dev/null | cut -c1-16)
+        [ -n "$_saltdig" ] || _saltdig="unreadable"
+    fi
+    _npub=$(cut -c1-20 /run/kali-live-headless-npub 2>/dev/null || echo none)
+    _wgpub=$(cut -c1-20 /run/kali-live-headless-wg-pub 2>/dev/null || echo none)
+    {
+        printf '=== kali-live-headless blackbox boot record ===\n'
+        printf 'boot_id     : %s\n' "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown)"
+        printf 'utc         : %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        printf 'kernel      : %s\n' "$(uname -r 2>/dev/null)"
+        printf 'cmdline     : %s\n' "$_cmdline"
+        printf 'toram       : %s\n' "$_toram"
+        printf 'medium      : %s\n' "${_medium:-none}"
+        printf 'klhconfig   : %s (persistent=%s)\n' "${_cfgdev:-none}" "$_persist"
+        printf 'salt_sha256 : %s\n' "$_saltdig"
+        printf 'npub        : %s...\n' "$_npub"
+        printf 'wg_pubkey   : %s...\n' "$_wgpub"
+    } >> "$BB_BOOT_FILE" 2>/dev/null || true
+    bb_log "blackbox: boot record written (persistent=$_persist toram=$_toram salt=$_saltdig)"
+    bb_rotate
+    [ "$_persist" = yes ] || { printf 'klh-blackbox: NO config partition — forensic logs in RAM only this boot\n' > /dev/console 2>/dev/null; } || true
+}
+
+bb_heartbeat() {
+    _up=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo '?')
+    _wifi=$(nmcli -t -f TYPE,STATE,CONNECTION device status 2>/dev/null | grep -E '^wifi( |-)' | head -1)
+    bb_log "heartbeat: up=${_up}s wifi=${_wifi:-unknown}"
+}
+
+bb_serve() {
+    bb_header
+    trap 'bb_log "blackbox: clean stop (systemd shutdown reached)"; exit 0' TERM INT
+    # stream the product's own journal tags into this boot's file
+    _jargs=""
+    for _t in $BB_TAGS; do _jargs="$_jargs -t $_t"; done
+    # -n 200: backfill the provision run (it runs BEFORE this service), then follow
+    # shellcheck disable=SC2086
+    journalctl -f -n 200 --no-pager $_jargs 2>/dev/null | while IFS= read -r _line; do
+        printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$_line" >> "$BB_BOOT_FILE" 2>/dev/null || true
+    done &
+    _jpid=$!
+    _i=0
+    while :; do
+        sleep 5
+        _i=$((_i + 5))
+        if [ "$_i" -ge "$BB_HEARTBEAT_S" ]; then
+            _i=0
+            bb_heartbeat
+            # the partition may have appeared late (self-heal) or vanished
+            # (stick pulled in toram): re-evaluate quietly
+            if ! bb_persistent && bb_mount; then
+                : > "$BB_MOUNT_DIR/.klh-blackbox-ok" 2>/dev/null || true
+                bb_log "blackbox: config partition appeared — persistence ON"
+            fi
+        fi
+    done
+    kill "$_jpid" 2>/dev/null || true
+}
+
+case "${1:-serve}" in
+    serve)  bb_serve ;;
+    header) bb_header ;;
+    log)    bb_mount || true; bb_bootfile; bb_log "${2:-}" ;;
+    *)      echo "usage: $0 serve|header|log <msg>" >&2; exit 2 ;;
+esac
+exit 0

@@ -177,8 +177,35 @@ else
   record fail "host-role identity generator present+executable"
 fi
 
+# Unit tests that are hermetic (no VM, no docker, no hardware) run as part
+# of EVERY level — a green suite must include its unit suites (the
+# test/stages self-recursion bug showed how easily a suite can "pass" while
+# running nothing). Add a dir here ONLY if it needs nothing but coreutils.
+UNIT_DIRS="derive-identity stick-registry blackbox"
+for d in $UNIT_DIRS; do
+  t="$REPO_DIR/test/$d/run-tests.sh"
+  if [ ! -x "$t" ]; then record fail "unit $d present" "missing $t"; continue; fi
+  # PYTHONDONTWRITEBYTECODE: unit drivers IMPORT modules straight out of
+  # overlay/, and the interpreter would drop __pycache__ there — which the
+  # bytecode-free check below must not then trip over (order-dependent
+  # false FAIL, found 2026-10-25). Manual runs get the same guard from the
+  # test scripts themselves.
+  if UTOUT=$(PYTHONDONTWRITEBYTECODE=1 bash "$t" 2>&1); then
+    record pass "unit $d ($(printf '%s\n' "$UTOUT" | sed -n 's/^pass=\([0-9]*\) fail=.*/\1/p' ) tests)"
+  else
+    record fail "unit $d" "$(printf '%s\n' "$UTOUT" | grep FAIL | head -1)"
+  fi
+done
+find "$REPO_DIR/overlay" -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+# tools/*.sh must parse as shell too (they run on the OPERATOR host, not in
+# the image — syntax errors there cost a flash cycle to discover)
+for f in "$REPO_DIR"/tools/*.sh; do
+  if bash -n "$f" 2>/dev/null || sh -n "$f" 2>/dev/null; then record pass "sh -n tools/$(basename "$f")"; else record fail "sh -n tools/$(basename "$f")"; fi
+done
+
 # systemd unit sanity
-UNITS=(kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog)
+UNITS=(kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-blackbox)
 for u in "${UNITS[@]}"; do
   f="$REPO_DIR/overlay/kali-config/common/includes.chroot/etc/systemd/system/$u.service"
   if grep -q '^\[Unit\]' "$f" && grep -q '^\[Service\]' "$f" && grep -q '^\[Install\]' "$f" && grep -q '^ExecStart=' "$f"; then

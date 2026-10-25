@@ -204,8 +204,11 @@ drift is absorbed by bumping the pin, nothing else.
 The repo is **public**. Nothing private may land here, ever: no PSKs, SSIDs,
 BSSIDs (geolocatable — one was scrubbed + history-rewritten 2026-10-21;
 pre-rewrite bundle: `~/backups/kali-live-headless-pre-rewrite-20261021.bundle`),
-LAN IPs, host keys, private SSH keys. Before any push that adds docs or
-diagnostics, grep the diff for MAC patterns
+LAN IPs, host keys, private SSH keys. The **stick registry**
+(`~/.local/share/kali-live-headless/stick-registry.tsv`) holds every stick's
+master salt: it lives OUTSIDE the repo on purpose — never copy, commit, or
+print its contents (tools print digests only). Before any push that adds
+docs or diagnostics, grep the diff for MAC patterns
 (`([0-9a-f]{2}:){5}[0-9a-f]{2}`) and private IP ranges. History rewrites
 require a fresh bundle in `~/backups/` first and a force-push to origin.
 

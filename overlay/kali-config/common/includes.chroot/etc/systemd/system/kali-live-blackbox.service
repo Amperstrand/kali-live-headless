@@ -1,0 +1,20 @@
+[Unit]
+Description=kali-live-headless: blackbox forensic boot log (KLHCONFIG)
+# After provision: the boot header records the identity outcome files
+# provision writes (/run/kali-live-headless-npub, -wg-pub). Never hard-
+# dependent — a forensic logger that can block or break boot is worse
+# than none (see the 2026-10-24 incident this unit exists for).
+After=kali-live-headless-provision.service
+Wants=kali-live-headless-provision.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/kali-live-blackbox serve
+Restart=on-failure
+RestartSec=10
+# never let logging block or kill the machine
+Nice=10
+TimeoutStartSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -168,7 +168,7 @@ enable_unit() { # $1=unit $2=target.wants-dir-name
   [ -e "/out/rootfs/etc/systemd/system/$1" ] || return 0
   ln -sfn "/etc/systemd/system/$1" "/out/rootfs/etc/systemd/system/$2/$1"
 }
-for u in libvirtd.service kali-live-kvm-enable.service kali-live-kvm-firewall.service kali-live-vmstore-mount.service kali-live-tollgate-watchdog.service; do
+for u in libvirtd.service kali-live-kvm-enable.service kali-live-kvm-firewall.service kali-live-vmstore-mount.service kali-live-tollgate-watchdog.service kali-live-blackbox.service; do
   enable_unit "$u" multi-user.target.wants
 done
 enable_unit virtlogd.socket sockets.target.wants
