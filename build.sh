@@ -81,8 +81,14 @@ Options:
 
 Examples:
   ./build.sh                        # full build (release; ~3h)
+  BASE=debian ./build.sh            # same stack on a Debian trixie base
   tools/iso-hotpatch.sh --build 11  # overlay-only repack (~30 min)
   ./test.sh --level static  # 17s: syntax/config/units, no ISO, no VM
+
+Environment:
+  BASE=kali|debian   Distro base for the image (default kali — the
+                     historical flow, byte-identical). debian = trixie with
+                     the same headless stack; see lib/distro/.
 EOF
   exit 0
 }
@@ -110,11 +116,40 @@ done
 klh_load_config "$CONFIG_FILE"
 klh_check_config_perms "$CONFIG_FILE"
 
+# ------------------------------------------------------------- distro base
+# BASE (env or ./config; default kali) selects the distro adapter that owns
+# every base-specific delta: suite string, mirrors, keyring, firmware
+# policy, package-list mapping, ISO identity. kali's adapter is all no-ops —
+# the pre-spike behavior, exactly.
+BASE="${BASE:-kali}"
+klh_load_distro "$BASE"
+
 [ -n "$OPT_OUT" ]     && OUT_DIR="$OPT_OUT"
 [ -n "$OPT_VARIANT" ] && VARIANT="$OPT_VARIANT"
 [ -n "$OPT_ARCH" ]    && ARCH="$OPT_ARCH"
 [ -n "$OPT_BRANCH" ]  && BRANCH="$OPT_BRANCH"
 [ -n "$OPT_REF" ]     && KALI_LIVE_REF="$OPT_REF"
+
+# BRANCH: klh_load_config defaulted it to kali-rolling before the adapter
+# existed. For a non-kali base with no EXPLICIT branch (no -b, no BRANCH=
+# in ./config), substitute the adapter's default suite; an explicit value
+# goes through the adapter's validator below either way.
+if [ "$KLH_BASE" != kali ] && [ -z "$OPT_BRANCH" ] \
+   && [ "$BRANCH" = "kali-rolling" ] \
+   && ! grep -qE '^[[:space:]]*BRANCH=' "$CONFIG_FILE" 2>/dev/null; then
+  BRANCH="$KLH_DISTRO_DEFAULT_BRANCH"
+  klh_info "BASE=$KLH_BASE: branch defaulted to $BRANCH (set BRANCH in ./config or pass -b to pin)"
+fi
+klh_distro_validate_branch "$BRANCH"
+
+# BUILD_MIRROR: for BASE=kali an empty mirror stays empty (upstream's own
+# default applies — the exact pre-spike behavior). Every other base MUST
+# pass -m: upstream's hardcoded default is http.kali.org, wrong for any
+# non-kali suite, and auto/config's own flags would silently win.
+if [ -n "${KLH_DISTRO_DEFAULT_MIRROR:-}" ] && [ "$KLH_BASE" != kali ] && [ -z "${BUILD_MIRROR:-}" ]; then
+  BUILD_MIRROR="$KLH_DISTRO_DEFAULT_MIRROR"
+  klh_info "BASE=$KLH_BASE: build mirror defaulted to $BUILD_MIRROR"
+fi
 
 OUT_DIR="${OUT_DIR:-$REPO_DIR/output}"
 mkdir -p "$OUT_DIR"
@@ -150,9 +185,9 @@ free_space_gb() { df -BG --output=avail "$1" | tail -1 | tr -dc '0-9'; }
 AVAIL=$(free_space_gb "$REPO_DIR")
 [ "$AVAIL" -ge 30 ] || klh_die "only ${AVAIL}G free under $REPO_DIR — a Kali live build needs ~30G+ (chroot + ISO + caches)"
 
-if ! curl -fsSI --max-time 15 "http://http.kali.org/kali/dists/${BRANCH}/Release" > /dev/null 2>&1; then
-  klh_warn "http.kali.org not reachable (proxy?) — the build will fail if this persists"
-fi
+# distro adapter owns the mirror probe (kali: http.kali.org as always;
+# debian: deb.debian.org) — see lib/distro/.
+klh_distro_check_reachability
 
 # ------------------------------------------------------- upstream checkout
 if [ "$FORCE_RECLONE" = true ] && [ -d "$UPSTREAM_DIR" ]; then
@@ -177,6 +212,11 @@ if [ -n "$(git -C "$UPSTREAM_DIR" status --porcelain)" ]; then
 fi
 UPSTREAM_SHA=$(git -C "$UPSTREAM_DIR" rev-parse HEAD)
 klh_ok "upstream kali-live at $UPSTREAM_SHA (ref $KALI_LIVE_REF)"
+
+# Base-specific repointing of the pristine upstream tree (debian: keyring,
+# mirrors, suite gate, ISO identity; kali: no-op). Must run while the tree
+# is freshly reset — every edit self-verifies against the pin.
+klh_distro_prepare_upstream
 
 # ----------------------------------------------------- overlay + staging
 KLH_COMMON="$UPSTREAM_DIR/kali-config/common"
@@ -289,6 +329,12 @@ LEOF
     rm -f "$KLH_COMMON/package-lists/headless.list.chroot"
     klh_ok "LEAN profile staged: slim firmware, no KVM, headless-lean package list"
 fi
+
+# Base-specific package lists (debian: SELECTIVE firmware policy + stripping
+# kali-only package names; kali: no-op). Runs AFTER LEAN so a BASE=debian
+# LEAN build also gets the disciplined list. All writes happen post-guard:
+# generated files, not overlay provenance.
+klh_distro_stage_package_lists "$KLH_COMMON"
 
 
 # Default boot entry: move syslinux's "menu default" onto the chosen
@@ -440,6 +486,7 @@ MANIFEST="$OUT_DIR/build-manifest-$(date -u '+%Y%m%dT%H%M%SZ').txt"
   echo "upstream        : $KLH_UPSTREAM_URL"
   echo "upstream ref    : $KALI_LIVE_REF"
   echo "upstream commit : $UPSTREAM_SHA"
+  echo "base            : $KLH_BASE ($KLH_DISTRO_NAME $BRANCH)"
   echo "variant/arch    : $VARIANT / $ARCH"
   echo "branch          : $BRANCH"
   echo "hostname        : $HOSTNAME"
@@ -510,6 +557,10 @@ stop_build_children() {
 trap stop_build_children INT TERM
 
 klh_info "starting upstream build (this takes 2-4h and ~20G of disk)"
+# Fail fast on base-specific engine requirements (debian: the debootstrap
+# keyring must exist in the build container/host — probing takes seconds
+# and saves a 45-minute bootstrap death; kali: no-op).
+klh_distro_engine_guard
 run_upstream "${BUILD_ARGS[@]}" & BUILD_PID=$!
 RC=0
 wait "$BUILD_PID" || RC=$?

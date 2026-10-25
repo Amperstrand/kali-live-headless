@@ -62,13 +62,13 @@ else
 fi
 if [ -n "$SC" ]; then
   if [ "$SC" = "shellcheck" ]; then
-    shellcheck -x "$REPO_DIR"/build.sh "$REPO_DIR"/configure.sh "$REPO_DIR"/flash.sh "$REPO_DIR"/test.sh "$REPO_DIR"/lib/common.sh "$REPO_DIR"/tools/*.sh 2>"$SCRATCH/sc.out" \
+    shellcheck -x "$REPO_DIR"/build.sh "$REPO_DIR"/configure.sh "$REPO_DIR"/flash.sh "$REPO_DIR"/test.sh "$REPO_DIR"/lib/common.sh "$REPO_DIR"/lib/distro/*.sh "$REPO_DIR"/tools/*.sh 2>"$SCRATCH/sc.out" \
       && shellcheck -s sh "$REPO_DIR"/overlay/kali-config/common/hooks/live/*.hook.chroot \
                     "$REPO_DIR"/overlay/kali-config/common/includes.chroot/usr/local/sbin/* >>"$SCRATCH/sc.out" 2>&1 \
       && record pass "shellcheck" || { [ -s "$SCRATCH/sc.out" ] && record fail "shellcheck" "$(grep -c '^' "$SCRATCH/sc.out") findings" || record pass "shellcheck"; }
   else
     $SC run --rm -v "$REPO_DIR:/src:ro" koalaman/shellcheck:stable \
-      /src/build.sh /src/configure.sh /src/flash.sh /src/test.sh /src/lib/common.sh /src/tools/*.sh >"$SCRATCH/sc.out" 2>&1 \
+      /src/build.sh /src/configure.sh /src/flash.sh /src/test.sh /src/lib/common.sh /src/lib/distro/*.sh /src/tools/*.sh >"$SCRATCH/sc.out" 2>&1 \
       && $SC run --rm -v "$REPO_DIR:/src:ro" -i koalaman/shellcheck:stable -s sh \
           /src/overlay/kali-config/common/hooks/live/zz-headless-configure.hook.chroot \
           /src/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-headless-provision \
@@ -187,7 +187,8 @@ fi
 for f in "$REPO_DIR"/overlay/kali-config/common/includes.chroot/usr/local/sbin/* \
          "$REPO_DIR"/overlay/kali-config/common/hooks/live/*.chroot \
          "$REPO_DIR"/overlay/kali-config/common/hooks/build/*.build \
-         "$REPO_DIR"/tools/*.sh "$REPO_DIR"/lib/*.sh "$REPO_DIR"/build.sh \
+         "$REPO_DIR"/lib/*.sh "$REPO_DIR"/lib/distro/*.sh \
+         "$REPO_DIR"/tools/*.sh "$REPO_DIR"/build.sh \
          "$REPO_DIR"/flash.sh "$REPO_DIR"/test.sh; do
   # only shell-shebang files: python CLIs legitimately live in sbin
   # (kali-live-wg-enroll) and must not be parsed as shell
@@ -231,6 +232,44 @@ done
 for f in "$REPO_DIR"/test/stages/*.sh; do
   if bash -n "$f" 2>/dev/null; then record pass "bash -n $(basename "$f")"; else record fail "bash -n $(basename "$f")" "$(bash -n "$f" 2>&1 | head -1)"; fi
 done
+
+# ---- distro adapter layer (BASE=kali|debian) --------------------------------
+# Each adapter must parse, define the full contract (KLH_BASE/OS_ID/NAME,
+# default branch), and accept only its own branches; the loader must reject
+# anything else. A broken adapter is a BUILD-path defect — assert it at the
+# 17-second level, not 3 hours into a build.
+for d in "$REPO_DIR"/lib/distro/*.sh; do
+  _dname=$(basename "$d" .sh)
+  _dout=$(bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro '$_dname'; printf '%s|%s|%s|%s' \"\$KLH_BASE\" \"\$KLH_OS_ID\" \"\$KLH_DISTRO_NAME\" \"\$KLH_DISTRO_DEFAULT_BRANCH\"" 2>&1) || _dout="load failed: $_dout"
+  _dflds=$(printf '%s' "$_dout" | tr '|' '\n')
+  if [ "$(printf '%s\n' "$_dflds" | sed -n 1p)" = "$_dname" ] \
+     && [ -n "$(printf '%s\n' "$_dflds" | sed -n 2p)" ] \
+     && bash -n "$d" 2>/dev/null; then
+    record pass "distro adapter: $_dname" "os-id $(printf '%s\n' "$_dflds" | sed -n 2p), branch $(printf '%s\n' "$_dflds" | sed -n 4p)"
+  else
+    record fail "distro adapter: $_dname" "$_dout"
+  fi
+  # adapter's own branches must validate; a foreign one must be refused
+  for _db in $(
+    bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro '$_dname'; printf '%s' \"\$KLH_DISTRO_BRANCHES\"" 2>/dev/null
+  ); do
+    if bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro '$_dname'; klh_distro_validate_branch '$_db'" >/dev/null 2>&1; then
+      record pass "distro adapter: $_dname accepts branch $_db"
+    else
+      record fail "distro adapter: $_dname accepts branch $_db"
+    fi
+  done
+done
+if bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro nosuchbase" >/dev/null 2>&1; then
+  record fail "klh_load_distro rejects unknown BASE"
+else
+  record pass "klh_load_distro rejects unknown BASE"
+fi
+if bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro debian; klh_distro_validate_branch kali-rolling" >/dev/null 2>&1; then
+  record fail "debian adapter refuses foreign branch (kali-rolling)"
+else
+  record pass "debian adapter refuses foreign branch (kali-rolling)"
+fi
 
 # systemd unit sanity
 UNITS=(kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-blackbox)

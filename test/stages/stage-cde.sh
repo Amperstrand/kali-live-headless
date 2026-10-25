@@ -158,6 +158,12 @@ else
       v=$(guest 'id -un')
       [ "$v" = "kali" ] && record pass "$mode: SSH key login as kali" || { record fail "$mode: SSH key login as kali"; return 1; }
 
+      # base identity at RUNTIME: booted distro must match the suite's BASE
+      v=$(guest '. /etc/os-release 2>/dev/null; printf %s "${ID:-}"')
+      [ "$v" = "$KLH_OS_ID" ] \
+        && record pass "$mode: booted distro is $KLH_DISTRO_NAME (os-release ID)" \
+        || record fail "$mode: booted distro is $KLH_DISTRO_NAME" "got ID='$v' (suite ran BASE=$KLH_BASE)"
+
       v=$(guest hostname)
       [ "$v" = "$HOSTNAME_EXPECTED" ] && record pass "$mode: hostname=$HOSTNAME_EXPECTED" || record fail "$mode: hostname (want $HOSTNAME_EXPECTED, got '$v')"
 
