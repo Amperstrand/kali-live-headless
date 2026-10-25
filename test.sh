@@ -105,6 +105,10 @@ run() { # name command... (reserved)
 
 # ============================================================= Stage C/D/E
 . "$REPO_DIR/test/stages/stage-cde.sh"
+# Stage F (vmstore) runs AFTER stage-cde: it reuses guest/SSH_OPTS/SCRATCH/
+# PORT which persist past the stage-cde if-block. Guarded internally on
+# RUN_VMSTORE + guest existing, so it no-ops when the qemu path skipped.
+. "$REPO_DIR/test/stages/stage-f-vmstore.sh"
 
 # ============================================================= summary
 section "summary"
