@@ -91,7 +91,15 @@ else
     # socket) left the channel open indefinitely and wedged the suite
     # (2026-10-24, 3/3 deterministic on bios3). timeout 120 is the outer
     # deadline (worst legitimate guest command ≈ 85 s retry loop).
-    SSH_OPTS=(-F none -i "$SSH_KEY" -p "$PORT" -o UserKnownHostsFile="$SCRATCH/known_hosts" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o BatchMode=yes kali@127.0.0.1)
+    SSH_OPTS=(-F none -i "$SSH_KEY" -p "$PORT" -o UserKnownHostsFile="$SCRATCH/known_hosts" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o BatchMode=yes -o ControlMaster=auto -o ControlPath="$SCRATCH/ssh-%p" -o ControlPersist=300 kali@127.0.0.1)
+    # ControlMaster multiplexing is not a speed nicety — it is CORRECTNESS:
+    # the image's provision arms SSH rate limiting (>3 new connections/min
+    # per source) late in boot, and the suite's poll+assert pattern is a
+    # connection storm from one IP: the first ~4 connections succeed, then
+    # every further one DROPs (banner-exchange timeouts, empty reads — the
+    # gate-4/5/6 'empties' class, finally reproduced deterministically on a
+    # quiet host 2026-10-26). One master connection = the suite is always
+    # under any threshold, and each stage gets ~1 TCP handshake total.
 
     guest() {
       timeout 120 ssh "${SSH_OPTS[@]}" "$@" 2>/dev/null
@@ -230,16 +238,29 @@ else
 
       # The server must accept publickey ONLY. A client that offers no auth
       # methods reports the methods the server would have allowed.
+      # These auth-negative probes open their OWN transports (ControlPath=none
+      # — a muxed session would ride the kali master and "succeed"), which
+      # makes them count against provision's SSH rate limiter (>3 new/min).
+      # A DROP is ambiguous (also "not logged in"), so on anything but a
+      # clean verdict: wait out the 60s window and probe ONCE more.
+      ssh_probe() { # $1 = extra ssh opts...; output on stdout
+        local out
+        out=$(timeout 20 ssh -F none -p "$PORT" -o NumberOfPasswordPrompts=0 -o ConnectTimeout=10 \
+              -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ControlPath=none "$@" 2>&1 || true)
+        case "$out" in
+          *Permission\ denied*) printf '%s\n' "$out"; return 0 ;;
+          *) sleep 65
+             timeout 20 ssh -F none -p "$PORT" -o NumberOfPasswordPrompts=0 -o ConnectTimeout=10 \
+               -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ControlPath=none "$@" 2>&1 || true ;;
+        esac
+      }
       local meth
-      meth=$(ssh -F none -p "$PORT" -o PubkeyAuthentication=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no \
-             -o NumberOfPasswordPrompts=0 -o ConnectTimeout=10 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no \
-             kali@127.0.0.1 true 2>&1 || true)
+      meth=$(ssh_probe -o PubkeyAuthentication=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no kali@127.0.0.1 true)
       echo "$meth" | grep -q 'Permission denied (publickey)' && record pass "$mode: password auth rejected (publickey only)" || record fail "$mode: password auth rejected - got: $meth"
 
       local roottry
-      roottry=$(ssh -F none -p "$PORT" -o NumberOfPasswordPrompts=0 -o ConnectTimeout=10 \
-             -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@127.0.0.1 true 2>&1 || true)
-      echo "$roottry" | grep -q 'Permission denied' && record pass "$mode: root login rejected" || record fail "$mode: root login rejected"
+      roottry=$(ssh_probe root@127.0.0.1 true)
+      echo "$roottry" | grep -q 'Permission denied' && record pass "$mode: root login rejected" || record fail "$mode: root login rejected" "got: $(printf '%s' "$roottry" | tail -1)"
 
       v=$(guest 'swapon --show --noheadings 2>/dev/null')
       [ -z "$v" ] && record pass "$mode: no swap in use" || record fail "$mode: swap active ($v)"
