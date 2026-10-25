@@ -103,6 +103,18 @@ klh_distro_prepare_upstream() {
   grep -q -- '--iso-application "Debian"' "$cfg" \
     || klh_die "debian adapter: iso-application swap failed (auto/config drifted?)"
 
+  # 4) FIRMWARE POLICY, the actual point of this base: live-build's
+  #    --firmware-chroot/--firmware-binary true auto-detection installs
+  #    every firmware package whose DEP-11 hardware metadata resolves —
+  #    on Kali this never fired (kali repos ship no DEP-11), but Debian's
+  #    repos do, and d1 dragged 33 firmware packages / 783MB into the
+  #    squashfs ON TOP of our selective list. Only the staged
+  #    hardware-support list decides now (klh_distro_stage_package_lists).
+  sed -i 's|--firmware-binary true|--firmware-binary false|' "$cfg"
+  sed -i 's|--firmware-chroot true|--firmware-chroot false|' "$cfg"
+  grep -q -- '--firmware-binary false' "$cfg" && grep -q -- '--firmware-chroot false' "$cfg" \
+    || klh_die "debian adapter: firmware auto-detection disable failed (auto/config drifted?)"
+
   # 4) upstream build.sh validates BRANCH against SUPPORTED_BRANCHES before
   #    anything else; admit trixie (kali branches stay admitted — this only
   #    widens the gate, it changes no kali behavior).
