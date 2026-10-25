@@ -95,6 +95,19 @@ else
       sudo test -x "$SQ_MNT/usr/local/sbin/$s" && record pass "script executable: $s" || record fail "script executable: $s"
     done
 
+    # ---- executable bits the runtime actually gates on: wg-init refuses to
+    # derive unless derive_identity.py is -x — and it was committed 100644
+    # from day one, so the WireGuard salt-derivation NEVER RAN in any built
+    # image (found 2026-10-26 via sh -x on the live guest; every key ever
+    # issued was the random fallback). Modes are git-tracked; assert them.
+    for f in usr/local/lib/kali-live-headless/derive_identity.py usr/local/lib/kali-live-headless/host_role_init.py; do
+      if sudo test -x "$SQ_MNT/$f"; then
+        record pass "executable: $(basename "$f")"
+      else
+        record fail "executable: $(basename "$f")" "committed without +x — a runtime -x gate silently skips the feature"
+      fi
+    done
+
     # ---- KLHCONFIG tooling: dosfstools must be in the image or the
     # first-boot auto-create can append a partition it can never format
     # (found on hardware 2026-10-25: minimal shipped without mkfs.vfat)
