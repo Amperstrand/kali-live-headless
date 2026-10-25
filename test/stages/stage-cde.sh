@@ -314,7 +314,9 @@ else
             -display none -monitor none -serial "file:$SCRATCH/serial-override.log" \
             -daemonize -pidfile "$pidfile" >/dev/null 2>&1
           QPID=$(cat "$pidfile" 2>/dev/null || true)
-          if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
+          if [ -z "$QPID" ]; then
+            record fail "override: QEMU launched" "pidfile empty — QEMU died at start (RAM? port? see $SCRATCH/serial-override.log)"
+          elif wait_ssh $BOOT_TIMEOUT; then
             record pass "override: booted to SSH"
             v=$(guest hostname)
             [ "$v" = "klh-override" ] && record pass "override: hostname applied" || record fail "override: hostname (got '$v')"
@@ -462,7 +464,10 @@ else
             -display none -monitor none -serial "file:$SCRATCH/serial-forensic.log" \
             -daemonize -pidfile "$pidfile" >/dev/null 2>&1
           QPID=$(cat "$pidfile" 2>/dev/null || true)
-          if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
+          
+          if [ -z "$QPID" ]; then
+            record fail "qemu launch" "pidfile empty — QEMU died at start (RAM? port?)"
+          elif wait_ssh $BOOT_TIMEOUT; then
             record pass "forensic: booted to SSH"
             common_guest_checks forensic
             [ -z "$(guest 'swapon --show --noheadings 2>/dev/null')" ] && record pass "forensic: no swap (systemd.swap=no)" || record fail "forensic: swap active"
@@ -661,7 +666,10 @@ DOCKERFILE
             -display none -monitor none -serial "file:$SCRATCH/serial-vmstore-noconf.log" \
             -daemonize -pidfile "$pidfile3" >/dev/null 2>&1
           QPID=$(cat "$pidfile3" 2>/dev/null || true)
-          if [ -n "$QPID" ] && wait_ssh $BOOT_TIMEOUT; then
+          
+          if [ -z "$QPID3" ]; then
+            record fail "qemu launch" "pidfile empty — QEMU died at start (RAM? port?)"
+          elif wait_ssh $BOOT_TIMEOUT; then
             v=$(guest 'systemctl is-active kali-live-vmstore-mount')
             [ "$v" = active ] && record pass "vmstore: no-config boot keeps the unit a clean no-op" || record fail "vmstore: no-config unit state ($v)"
             v=$(guest 'mount | grep -c " /mnt/klh-vmstore " || true')
