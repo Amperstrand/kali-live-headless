@@ -42,6 +42,15 @@ if [ -z "$ISO_ARG" ]; then
 fi
 [ -n "$ISO_ARG" ] || { echo "no ISO: pass --iso or archive a build first" >&2; exit 2; }
 
+# REFUSE to run beside a build: 3-4 QEMU guests + mksquashfs (5 cores, 2G+)
+# on an 8-core/15G host = guaranteed guest starvation — the 2026-10-26
+# gate-3 false-fail: every stage "booted to SSH timeout" while a concurrent
+# build's squashfs phase ate the machine. Gate AFTER the build finishes.
+if pgrep -f "build\.sh --number" >/dev/null 2>&1; then
+  echo "REFUSED: a build is in flight ($(pgrep -f 'build\.sh --number' | head -1)) — its squashfs phase starves the guests. Re-run when it completes." >&2
+  exit 3
+fi
+
 CORES=$(nproc 2>/dev/null || echo 4)
 if [ "$CORES" -lt 8 ]; then
   echo "WARNING: only $CORES cores — dropping concurrency to 2" >&2
