@@ -1,0 +1,67 @@
+#!/bin/sh
+# kali-live-tollgate — auto-detect and pay a TollGate on the current network.
+#
+# Runs when Wi-Fi connects to an open network (the tollgate-open NM profile).
+# If the gateway is a TollGate (responds on :2121 with an advertisement),
+# mint Cashu tokens from the advertised mint and pay for internet access.
+# On fakewallet/testnet mints the Lightning invoice auto-settles, so the
+# whole flow takes <2 seconds.
+#
+# This script is the TRIGGER; the heavy lifting is the tollgate-client
+# binary (static Go, 10MB, built from gonuts-tollgate).
+
+set -u
+
+LOGGER_TAG="kali-live-tollgate"
+log() { logger -t "$LOGGER_TAG" "$*" 2>/dev/null || echo "tollgate: $*" >&2; }
+
+CLIENT=/usr/local/bin/tollgate-client
+# testability: KLH_TG_CLIENT overrides the binary (stub), KLH_TG_ROUTE_FILE
+# yields the default-route gateway, KLH_TG_PROBE_FILE short-circuits the
+# :2121 probe ("tollgate" = answers) — the watchdog's fixture pattern
+CLIENT=${KLH_TG_CLIENT:-$CLIENT}
+[ -x "$CLIENT" ] || { log "tollgate-client not installed — skipping"; exit 0; }
+
+# staged defaults (TG_MINT_URL = mint fallback for adverts without mints —
+# found live: a degraded TollGate advertises no-reachable-mints and the
+# client refuses to pay without a mint)
+TG_MINT_URL=${TG_MINT_URL:-}
+DEFAULTS=${KLH_TG_DEFAULTS:-/etc/default/kali-live-headless}
+# shellcheck disable=SC1090  # staged runtime defaults (build.sh generates it)
+[ -r "$DEFAULTS" ] && . "$DEFAULTS"
+
+# Only run when we actually have a default route (i.e., we associated)
+if [ -n "${KLH_TG_ROUTE_FILE:-}" ]; then
+    GW=$(cat "$KLH_TG_ROUTE_FILE" 2>/dev/null)
+else
+    GW=$(ip route show default 2>/dev/null | awk '{print $3; exit}')
+fi
+[ -n "$GW" ] || { log "no default route — not on a TollGate network"; exit 0; }
+
+# Quick probe: is there a TollGate on the gateway?
+if [ -n "${KLH_TG_PROBE_FILE:-}" ]; then
+    [ "$(cat "$KLH_TG_PROBE_FILE" 2>/dev/null)" = tollgate ] \
+        || { log "no TollGate on $GW:2121 — normal network, nothing to do"; exit 0; }
+elif ! timeout 3 wget -q -O /dev/null "http://$GW:2121/" 2>/dev/null; then
+    log "no TollGate on $GW:2121 — normal network, nothing to do"
+    exit 0
+fi
+
+log "TollGate detected on $GW — attempting payment"
+
+# Run the client (discovers the advertisement, mints, pays); TG_MINT_URL
+# overrides an advert with no mints
+if [ -n "$TG_MINT_URL" ]; then
+    OUTPUT=$("$CLIENT" --gateway "$GW" --mint "$TG_MINT_URL" 2>&1)
+else
+    OUTPUT=$("$CLIENT" --gateway "$GW" 2>&1)
+fi
+RC=$?
+echo "$OUTPUT" | while IFS= read -r line; do log "$line"; done
+
+if [ "$RC" -eq 0 ]; then
+    log "TollGate payment successful — internet access granted"
+else
+    log "TollGate payment failed (rc=$RC) — see journal for details"
+fi
+exit $RC

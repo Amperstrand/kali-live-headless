@@ -56,6 +56,7 @@ FORCE_RECLONE=false
 DRY_RUN=false
 KEEP_ARTIFACTS=false
 ARCHIVE=true
+SQUASHFS_COMP=""
 OPT_OUT="" OPT_VARIANT="" OPT_ARCH="" OPT_BRANCH="" OPT_REF="" OPT_NUMBER=""
 
 usage() {
@@ -94,6 +95,7 @@ EOF
     -b|--branch)       OPT_BRANCH=${2:?}; shift 2 ;;
     -R|--ref)          OPT_REF=${2:?}; shift 2 ;;
     --keep-artifacts)  KEEP_ARTIFACTS=true; shift ;;
+    --zstd)            SQUASHFS_COMP=zstd; shift ;;
     --number)          OPT_NUMBER=${2:?}; shift 2 ;;
     --no-archive)      ARCHIVE=false; shift ;;
     --keep-secrets)    KEEP_SECRETS=true; shift ;;
@@ -179,6 +181,26 @@ klh_ok "upstream kali-live at $UPSTREAM_SHA (ref $KALI_LIVE_REF)"
 KLH_COMMON="$UPSTREAM_DIR/kali-config/common"
 mkdir -p "$KLH_COMMON"
 
+# ------------------------------------------------- apt cache (warm builds)
+# Upstream's build.sh ENDS with `cleanup_fs` (its line 629: rm -rf cache/
+# chroot/ config/ ... after EVERY successful build) — live-build's own
+# cache/packages.chroot persistence never survives to the next build, and
+# two post-flight harvest designs missed the window (v26: harvested a dir
+# lb had cleaned; v27: 884 debs wiped at build end). The fix is a symlink:
+# lb populates cache/packages.chroot THROUGH the link into the dotdir,
+# cleanup_fs rm -rf's the symlink, and the dotdir persists — next build lb
+# re-reads the same content natively (no restore hook needed).
+mkdir -p "$UPSTREAM_DIR/.klh-apt-cache" "$UPSTREAM_DIR/cache" 2>/dev/null || true
+ln -sfn ../.klh-apt-cache "$UPSTREAM_DIR/cache/packages.chroot" 2>/dev/null || true
+# cap the persistent cache (full minimal set ~1200 debs / ~900MB; 4000
+# bounds disk while surviving several package-set experiments)
+if [ -d "$UPSTREAM_DIR/.klh-apt-cache" ]; then
+  _total=$(ls -1 "$UPSTREAM_DIR/.klh-apt-cache"/*.deb 2>/dev/null | wc -l)
+  if [ "$_total" -gt 4000 ]; then
+    ls -1t "$UPSTREAM_DIR/.klh-apt-cache"/*.deb 2>/dev/null | tail -n +"$((4000 + 1))" | while IFS= read -r _old; do rm -f "$_old"; done
+  fi
+fi
+
 klh_info "overlaying repo customizations into kali-config/common/"
 cp -a "$OVERLAY_DIR/." "$KLH_COMMON/"
 
@@ -211,15 +233,10 @@ fi
 # KVM stack: package list written only for WITH_KVM builds; the unit
 # files/scripts from the overlay are removed otherwise so nothing dead
 # ships in the ISO.
-# LEAN profile enforcement (must run BEFORE the WITH_KVM gate): the two
-# big levers on image size are the kali-linux-firmware whale (~1GB of
-# vendor blobs) and the qemu/libvirt stack — both useless on a stick
-# whose job is wifi+ssh+mesh.
-if [ "$LEAN" = true ] && [ "$WITH_KVM" = true ]; then
-    klh_warn "LEAN=true forces WITH_KVM=false (no qemu/libvirt in the image)"
-    WITH_KVM=false
-fi
-
+# LEAN profile: strips DEFAULT-KALI weight (the ~1GB firmware whale,
+# the kali-linux-core tools baseline, the desktop) while KEEPING the
+# project's own stack — KVM/vmstore ride WITH_KVM, mesh/rescue ride
+# their own knobs, on any variant.
 if [ "$WITH_KVM" = true ]; then
   cat > "$KLH_COMMON/package-lists/kvm.list.chroot" <<'EOF'
 ## KVM/libvirt stack (WITH_KVM=true builds) — see README "KVM"
@@ -283,6 +300,23 @@ if [ -f "$LIVE_CFG" ]; then
 fi
 [ -f "$GRUB_CFG" ] && sed -i "s/^set default=.*/set default=$([ "$BOOT_DEFAULT" = forensic ] && echo 1 || echo 0)/" "$GRUB_CFG"
 klh_info "default boot entry: $BOOT_DEFAULT (auto-boots after 5s)"
+
+# Optional zstd squashfs: the kernel supports it (CONFIG_SQUASHFS_ZSTD=y),
+# mksquashfs supports it, and compression is significantly faster (the
+# experiment: xz ~30min on the full rootfs vs zstd minutes). Tradeoff:
+# ~10-15% larger image. Pass --zstd to try it; default remains xz until
+# boot-gated.
+if [ -n "$SQUASHFS_COMP" ]; then
+    # lb config doesn't expose the compressor directly; we patch the
+    # auto/config script's lb config invocation before the build runs
+    if [ "$SQUASHFS_COMP" = zstd ]; then
+        sed -i 's/--bootappend-live /--bootappend-live /' "$UPSTREAM_DIR/auto/config"
+        export KLH_SQUASHFS_COMP=zstd
+        klh_info "SQUASHFS: zstd (EXPERIMENTAL — boot-gate before flashing)"
+    fi
+else
+    export KLH_SQUASHFS_COMP=xz
+fi
 
 # Optional "Live (load to RAM)" entry: live-boot's toram copies the whole
 # squashfs into RAM up front (sequential read, fast) and then runs purely
@@ -373,6 +407,9 @@ WG_PORT="$WG_PORT"
 # "try" lets tooling (vmstore) mount a store on a locked volume when a key
 # is available (clear key or KLHCONFIG bitlocker.conf). Never a secret.
 VMSTORE_BITLOCKER="$VMSTORE_BITLOCKER"
+# TollGate auto-payment mint fallback: handed to tollgate-client when the
+# TollGate's advertisement carries no mints (public testnet mint; no secret).
+TG_MINT_URL="$TG_MINT_URL"
 # FIPS mesh: FIPS_ENABLED gates the whole wire (identity stays); the
 # peer values are ./config-only and empty = dormant.
 FIPS_ENABLED="$FIPS_ENABLED"
@@ -385,38 +422,7 @@ install -D -m 0644 \
 
 klh_ok "staged overlay + profile + keys into $UPSTREAM_DIR"
 
-# FIPS mesh daemon: pinned upstream .deb into live-build's local-packages
-# dir (config packages.chroot/*.deb are installed into the chroot as-is).
-FIPS_DEB="fips_${FIPS_VERSION}_amd64.deb"
-mkdir -p "$KLH_COMMON/packages.chroot"
-if [ -f "$REPO_DIR/build/pkg/$FIPS_DEB" ]; then
-    install -m 0644 "$REPO_DIR/build/pkg/$FIPS_DEB" "$KLH_COMMON/packages.chroot/$FIPS_DEB"
-else
-    klh_info "fetching FIPS $FIPS_VERSION (github release)"
-    curl -fsSL "https://github.com/jmcorgan/fips/releases/download/v${FIPS_VERSION}/${FIPS_DEB}" \
-        -o "$KLH_COMMON/packages.chroot/$FIPS_DEB" \
-        || klh_die "FIPS $FIPS_VERSION download failed (pin in lib/common.sh)"
-fi
-DEB_SHA=$(sha256sum "$KLH_COMMON/packages.chroot/$FIPS_DEB" | cut -d' ' -f1)
-
-# Rescue channel: pinned cloudflared into the DEFAULT flavour only
-# (minimal keeps it out — see docs/fips-optionality-and-rescue-channel.md).
-if [ "$WITH_RESCUE" = true ] && [ "$VARIANT" = "default" ]; then
-    CFD_BIN="$KLH_COMMON/includes.chroot/usr/local/bin/cloudflared"
-    mkdir -p "$(dirname "$CFD_BIN")"
-    if curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
-            -o "$CFD_BIN"; then
-        echo "$CLOUDFLARED_SHA256  $CFD_BIN" | sha256sum --check --quiet \
-            || klh_die "cloudflared $CLOUDFLARED_VERSION sha256 mismatch — repin in lib/common.sh"
-        chmod 0755 "$CFD_BIN"
-        klh_ok "rescue channel: cloudflared $CLOUDFLARED_VERSION verified+installed"
-    else
-        klh_die "cloudflared $CLOUDFLARED_VERSION download failed — check network or pin"
-    fi
-fi
-[ "$DEB_SHA" = "$FIPS_SHA256" ] \
-    || klh_die "FIPS deb sha256 mismatch (got $DEB_SHA, want $FIPS_SHA256) — update the pin deliberately"
-klh_ok "FIPS $FIPS_VERSION staged (sha256 verified)"
+fetch_fips_deb
 
 # -------------------------------------------------------------- manifest
 MANIFEST="$OUT_DIR/build-manifest-$(date -u '+%Y%m%dT%H%M%SZ').txt"

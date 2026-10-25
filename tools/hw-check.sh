@@ -74,9 +74,22 @@ record() {
 section() { printf '\n=== %s ===\n' "$*"; }
 
 SSH_OPTS=(-F none -i "$SSH_KEY" -o UserKnownHostsFile="$EVID/known_hosts" \
-  -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes kali@"$HOST")
-guest()     { ssh "${SSH_OPTS[@]}" "$@" 2>/dev/null; }
-guest_sudo(){ ssh "${SSH_OPTS[@]}" "sudo -n $*" 2>/dev/null; }
+  -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes \
+  -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+  -o ControlMaster=auto -o ControlPath="$EVID/ssh-%p" -o ControlPersist=900 \
+  kali@"$HOST")
+# ^ ControlMaster is CORRECTNESS here, not speed: the image arms SSH rate
+# limiting (>3 new connections/min per source, iptables recent whose
+# --update REFRESHES the window on every match — one connection over
+# threshold latches the block), and this battery makes 30+ connections.
+# Without multiplexing it fails itself ~5 checks in (2026-10-26: 5/27).
+# The auth-negative probe below keeps its own transport (ControlPath=none).
+# Every guest call is time-bounded: an unresponsive guest (the wedged-libvirtd
+# class that hung the QEMU suite three times on 2026-10-23/24 — ConnectTimeout
+# only bounds connection, not a stalled remote command) degrades to an empty
+# result + the check's own fail path instead of hanging the whole battery.
+guest()     { timeout 90 ssh "${SSH_OPTS[@]}" "$@" 2>/dev/null; }
+guest_sudo(){ timeout 90 ssh "${SSH_OPTS[@]}" "sudo -n $*" 2>/dev/null; }
 capture()   { local n=$1; shift; { echo "\$ $*"; "$@" ; } >"$EVID/$n.txt" 2>&1 || true; }
 
 section "reach: $HOST (mode=$MODE, timeout=${TIMEOUT}s)"
@@ -106,6 +119,7 @@ echo "$eff" | grep -q '^permitrootlogin no'        && record pass "effective Per
 echo "$eff" | grep -q '^pubkeyauthentication yes'  && record pass "effective PubkeyAuthentication yes"  || record fail "effective PubkeyAuthentication yes"
 meth=$(ssh -F none -o PubkeyAuthentication=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no \
         -o NumberOfPasswordPrompts=0 -o ConnectTimeout=10 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no \
+        -o ControlPath=none \
         kali@"$HOST" true 2>&1 || true)
 echo "$meth" | grep -q 'Permission denied (publickey)' && record pass "password auth rejected (publickey only)" || record fail "password auth rejected — got: $meth"
 
@@ -144,8 +158,15 @@ if [ -n "$wgp" ]; then
 elif [ "$NO_WG" = true ]; then
   record info "wireguard off (--no-wg)"
 elif guest 'grep -q "^WG_ENDPOINT=" <(cat /etc/default/kali-live-headless) 2>/dev/null || grep -q "^WG_ENDPOINT=" /etc/default/kali-live-headless 2>/dev/null'; then
-  record fail "wireguard provisioned" "WG_ENDPOINT staged but no /run/kali-live-headless-wg-pub — check the provision journal"
-  capture provision-journal guest_sudo 'journalctl -t kali-live-headless --no-pager -n 60'
+  if [ -z "${klh_part:-}" ]; then
+    # keygen is skipped BY DESIGN without a config partition (a key that
+    # cannot persist would re-enroll as a new peer every boot) — same
+    # awareness the npub section has; not a provisioner failure
+    record info "wireguard keygen skipped" "WG_ENDPOINT staged but no KLHCONFIG partition to persist the key (dd-flashed or flashed pre-a8a56ed) — reflash with flash.sh for the WG access channel"
+  else
+    record fail "wireguard provisioned" "WG_ENDPOINT staged but no /run/kali-live-headless-wg-pub — check the provision journal"
+    capture provision-journal guest_sudo 'journalctl -t kali-live-headless --no-pager -n 60'
+  fi
 else
   record info "wireguard off (not configured at build time — see configure.sh --wg-endpoint)"
 fi
@@ -165,8 +186,13 @@ if [ -n "$npub" ]; then
   v=$(guest "grep -o 'npub1[023456789acdefghjklmnpqrstuvwxyz]\\{20,\\}' /etc/issue.d/kali-live-headless.issue 2>/dev/null | head -1 || true")
   [ "$v" = "$npub" ] && record pass "console banner shows the npub" || record fail "console banner shows the npub (got '${v:-none}')"
   if [ -n "$klh_part" ]; then
-    # read ONLY the public line off the config partition (never FIPS_NSEC)
-    v=$(guest_sudo "mount -o ro /dev/$klh_part /mnt 2>/dev/null && grep '^FIPS_NPUB=' /mnt/host-role.conf 2>/dev/null | cut -d= -f2; umount /mnt 2>/dev/null" | tail -1)
+    # read ONLY the public line off the config partition (never FIPS_NSEC).
+    # The blackbox service keeps KLHCONFIG mounted rw,sync at /run/klh-blackbox
+    # — a second mount -o ro of the same vfat dies with "would change RO
+    # state" and the ERROR TEXT lands in $v (2026-10-26: the check failed
+    # itself on a healthy identity). Prefer the existing mount; fall back to
+    # our own only when the blackbox isn't holding it.
+    v=$(guest_sudo "grep '^FIPS_NPUB=' /run/klh-blackbox/host-role.conf 2>/dev/null | cut -d= -f2 || { mount -o ro /dev/$klh_part /mnt 2>/dev/null && grep '^FIPS_NPUB=' /mnt/host-role.conf 2>/dev/null | cut -d= -f2; umount /mnt 2>/dev/null; }" | tail -1)
     [ "$v" = "$npub" ] && record pass "KLHCONFIG identity matches (persistent npub)" || record fail "KLHCONFIG identity matches (want $npub, got '${v:-none}')"
   else
     record fail "KLHCONFIG partition present" "npub exists but no config partition — where does it persist? (reboot = new identity)"
@@ -178,7 +204,14 @@ else
   if [ "$NO_MESH" = true ]; then
     record info "mesh identity not provisioned (--no-mesh: dd-flashed stick, no KLHCONFIG)"
   else
-    record fail "mesh npub provisioned this boot" "no /run/kali-live-headless-npub — ${klh_part:+generator failed (see provision journal) or }no KLHCONFIG partition (dd-flashed stick? reflash with ./flash.sh, or pass --no-mesh)"
+    if [ -z "${klh_part:-}" ]; then
+      # no config partition = identity disabled by design on this flash
+      # method — same awareness as the WG/fips sections; the --no-mesh flag
+      # remains for sticks that deliberately never had one
+      record info "mesh npub provisioned this boot" "no KLHCONFIG partition — identity disabled by design (flashed pre-a8a56ed or dd); reflash with flash.sh to enable"
+    else
+      record fail "mesh npub provisioned this boot" "no /run/kali-live-headless-npub — generator failed (see provision journal)?"
+    fi
     capture provision-journal guest_sudo 'journalctl -t kali-live-headless --no-pager -n 60'
   fi
 fi
@@ -479,7 +512,10 @@ if [ "$TEST_VMFORWARD" = true ]; then
         code3=$(curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 8 "http://$LAN_IP:2222/" || echo 000)
         [ "$code3" = "200" ] && record pass "vm-forward: flow survives a firewall-daemon reassert cycle" || record fail "vm-forward: flow died after a daemon tick (HTTP $code3 — the reply-path race)"
         guest_sudo "KLH_VM_FORWARD_IFACES=$EXT_IF /usr/local/sbin/kali-live-vm-forward remove hwtest" >/dev/null 2>&1 || true
-        code2=$(curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 5 "http://$LAN_IP:2222/" || echo 000)
+        # NB: curl -w %{http_code} ALWAYS prints (000 on connect-failure);
+        # `|| echo 000` would append a second one ("000000") and break the
+        # comparison — use || true, the code is already in the output.
+        code2=$(curl -s -o /dev/null -w "%{http_code}" --noproxy '*' --max-time 5 "http://$LAN_IP:2222/" || true)
         [ "$code2" = "000" ] && record pass "vm-forward: port closed again after remove" || record fail "vm-forward: port still open after remove (HTTP $code2)"
       else
         record fail "vm-forward" "kali-live-vm-forward add failed (shipped in this image?)"
@@ -497,8 +533,18 @@ section "FIPS mesh (derived identity, our exit node)"
 fipsd=$(guest 'systemctl is-active fips 2>/dev/null')
 if [ "$fipsd" = active ]; then
   record pass "fips daemon active"
+  # no staged peer => no links is the DESIGNED state, not a defect (the
+  # 2026-10-26 battery failed itself on a healthy boot: FIPS_PEER_ADDR
+  # empty in this build means the daemon correctly has nothing to dial)
+  PEERSTAGED=$(guest 'test -n "$(sed -n s/^FIPS_PEER_ADDR=[^\" ].*/set/p /etc/default/kali-live-headless)" && echo yes || echo no')
   v=$(guest 'sudo -n fipsctl show links 2>/dev/null | grep -c \"state\": \"connected\"" || true')
-  [ "${v:-0}" -ge 1 ] 2>/dev/null && record pass "fips: at least one mesh link up" "$v link(s)" || record fail "fips: mesh link up" "0 connected links — check the peer/exit"
+  if [ "$PEERSTAGED" != yes ]; then
+    record info "fips: no peer staged in this build — 0 links is expected (set FIPS_PEER_ADDR to mesh)"
+  elif [ "${v:-0}" -ge 1 ] 2>/dev/null; then
+    record pass "fips: at least one mesh link up" "$v link(s)"
+  else
+    record fail "fips: mesh link up" "0 connected links — check the peer/exit"
+  fi
   v=$(guest 'sudo -n cat /etc/fips/fips.pub 2>/dev/null || true')
   if [ -n "$v" ]; then
     record pass "fips identity present" "${v:0:16}…"
@@ -513,7 +559,13 @@ if [ "$fipsd" = active ]; then
     record fail "fips identity present" "no /etc/fips/fips.pub"
   fi
 elif guest 'command -v fipsctl >/dev/null 2>&1'; then
-  record fail "fips daemon active" "$fipsd"
+  if [ -z "${klh_part:-}" ]; then
+    # no config partition = no persistent identity = the mesh it serves is
+    # disabled by design on this flash method (mirrors the WG skip above)
+    record info "fips daemon inactive" "no KLHCONFIG partition — mesh identity disabled by design; reflash with flash.sh to enable"
+  else
+    record fail "fips daemon active" "$fipsd"
+  fi
 else
   record info "fips not shipped in this image (v19+ feature)"
 fi

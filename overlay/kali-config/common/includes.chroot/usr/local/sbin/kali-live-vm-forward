@@ -48,6 +48,12 @@ fw_add() { # name guest_ip guest_port ext_port
     printf '%s' "$eport" | grep -Eq '^[0-9]+$' || die "ext port must be numeric"
     printf '%s' "$gport" | grep -Eq '^[0-9]+$' || die "guest port must be numeric"
     [ -e "$(rule_file "$name")" ] && die "forward '$name' exists (remove it first)"
+    # iface names are about to be baked into a sourced state file AND into
+    # iptables args: keep them to plain kernel-legal names
+    for ifn in $EXT_IFACES; do
+        printf '%s' "$ifn" | grep -Eq '^[A-Za-z0-9._@-]+$' \
+            || die "interface name '$ifn' in KLH_VM_FORWARD_IFACES is not a plain interface name"
+    done
 
     # 1) per-forward ACCEPT for the destination (above the daemon's drops)
     "$IPTABLES" -I FORWARD 1 -d "$gip/32" -p tcp --dport "$gport" -j ACCEPT
@@ -63,7 +69,12 @@ fw_add() { # name guest_ip guest_port ext_port
     done
 
     mkdir -p "$STATE_DIR"
-    printf 'GIP=%s\nGPORT=%s\nEPORT=%s\n' "$gip" "$gport" "$eport" > "$(rule_file "$name")"
+    # IFACES is persisted on purpose: remove and reassert must reinstall
+    # exactly what add installed, not whatever the caller's environment says
+    # at reappraisal time — the reassert timer runs with the wg0-only default,
+    # so an override-added forward would be silently narrowed on the next
+    # daemon pass (and remove without the original env would leak its DNAT).
+    printf 'GIP=%s\nGPORT=%s\nEPORT=%s\nIFACES="%s"\n' "$gip" "$gport" "$eport" "$EXT_IFACES" > "$(rule_file "$name")"
     echo "vm-forward: '$name' -> $gip:$gport (ext port $eport on: $(echo $EXT_IFACES | tr ' ' ','))"
     echo "vm-forward: assert it on the guest side before relying on it."
 }
@@ -74,6 +85,9 @@ fw_remove() { # name
     [ -e "$f" ] || die "no forward named '$name'"
     # shellcheck disable=SC1090
     . "$f"
+    # the persisted list wins (removes exactly what add installed); rule
+    # files from before IFACES persistence fall back to the caller's env
+    EXT_IFACES="${IFACES:-$EXT_IFACES}"
     "$IPTABLES" -D FORWARD -d "$GIP/32" -p tcp --dport "$GPORT" -j ACCEPT 2>/dev/null
     "$IPTABLES" -D FORWARD -s "$GIP/32" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
     for ifn in $EXT_IFACES; do
@@ -91,7 +105,7 @@ fw_list() {
         [ -e "$f" ] || continue
         # shellcheck disable=SC1090
         . "$f"
-        printf '  %-16s %s:%s  (ext port %s)\n' "$(basename "$f")" "$GIP" "$GPORT" "$EPORT"
+        printf '  %-16s %s:%s  (ext port %s on %s)\n' "$(basename "$f")" "$GIP" "$GPORT" "$EPORT" "${IFACES:-$EXT_IFACES}"
         found=1
     done
     [ "$found" = 1 ] || echo "(no forwards)"
@@ -103,6 +117,9 @@ fw_reassert() { # re-install every recorded forward (call from a timer/unit)
         [ -e "$f" ] || continue
         # shellcheck disable=SC1090
         . "$f"
+        # same as remove: reinstall on the interfaces add actually used, not
+        # the (timer-default) environment
+        EXT_IFACES="${IFACES:-$EXT_IFACES}"
         "$IPTABLES" -C FORWARD -d "$GIP/32" -p tcp --dport "$GPORT" -j ACCEPT 2>/dev/null \
             || "$IPTABLES" -I FORWARD 1 -d "$GIP/32" -p tcp --dport "$GPORT" -j ACCEPT
         "$IPTABLES" -C FORWARD -s "$GIP/32" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null \

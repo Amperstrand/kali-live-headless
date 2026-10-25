@@ -55,18 +55,30 @@ usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 done
 
 # ------------------------------------------------------------- source image
+klh_find_iso() { # $1 = build number -> its archived ISO (either flavour;
+  # the minimal variant is the default now, and this name-only lookup made
+  # every hotpatch of a minimal build die at the door — found 2026-10-26)
+  local b="$1" name
+  for name in kali-linux-rolling-live-minimal-amd64.iso kali-linux-rolling-live-amd64.iso; do
+    if [ -f "$OUT_DIR/iso-build$b/$name" ]; then
+      printf '%s\n' "$OUT_DIR/iso-build$b/$name"
+      return 0
+    fi
+  done
+  return 1
+}
+
 if [ -n "$ISO_ARG" ]; then
   SRC=$(realpath "$ISO_ARG")
   [ -f "$SRC" ] || klh_die "ISO not found: $ISO_ARG"
 elif [ -n "$BUILD" ]; then
-  SRC="$OUT_DIR/iso-build$BUILD/kali-linux-rolling-live-amd64.iso"
-  [ -f "$SRC" ] || klh_die "build $BUILD is not archived at $SRC"
+  SRC=$(klh_find_iso "$BUILD") || klh_die "build $BUILD is not archived (looked for both flavour names under $OUT_DIR/iso-build$BUILD/)"
 else
   newest=$(find "$OUT_DIR" -maxdepth 1 -type d -name 'iso-build*' 2>/dev/null \
     | sed 's/.*iso-build//' | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
   [ -n "$newest" ] || klh_die "no archived build to hotpatch (run ./build.sh first)"
   BUILD=$newest
-  SRC="$OUT_DIR/iso-build$newest/kali-linux-rolling-live-amd64.iso"
+  SRC=$(klh_find_iso "$newest") || klh_die "build $newest is not archived (both flavour names tried)"
 fi
 SRC=$(realpath "$SRC")
 ISO_NAME=$(basename "$SRC")
@@ -168,10 +180,27 @@ enable_unit() { # $1=unit $2=target.wants-dir-name
   [ -e "/out/rootfs/etc/systemd/system/$1" ] || return 0
   ln -sfn "/etc/systemd/system/$1" "/out/rootfs/etc/systemd/system/$2/$1"
 }
-for u in libvirtd.service kali-live-kvm-enable.service kali-live-kvm-firewall.service kali-live-vmstore-mount.service; do
-  enable_unit "$u" multi-user.target.wants
-done
-enable_unit virtlogd.socket sockets.target.wants
+# DERIVE the list from the chroot hook instead of hand-copying it (found
+# 2026-10-25: the hand list covered 6 of the hook's 15 units and silently
+# omitted provision/banner/wifi-watchdog/rescue — OUR units, which nothing
+# but the hook enables; any symlink loss in extraction/repack would have
+# shipped a dead provisioner). The hook is the single source of truth;
+# timers go to timers.target.wants, sockets to sockets.target.wants,
+# everything else to multi-user. enable_unit skips units absent from the
+# rootfs, so KVM-gated units fall out naturally.
+HOOK_SRC="$REPO_DIR/overlay/kali-config/common/hooks/live/zz-headless-configure.hook.chroot"
+if [ ! -f "$HOOK_SRC" ]; then
+  echo "HOTPATCH FAIL: cannot find the chroot hook to derive unit enablement from: $HOOK_SRC" >&2
+  FAIL=1
+else
+  grep -oE 'systemctl enable [a-zA-Z0-9@._-]+' "$HOOK_SRC" | awk '{print $3}' | sort -u | while IFS= read -r u; do
+    case "$u" in
+      *.timer) enable_unit "$u" timers.target.wants ;;
+      *.socket) enable_unit "$u" sockets.target.wants ;;
+      *) enable_unit "$u" multi-user.target.wants ;;
+    esac
+  done
+fi
 for f in /out/rootfs/usr/local/sbin/kali-live-*; do
     [ -e "$f" ] && chmod 0755 "$f"
 done
@@ -257,7 +286,9 @@ for f in /out/check/usr/local/sbin/kali-live-*; do
   [ "$(stat -c %a "$f")" = "755" ] || { echo "  MODE MISMATCH: $f not 0755"; FAIL=1; }
 done
 # unit enablement symlinks must exist in the repacked image (hotpatch
-# cannot run the chroot hook; recreate = the block above)
+# cannot run the chroot hook; recreation = the derived block above). Spot-
+# check the three whose absence has historically wedged boots; the derived
+# block covers the full hook list by construction.
 if [ "$KVM" = true ]; then
   for link in multi-user.target.wants/kali-live-vmstore-mount.service \
               multi-user.target.wants/kali-live-kvm-firewall.service \
@@ -265,6 +296,15 @@ if [ "$KVM" = true ]; then
     [ -L "/out/rootfs/etc/systemd/system/$link" ] || { echo "  ENABLE MISMATCH: $link not a symlink"; FAIL=1; }
   done
 fi
+# the always-on identity of the image: provision + banner + watchdog +
+# blackbox must be enabled in EVERY repack (the 2026-10-25 drift review:
+# the old hand list omitted them)
+for link in multi-user.target.wants/kali-live-headless-provision.service \
+            multi-user.target.wants/kali-live-console-banner.service \
+            multi-user.target.wants/kali-live-wifi-watchdog.service \
+            multi-user.target.wants/kali-live-blackbox.service; do
+  [ -L "/out/rootfs/etc/systemd/system/$link" ] || { echo "  ENABLE MISMATCH: $link not a symlink"; FAIL=1; }
+done
 [ "$FAIL" -eq 0 ] || { echo "verification FAILED"; exit 1; }
 echo "  all $(wc -l < /out/scope.txt) scoped files verified inside the new ISO"
 

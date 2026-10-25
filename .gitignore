@@ -3,8 +3,12 @@
 config
 secrets/
 
-# Build tree (contains a copy of upstream kali-live + staged secrets)
-build/
+# Build tree (contains a copy of upstream kali-live + staged secrets).
+# ANCHORED to repo root: an unanchored `build/` also matched
+# overlay/kali-config/common/hooks/build/ and silently hid the
+# klh-apt-cache hook from git (caught by build.sh's provenance guard
+# refusing build #26 — the hook was staged with no git source).
+/build/
 
 # Build output
 output/

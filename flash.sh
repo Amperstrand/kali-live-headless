@@ -242,8 +242,21 @@ else
   blockdev --rereadpt "$DEVPATH" 2>/dev/null || true
 
   klh_info "writing ISO to $DEVPATH (this can take several minutes)"
+  DD_START=$(date +%s)
   if ! dd if="$ISO" of="$DEVPATH" bs=4M iflag=fullblock conv=fsync status=progress; then
     klh_die "dd failed — the device may be unusable/removed; do not boot from it"
+  fi
+  DD_ELAPSED=$(( $(date +%s) - DD_START ))
+  ISO_MB=$(( $(stat -c %s "$ISO") / 1048576 ))
+  DD_RATE=$(( ISO_MB / (DD_ELAPSED > 0 ? DD_ELAPSED : 1) ))
+  # A USB2 port or a flaky cable writes at ~6 MB/s where USB3 does 60-400:
+  # the 2026-10-26 re-flash on a slow port FAILED verification (and a slow
+  # write is the classic signature of a bad port/cable/extension). Say it
+  # BEFORE the verify burns minutes discovering it.
+  if [ "$DD_RATE" -lt 15 ]; then
+    klh_warn "write rate only ${DD_RATE} MB/s — this smells like a USB2 port, bad cable, or a failing stick; verification failures below are likely NOT the ISO's fault. Try a direct USB3 port."
+  else
+    klh_info "write completed at ${DD_RATE} MB/s"
   fi
   sync
   blockdev --rereadpt "$DEVPATH" 2>/dev/null || true
@@ -280,20 +293,50 @@ make_config_partition() {
     klh_warn "sfdisk not installed — skipping config partition (credential changes would need a rebuild)"
     return 0
   fi
-  stick_mb=$(( $(blockdev --getsize64 "$DEVPATH") / 1048576 ))
+  # blockdev can transiently fail with EBUSY while udev settles after the
+  # dd (16 min of writes) — an unguarded read here killed the script under
+  # set -e BEFORE the loud summary could print, twice shipping sticks with
+  # no config partition and no visible warning (2026-10-24). Retry, then
+  # degrade loudly instead of dying silently.
+  local devsize=0
+  for i in 1 2 3 4 5; do
+    devsize=$(blockdev --getsize64 "$DEVPATH" 2>/dev/null) && [ "$devsize" -gt 0 ] 2>/dev/null && break
+    devsize=0; sleep 1
+  done
+  if [ "$devsize" -gt 0 ] 2>/dev/null; then
+    stick_mb=$(( devsize / 1048576 ))
+  else
+    klh_warn "could not read $DEVPATH size (udev busy?) — skipping config partition"
+    return 0
+  fi
 
   # Reuse: a KLHCONFIG partition from a previous flash survives the dd (its
   # sectors sit past the ISO), but the dd RESTORES THE ISO'S OWN PARTITION
   # TABLE, orphaning it. Detect any surviving label first; if found, use
   # that partition (fresh fs) instead of appending a second one.
-  part=$(lsblk -rno NAME,LABEL "$DEVPATH" 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}')
+  part=$(klh_cfgpart "$DEVPATH")
   if [ -n "$part" ] && [ -b "$part" ]; then
     klh_info "existing KLHCONFIG partition found ($part) — reformatting it"
     newpart=$part
   else
-    start_mb=$(( (ISO_SIZE + 1048575) / 1048576 + 1 ))   # 1 MiB-aligned, past the ISO
+    # Start past the LAST EXISTING partition, not just past the ISO: the
+    # newer isohybrid layout ships an EFI partition (sdb2) exactly at the
+    # post-ISO MiB boundary, so the old ISO-only math asked sfdisk to
+    # append ONTO it — sfdisk refuses (overlap), newpart comes back empty,
+    # and every flash of this ISO class warn-skipped the config partition
+    # (#18+ images, proven on a spare-image sim 2026-10-24).
+    last_end=0 s='' z=''
+    while IFS= read -r pline; do
+      s=$(printf '%s\n' "$pline" | sed -n 's/.*start= *\([0-9][0-9]*\),.*/\1/p')
+      z=$(printf '%s\n' "$pline" | sed -n 's/.*size= *\([0-9][0-9]*\),.*/\1/p')
+      [ -n "$s" ] && [ -n "$z" ] || continue
+      [ $((s + z)) -gt "$last_end" ] && last_end=$((s + z))
+    done < <(sfdisk -d "$DEVPATH" 2>/dev/null)
+    iso_end_mb=$(( (ISO_SIZE + 1048575) / 1048576 ))
+    start_mb=$(( ((last_end + 2047) / 2048) + 1 ))
+    [ "$start_mb" -lt "$iso_end_mb" ] && start_mb=$iso_end_mb
     if [ "$stick_mb" -lt $((start_mb + 64)) ]; then
-      klh_warn "stick smaller than ISO + 64M — skipping config partition"
+      klh_warn "stick smaller than image + 64M — skipping config partition"
       return 0
     fi
     # --force: this ISO's isohybrid table makes plain appends REFUSE
@@ -315,8 +358,11 @@ make_config_partition() {
       *[0-9]) newpart="${DEVPATH}p$newpart" ;;
       *)      newpart="${DEVPATH}$newpart"  ;;
     esac
-    blockdev --rereadpt "$DEVPATH" 2>/dev/null || true
-    for i in 1 2 3 4 5; do [ -b "$newpart" ] && break; sleep 1; done
+    partprobe "$DEVPATH" 2>/dev/null || blockdev --rereadpt "$DEVPATH" 2>/dev/null || true
+    # The kernel can take several seconds to create the device node (race
+    # condition hit on the 2026-10-24 v25 flash: partition was in the table
+    # but /dev/sdb3 didn't appear within 5s → "MISSING" despite success).
+    for i in $(seq 1 15); do [ -b "$newpart" ] && break; sleep 1; partprobe "$DEVPATH" 2>/dev/null || true; done
     if [ ! -b "$newpart" ]; then
       klh_warn "$newpart did not appear — skipping config partition"
       return 0
@@ -339,8 +385,13 @@ make_config_partition() {
       || klh_warn "could not generate headless-wifi.conf — fill it in on the stick (see README)"
     # vm-store.conf: seeded only when VMSTORE_ENABLED=true in ./config
     # (rc 3 = disabled = skip silently; anything else odd = warn and move on)
-    vmout=$("$REPO_DIR/scripts/stick-conf.sh" --vm-store 2>/dev/null)
-    vmrc=$?
+    # NOTE the || vmrc=$? idiom: a bare `vmout=$(...)` assignment dies under
+    # set -e BEFORE the next line can capture the rc — the case below was
+    # unreachable dead code and every flash with vm-store disabled ended
+    # SILENTLY at rc=3 right here (partition made, wifi seeded, no unmount,
+    # no summary — found 2026-10-24 on the #20 stick).
+    vmrc=0
+    vmout=$("$REPO_DIR/scripts/stick-conf.sh" --vm-store 2>/dev/null) || vmrc=$?
     case "$vmrc" in
       0) printf '%s\n' "$vmout" > "$mnt/vm-store.conf" && KLHCONFIG_STATUS="written (+vm-store.conf — store enabled at boot)" ;;
       3) : ;; # vm-store disabled in config — nothing to seed
@@ -348,6 +399,31 @@ make_config_partition() {
     esac
     umount "$mnt" || true
     klh_ok "config partition $newpart (label KLHCONFIG, headless-wifi.conf written)"
+    # Per-stick master salt from the operator's registry (2026-10-25): a
+    # KNOWN, REGISTERED salt beats a random one generated on first boot —
+    # identities become precomputable and each stick's salt is on record
+    # (sha256-tied to the stick serial). Registry lives OUTSIDE the repo
+    # (~/.local/share/kali-live-headless/) and its salt never prints.
+    # Best effort: without it, the stick self-generates on first boot
+    # (identity-init) — same behavior as before this hook existed.
+    # the registry lives in the INVOKING user's home; sudo's HOME is /root
+    # (found live 2026-10-26: the hook silently used root's empty registry)
+    if [ -n "${SUDO_USER:-}" ]; then
+      export KLH_STICK_REGISTRY="$(getent passwd "$SUDO_USER" | cut -d: -f6)/.local/share/kali-live-headless/stick-registry.tsv"
+    fi
+    if [ -x "$REPO_DIR/tools/stick-registry.sh" ]; then
+      regrc=0
+      "$REPO_DIR/tools/stick-registry.sh" register --device "$DEVPATH" --build "${BUILD:-}" >/dev/null 2>&1 || regrc=$?
+      if [ "$regrc" = 0 ]; then
+        if "$REPO_DIR/tools/stick-registry.sh" apply --device "$DEVPATH" --build "${BUILD:-}" >/dev/null 2>&1; then
+          klh_ok "master.salt: seeded from the stick registry (deterministic identities)"
+        else
+          klh_warn "stick registered but salt apply failed — stick will self-generate one on first boot"
+        fi
+      else
+        klh_warn "stick registry: no serial / registry unavailable (rc=$regrc) — salt self-generates on first boot"
+      fi
+    fi
   else
     klh_warn "could not mount $part to write headless-wifi.conf"
   fi

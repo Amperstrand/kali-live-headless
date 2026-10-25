@@ -19,6 +19,16 @@ klh_warn() { printf 'WARNING: %s\n' "$*" >&2; }
 klh_info() { printf ' * %s\n' "$*"; }
 klh_ok()   { printf ' ✓ %s\n' "$*"; }
 
+# The canonical KLHCONFIG-partition + salt helpers live in ONE POSIX file
+# that also ships in the image (overlay/.../klh-lib.sh); bash-side scripts
+# get them by sourcing it here. flash.sh and tools/stick-registry.sh both
+# consumed their own diverging copies of this lookup before the 2026-10-25
+# dedup — same drift class as the in-image empty-salt incident.
+_klh_repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=overlay/kali-config/common/includes.chroot/usr/local/lib/kali-live-headless/klh-lib.sh
+. "$_klh_repo_dir/overlay/kali-config/common/includes.chroot/usr/local/lib/kali-live-headless/klh-lib.sh"
+unset _klh_repo_dir
+
 klh_require_cmd() {
   command -v "$1" >/dev/null 2>&1 || klh_die "'$1' is required but not found in PATH"
 }
@@ -119,6 +129,7 @@ klh_load_config() {
   : "${VMSTORE_DIR:=vms}"
   : "${VMSTORE_RESERVED_MB:=20480}"
   : "${TORAM_ENTRY:=true}"
+  : "${SSHD_WG_ONLY:=false}"
   # FIPS_ENABLED=false ships the mesh dormant (no wg0, no enrollment, no
   # daemon peering) — overridable per stick via KLHCONFIG:/fips.conf.
   : "${FIPS_ENABLED:=true}"
@@ -171,6 +182,13 @@ klh_load_config() {
   fi
   printf '%s' "$VMSTORE_BITLOCKER" | grep -Eq '^(off|try)$' \
     || klh_die "invalid VMSTORE_BITLOCKER '$VMSTORE_BITLOCKER' (off|try)"
+  # TollGate mint fallback (non-secret; testnet mint by default): used when
+  # a TollGate's advertisement carries no mints (found live 2026-10-24: the
+  # house gateway's TollGate advertises no-reachable-mints while degraded —
+  # the client refuses without a mint).
+  : "${TG_MINT_URL:=https://testnut.cashu.space}"
+  printf '%s' "$TG_MINT_URL" | grep -Eq '^https?://[A-Za-z0-9._:-]+(/[A-Za-z0-9._/-]*)?$' \
+    || klh_die "invalid TG_MINT_URL '$TG_MINT_URL' (want http(s)://host[:port][/path])"
   # VM store on the stick's KLHCONFIG partition (runtime feature; nothing
   # is baked into the ISO by these — stick-conf.sh renders vm-store.conf
   # at flash time and flash.sh writes it next to headless-wifi.conf):
@@ -189,6 +207,7 @@ klh_load_config() {
   printf '%s' "$VARIANT" | grep -Eq '^(minimal|default|light)$' \
     || klh_die "invalid VARIANT '$VARIANT' (minimal | default | light)"
   klh_validate_bool "$TORAM_ENTRY" || klh_die "invalid TORAM_ENTRY (true|false)"
+  klh_validate_bool "$SSHD_WG_ONLY" || klh_die "invalid SSHD_WG_ONLY (true|false)"
   [ -n "${WIFI_PSK:-}" ] || klh_die "WIFI_PSK not set in $f"
 }
 
@@ -197,4 +216,47 @@ klh_check_config_perms() {
   local f="$1"
   [ "$(stat -c '%a' "$f")" = "600" ] || \
     klh_warn "$f is mode $(stat -c '%a' "$f"); recommended: chmod 600 $f (it contains the Wi-Fi passphrase)"
+}
+
+# fetch_fips_deb — stage the pinned third-party payloads into live-build's
+# config tree just before `lb build` runs (call site: build.sh, after the
+# overlay staging step). Extracted verbatim from the inline block that
+# commit b9edeed ("build.sh FIPS extraction") replaced with a call but
+# never shipped — build #26 died rc=127 at the call site. Semantics kept:
+#   - FIPS mesh daemon .deb ALWAYS stages (runtime stays dormant without
+#     peer config; FIPS_ENABLED gates the wire, not the package).
+#   - Rescue-channel cloudflared stages for the DEFAULT flavour only
+#     (WITH_RESCUE; minimal keeps it out — docs/fips-optionality-and-rescue-channel.md).
+#   - Both sha256-verified against the pins above; mismatch = deliberate
+#     repin required, never a silent pass.
+# POSIX-safe: build.sh is bash but common.sh stays sh-clean (SC30xx).
+fetch_fips_deb() {
+  _fde_deb="fips_${FIPS_VERSION}_amd64.deb"
+  mkdir -p "$KLH_COMMON/packages.chroot"
+  if [ -f "$REPO_DIR/build/pkg/$_fde_deb" ]; then
+    install -m 0644 "$REPO_DIR/build/pkg/$_fde_deb" "$KLH_COMMON/packages.chroot/$_fde_deb"
+  else
+    klh_info "fetching FIPS $FIPS_VERSION (github release)"
+    curl -fsSL "https://github.com/jmcorgan/fips/releases/download/v${FIPS_VERSION}/${_fde_deb}" \
+        -o "$KLH_COMMON/packages.chroot/$_fde_deb" \
+        || klh_die "FIPS $FIPS_VERSION download failed (pin in lib/common.sh)"
+  fi
+  _fde_sha=$(sha256sum "$KLH_COMMON/packages.chroot/$_fde_deb" | cut -d' ' -f1)
+  [ "$_fde_sha" = "$FIPS_SHA256" ] \
+    || klh_die "FIPS deb sha256 mismatch (got $_fde_sha, want $FIPS_SHA256) — update the pin deliberately"
+  klh_ok "FIPS $FIPS_VERSION staged (sha256 verified)"
+
+  if [ "$WITH_RESCUE" = true ]; then
+    _fde_bin="$KLH_COMMON/includes.chroot/usr/local/bin/cloudflared"
+    mkdir -p "$(dirname "$_fde_bin")"
+    if curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
+            -o "$_fde_bin"; then
+      echo "$CLOUDFLARED_SHA256  $_fde_bin" | sha256sum --check --quiet \
+          || klh_die "cloudflared $CLOUDFLARED_VERSION sha256 mismatch — repin in lib/common.sh"
+      chmod 0755 "$_fde_bin"
+      klh_ok "rescue channel: cloudflared $CLOUDFLARED_VERSION verified+installed"
+    else
+      klh_die "cloudflared $CLOUDFLARED_VERSION download failed — check network or pin"
+    fi
+  fi
 }

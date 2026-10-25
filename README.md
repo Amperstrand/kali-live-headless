@@ -265,6 +265,18 @@ Notes:
   (tmpfs overlay) and vanish on power-off — nothing is written back to the
   USB stick or to internal disks.
 
+## Lean profile (small images, full project stack)
+
+`VARIANT=minimal` + `LEAN=true` (in `./config`) builds a small ISO with
+**no default-Kali weight** — no desktop, no tools baseline
+(`kali-linux-core`), no ~1GB every-vendor firmware blob — **while
+keeping the project's own stack**: KVM/vmstore (`WITH_KVM=true`),
+WireGuard mesh, FIPS daemon, rescue channel (any variant). Only the
+firmware a headless Wi-Fi stick plausibly needs ships
+(iwlwifi/realtek/atheros — add your adapter's blob to the override in
+`build.sh` and rebuild). For the full Kali toolset use the default
+variant.
+
 ## Host-role mesh identity (FIPS)
 
 **Optionality (v20)**: the whole mesh **wire** is gated by `FIPS_ENABLED`
@@ -308,12 +320,43 @@ stick keeps the same `npub` — its mesh address — across power cycles.
   mesh firewall (`fips-firewall.service`) enforces the baseline; the
   deployment side lives in the private overlay, not this repo.
 
+## TollGate: pay-per-use internet with Cashu (no SSID, no password)
+
+When the stick can't find its home Wi-Fi, it connects to any **open
+network** (lower autoconnect priority). If that network is a
+[TollGate](https://tollgate.me) — a Cashu-powered payment gateway — the
+stick automatically:
+
+1. Detects the TollGate on the gateway's `:2121` port
+2. Reads the mint URL and pricing from the advertisement
+3. Requests a Lightning invoice from the mint (NUT-04)
+4. On fakewallet/testnet mints, the invoice **auto-settles** (<1s)
+5. Mints Cashu tokens and pays the TollGate
+6. Gets internet access — zero manual steps
+
+The client (`tollgate-client`, 10 MB static Go binary built from
+[gonuts-tollgate](https://github.com/OpenTollGate/gonuts-tollgate))
+runs automatically via the `kali-live-tollgate` trigger when Wi-Fi
+associates. On normal (non-TollGate) networks it silently no-ops.
+
+**Long-term:** the Rust path (CDK / `tollgate-rs`) will replace the Go
+binary with the same CLI contract.
+
+**Threat model:** the TollGate identifies the stick by its Wi-Fi MAC
+address (standard TollGate behavior). The Cashu tokens are bearer
+instruments — physical access to the stick's wallet DB is game over,
+same as the PSK. The open-network profile has lower priority than the
+home PSK network, so the stick never roams to an open network when the
+known network is available.
+
 ## Deterministic per-machine identities (master salt + HKDF)
 
-One 256-bit **master salt** is generated on the stick's first boot and
-persisted to its `KLHCONFIG` partition (`master.salt` — plaintext, same
-threat model as the Wi-Fi PSK: it IS the master secret for every identity
-below). Every identity is then **derived**, never stored:
+One 256-bit **master salt** lives on the stick's `KLHCONFIG` partition
+(`master.salt` — plaintext, same threat model as the Wi-Fi PSK: it IS the
+master secret for every identity below). `flash.sh` **pre-seeds it from
+the per-stick registry** (see below); sticks flashed with plain `dd`
+generate one on first boot instead. Every identity is then **derived**,
+never stored:
 
     HKDF-SHA256(ikm = master salt, salt = constant,
                 info = "klh-headless/v1/<purpose>/<machine fingerprint>")
@@ -334,6 +377,36 @@ the wg pubkey and npub, so peers can be pre-enrolled on the hub. Plain
 `sha256(secret‖data)` was rejected in favor of HKDF per RFC 5869 and the
 Trail of Bits key-derivation guidance (variable data belongs in `info`,
 never in the salt position). Deleting `master.salt` re-keys everything.
+
+### Stick registry: known salts, tracked per stick (2026-10-25+)
+
+`flash.sh` now pre-seeds every stick it flashes with a **registered**
+salt instead of leaving first-boot generation to chance:
+
+    tools/stick-registry.sh list              # which sticks are known
+    tools/stick-registry.sh show --device /dev/sdX
+
+The registry (`~/.local/share/kali-live-headless/stick-registry.tsv`,
+mode 0600) maps `sha256(stick serial)` → salt and lives **outside this
+repo** — it holds the master secret of every stick you own, so treat the
+workstation like a root-password vault (see SECURITY.md). Only the salt
+*digest* ever appears in tool output or on-stick logs, which is enough to
+tie a boot record back to a registered stick. Sticks flashed with plain
+`dd` still self-generate a salt on first boot (unregistered, but equally
+strong).
+
+### Blackbox forensic logs (2026-10-25+)
+
+Every boot writes a record to `KLHCONFIG:/logs/boot-<ts>-<bootid>.log`:
+kernel cmdline (toram or not), medium backing store, salt digest, identity
+outcomes, the provision/watchdog journal stream, a 15 s heartbeat (so a
+hang point is visible), and a clean-stop marker. Bounded: last 20 boots +
+a capped `events.log`, ~1 MiB worst case; the writes are `sync`-flushed so
+a power cut preserves everything up to the cut. When the config partition
+is absent (toram with the stick pulled), the same log lives in RAM for the
+session and the record says `persistent=no` — an absent boot record is
+itself evidence. This exists because a stick vanished mid-incident on
+2026-10-24 and left nothing to autopsy.
 
 The FIPS daemon itself ships in the image (pinned upstream release,
 sha256-verified at build time), enabled at boot, dialing the staged default
