@@ -87,4 +87,48 @@ Brief: SPIKE-BRIEF.md. Research: docs/vmhost-base-os-research.md.
 - Next: monitor; on success the wrapper archives automatically → BIOS gate
   on port 22410.
 
+## M4 — d1c BUILD SUCCEEDED + first BIOS gate 275/1 (00:19→00:33)
+
+- State: **BASE=debian build #1 green in ~38 min** (23:41→00:19, warm apt
+  cache from d1b's partial harvest helped). ISO 1.9G archived:
+  output/iso-build1/kali-linux-trixie-live-minimal-amd64.iso
+- BIOS gate (KLH_TEST_PORT=22410, --stage bios): **275 pass / 1 fail /
+  1 skip** (skip = uefi stage not selected). The fail:
+  `provision service (success/active)` — the UNIT-STATE probe only; every
+  functional effect of provision is GREEN (SSH key login as kali, Debian
+  os-release, hostname, NM profile, avahi, console password randomized,
+  wg0-correctly-absent, virsh usable, kvm shield, host-key stable).
+  Boot was FAST (~3 min total suite incl. stage A+B).
+- Size anatomy (measured, ISO loop+squashfs mounts):
+  live/ 1.4G (squashfs 1.2G) · pool 343M + pool-udeb 117M + install 110M
+  (debian-installer ≈ 570M) · /usr/lib/firmware **783M / 33 pkgs** —
+  live-build's DEP-11 firmware auto-detection (never fires on Kali; on
+  Debian it stacked the superset on our selective list) → fixed in
+  adapter (commit 5a24730: --firmware-* false; assert now prints evidence).
+  .disk/info: "Debian GNU/Linux 13 "Trixie" - Snapshot ... LIVE/INSTALL".
+- d2 (firmware diet) building since 00:45 (tmux deb-build-d2).
+- Next: d2 → re-gate BIOS on 22410 → BUILDS.md rows + results doc + push.
+
+## M5 — ACCEPTANCE: d2 BIOS gate VERDICT PASS 276/0/1 (01:39)
+
+- State: d2 green in 31 min (rc=0, run-logged build-d2). ISO 1.6G
+  (783M→405M firmware). BIOS gate re-run: **VERDICT PASS pass=276 fail=0
+  skip=1** (output/test-run-b2.log, port 22410). The d2 first-gate 275/1
+  root-caused via the new diagnostic: trixie systemd REORDERS
+  `systemctl show -p` fields (success/active) — suite parse fixed to
+  order-insensitive; the image was healthy (journal: "Finished
+  kali-live-headless-provision.service").
+- Deliverables recorded: BUILDS.md rows #1-d1/#2-d2 (sha512, size anatomy,
+  acceptance verdict), docs/debian-base-spike-results.md (verdict, size vs
+  prediction incl. the d-i 570M + firmware-dep 300M explanation, port-cost
+  confirmation, container/keyring resolution, 4 guarded lessons, gaps:
+  uefi/override/forensic/vmstore unproven on debian, d-i diet next).
+- Acceptance: BASE=kali static 144/0 (136 baseline intact) ✓ · BASE=debian
+  boots to SSH under BIOS QEMU with Wi-Fi profile + KVM units ✓ · size
+  + verdict recorded ✓.
+- Next: commit+push everything; if time allows, full-gate the remaining
+  stages on iso-build2 (override/forensic first — uefi needs OVMF).
+
+
+
 
