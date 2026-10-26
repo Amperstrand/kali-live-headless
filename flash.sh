@@ -313,6 +313,19 @@ fi
 # --------------------------------------------------------------- write
 if [ "$VERIFY_ONLY" = true ]; then
   klh_info "verify-only: not writing — checking what is already on $DEVPATH"
+  # Region-aware, not whole-device: a COMPLETED flash appended the config
+  # partition and rewrote the MBR inside the ISO's 32 KiB system area, so a
+  # whole-device hash can never match the ISO again (measured 2026-10-26:
+  # read-back sha512 5320c820… vs ISO 7dcfa092…, payload manifest clean).
+  # This checks the payload region + table shape; the flow then continues to
+  # finish the config partition, and the post-append verify below re-checks.
+  if ! "$REPO_DIR/tools/medium-verify.sh" --iso "$ISO" --device "$DEVPATH"; then
+    klh_warn "mismatch — flushing device buffers and retrying once before giving up"
+    blockdev --flushbufs "$DEVPATH" 2>/dev/null || true
+    sync; sleep 3
+    "$REPO_DIR/tools/medium-verify.sh" --iso "$ISO" --device "$DEVPATH" \
+      || klh_die "verify-only: the medium does not carry this ISO's payload (see the offset above)"
+  fi
 else
   # NEVER auto-unmount (owner rule 2026-10-26): the old best-effort
   # `umount` loop silently ripped automounted partitions out from under a
@@ -374,6 +387,9 @@ then re-run. flash.sh never unmounts on its own."
 fi
 
 # -------------------------------------------------------------- verify
+# Whole-device hash BEFORE the append — while the medium can still match the
+# ISO byte-for-byte. (verify-only already did its region-aware check above.)
+if [ "$VERIFY_ONLY" != true ]; then
 klh_info "verifying written data (hashing ${DEVPATH} up to ISO size — can take a while)"
 ISO_HASH=$(sha256sum "$ISO" | awk '{print $1}')
 DEV_HASH=$(head -c "$ISO_SIZE" "$DEVPATH" | sha256sum | awk '{print $1}')
@@ -418,6 +434,7 @@ else
     * widespread diffs  -> failing medium or cable; use another stick
   (A USB2-speed write (under ~15 MB/s, see the rate above) is the classic
   signature of the ports/cables that cause exactly this.)"
+fi
 fi
 
 # ------------------------------------------------- KLHCONFIG config partition
@@ -490,6 +507,7 @@ make_config_partition() {
     # sfdisk's reply names the partition it created; NEVER assume a number
     # (the ISO already ships sda1+sda2, so the append lands on sda3+ — the
     # old code formatted ${DEV}2, i.e. INSIDE the ISO image).
+    APPENDED_START=$(( start_mb * 2048 ))   # for the post-append medium-verify
     newpart=$(printf 'start=%s, type=0c\n' "$(( start_mb * 2048 ))" \
       | sfdisk --force --append "$DEVPATH" 2>&1 \
       | sed -n "s/.*Created a new partition \([0-9]*\).*/\1/p" | head -1)
@@ -581,7 +599,27 @@ make_config_partition() {
 }
 make_config_partition
 
+# ------------------------------------------- post-append medium verification
+# The whole-device hash above ran before the append; sfdisk has since rewired
+# the MBR inside the ISO's system area, so this is the check that describes
+# the SHIPPED state: payload region byte-identical, table only added entries.
+# Also the honest answer for "verify an old stick": the medium is NOT the ISO
+# file and cannot be, by design (tools/medium-verify.sh has the whole story).
+if [ -x "$REPO_DIR/tools/medium-verify.sh" ]; then
+  _mv_args=(--iso "$ISO" --device "$DEVPATH")
+  [ -n "${APPENDED_START:-}" ] && _mv_args+=(--expect-part "$APPENDED_START")
+  if "$REPO_DIR/tools/medium-verify.sh" "${_mv_args[@]}"; then
+    MEDIUM_VERIFY="payload region byte-identical to the ISO; table only added entries"
+  else
+    MEDIUM_VERIFY="FAILED — payload differs from the ISO (see above)"
+    klh_warn "post-append medium verification FAILED — do not trust this stick"
+  fi
+else
+  MEDIUM_VERIFY="skipped (tools/medium-verify.sh not executable)"
+fi
+
 klh_info "KLHCONFIG partition: ${KLHCONFIG_STATUS:-MISSING (unknown outcome — treat as missing)}"
+klh_info "medium verify    : ${MEDIUM_VERIFY:-not run}"
 STICK_ID=$( ( source "$REPO_DIR/lib/common.sh"; klh_load_config "$REPO_DIR/config" 2>/dev/null && echo "$HOSTNAME $HOSTNAME_SCHEME" ) || echo "kali-live static" )
 STICK_HOSTNAME=${STICK_ID%% *}
 STICK_HOSTNAME_SCHEME=${STICK_ID##* }

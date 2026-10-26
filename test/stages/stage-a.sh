@@ -64,6 +64,36 @@ if [ -f "$_excl" ]; then
   fi
 fi
 
+# The flashed medium is NOT the ISO file: the config-partition append rewrites
+# the MBR inside the ISO's 32 KiB system area, so a whole-device hash can never
+# match again (measured 2026-10-26 on the stick read-back: sha512 5320c820… vs
+# 7dcfa092…, internal manifest clean). medium-verify.sh encodes the correct
+# contract — prove it on a synthetic medium: a legitimately appended table must
+# PASS, a corrupted payload byte and a rewritten table entry must FAIL.
+if command -v sfdisk >/dev/null 2>&1 && [ -x "$REPO_DIR/tools/medium-verify.sh" ]; then
+  _mv=$REPO_DIR/tools/medium-verify.sh
+  _mvt=$SCRATCH/medium-verify; mkdir -p "$_mvt"
+  truncate -s 8M "$_mvt/iso.img"
+  dd if=/dev/urandom of="$_mvt/iso.img" bs=1M count=8 conv=notrunc status=none
+  printf 'start=2048, size=100, type=17\n' | sfdisk -q "$_mvt/iso.img" >/dev/null 2>&1
+  cp "$_mvt/iso.img" "$_mvt/dev.img"
+  printf 'start=4096, type=0c\n' | sfdisk -q --append "$_mvt/dev.img" >/dev/null 2>&1
+  "$_mv" --iso "$_mvt/iso.img" --device "$_mvt/dev.img" --expect-part 4096 >/dev/null 2>&1 \
+    && record pass "medium-verify: append-mutated medium accepted" \
+    || record fail "medium-verify: append-mutated medium accepted" "a legitimately appended config partition must not fail verification"
+  printf '\375' | dd of="$_mvt/dev.img" bs=1 seek=999999 conv=notrunc status=none
+  "$_mv" --iso "$_mvt/iso.img" --device "$_mvt/dev.img" >/dev/null 2>&1 \
+    && record fail "medium-verify: corrupted payload rejected" \
+    || record pass "medium-verify: corrupted payload rejected"
+  cp "$_mvt/iso.img" "$_mvt/dev2.img"
+  printf 'start=2048, size=99, type=17\n' | sfdisk -q "$_mvt/dev2.img" >/dev/null 2>&1
+  "$_mv" --iso "$_mvt/iso.img" --device "$_mvt/dev2.img" >/dev/null 2>&1 \
+    && record fail "medium-verify: rewritten table entry rejected" \
+    || record pass "medium-verify: rewritten table entry rejected"
+else
+  record skip "medium-verify unit" "sfdisk or the tool not available on this host"
+fi
+
 # A hook live-build cannot execute is silently skipped, so the image ships
 # without the step and nothing complains (AGENTS #16: derive_identity.py was
 # 100644 for ten builds and never ran). Every hook in the overlay must be +x;
