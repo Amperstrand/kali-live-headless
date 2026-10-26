@@ -122,8 +122,29 @@ ensure_klhconfig_partition() {
     [ -z "$cfgpart" ] || { printf '%s\n' "$cfgpart"; return 0; }
 
     mediumpath=$(findmnt -n -o SOURCE /run/live/medium 2>/dev/null || true)
-    [ -n "$mediumpath" ] || return 0
-    bootdev=$(lsblk -no PKNAME "$(basename "$mediumpath" | sed 's|/dev/||')" 2>/dev/null | head -1)
+    bootdev=""
+    if [ -n "$mediumpath" ]; then
+        bootdev=$(lsblk -no PKNAME "$(basename "$mediumpath" | sed 's|/dev/||')" 2>/dev/null | head -1)
+    fi
+    # TORAM FALLBACK (2026-10-26, live evidence: a toram boot on a 20-core
+    # box shipped NO identities because this function silently no-oped —
+    # with toram the medium is a tmpfs, findmnt gives no block device, and
+    # the stick sat right there in the USB slot with 12G free). If the
+    # medium path yielded nothing, fall back to the UNIQUE USB disk with an
+    # iso9660 partition — that is the stick we booted from. Refuse on any
+    # ambiguity (0 or 2+ candidates): appending partitions to the wrong
+    # disk is not a mistake we can undo.
+    if [ -z "$bootdev" ] || [ ! -b "/dev/$bootdev" ]; then
+        bootdev=$(lsblk -rno NAME,TYPE,TRAN,FSTYPE 2>/dev/null \
+            | awk '$2 == "disk" &&tolower($3) == "usb" && $4 == "iso9660" {print $1}' \
+            | sort -u)
+        if [ "$(printf '%s\n' "$bootdev" | grep -c .)" -eq 1 ]; then
+            log "medium is not a block device (toram boot?) — boot device resolved by USB iso9660 signature: /dev/$bootdev"
+        else
+            log "WARNING: no KLHCONFIG partition and the boot device cannot be identified uniquely ($(printf '%s' "$bootdev" | tr '\n' ' ')) — identities will NOT persist"
+            return 0
+        fi
+    fi
     [ -n "$bootdev" ] && [ -b "/dev/$bootdev" ] || return 0
     # verify it's a USB/removable device (never partition an internal disk)
     lsblk -dno TRAN "/dev/$bootdev" 2>/dev/null | grep -q "usb" || return 0
