@@ -232,22 +232,18 @@ mkdir -p "$KLH_COMMON"
 # lb populates cache/packages.chroot THROUGH the link into the dotdir,
 # cleanup_fs rm -rf's the symlink, and the dotdir persists — next build lb
 # re-reads the same content natively (no restore hook needed).
-mkdir -p "$UPSTREAM_DIR/.klh-apt-cache" "$UPSTREAM_DIR/cache" 2>/dev/null || true
-ln -sfn ../.klh-apt-cache "$UPSTREAM_DIR/cache/packages.chroot" 2>/dev/null || true
-# cap the persistent cache (full minimal set ~1200 debs / ~900MB; 4000
-# bounds disk while surviving several package-set experiments)
-if [ -d "$UPSTREAM_DIR/.klh-apt-cache" ]; then
-  # fail-proof count: `ls dir/*.deb | wc -l` under pipefail dies silently
-  # when the dir is empty (killed build #30 six minutes in — the block had
-  # never executed in a real build before, hotpatches skip build.sh)
-  _total=0
-  for _f in "$UPSTREAM_DIR/.klh-apt-cache"/*.deb; do
-    if [ -e "$_f" ]; then _total=$((_total + 1)); fi
-  done
-  if [ "$_total" -gt 4000 ]; then
-    ls -1t "$UPSTREAM_DIR/.klh-apt-cache"/*.deb 2>/dev/null | tail -n +"$((4000 + 1))" | while IFS= read -r _old; do rm -f "$_old"; done
-  fi
-fi
+# REMOVED 2026-10-26: the .klh-apt-cache symlink + harvest was inert.
+# It depended on hooks/build/klh-apt-cache.hook.build, and live-build
+# 20250814+kali3 executes no *.hook.build hooks at all (it only scans
+# config/hooks/{normal,live}/*.chroot — verified: no "hook.build" string
+# in /usr/lib/live or /usr/bin/lb, and build #33 produced neither the
+# hook's echo nor a single cached .deb). Warm package caching now belongs
+# to an HTTP cache in front of the mirror (upstream auto-detects
+# squid-deb-proxy on :8000 and apt-cacher-ng on :3142), which survives
+# upstream's cleanup_fs because it lives outside the build tree entirely.
+# See docs/reproducible-builds.md. Do not re-add a cache that assumes
+# live-build will populate cache/packages.chroot: with no hook it is
+# wiped by cleanup_fs at the end of every build.
 
 klh_info "overlaying repo customizations into kali-config/common/"
 cp -a "$OVERLAY_DIR/." "$KLH_COMMON/"
@@ -508,6 +504,22 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 # ------------------------------------------------------------------ build
+# Reproducible clock. live-build 20250814+kali3 threads SOURCE_DATE_EPOCH
+# through every stage that stamps time into the image (bootstrap BUILD_ID,
+# binary file mtimes, xorriso --modification-date, squashfs mkfs time) but
+# defaults it to `date +%s` when unset — which is exactly why two builds of
+# the same commit can differ while sharing a byte size (2026-10-26: #32
+# 2454269952 B sha512 30c25031…, #33 2454269952 B sha512 8fc5b712…).
+# Pin it to HEAD's commit time: same source ⇒ same clock, by construction.
+# Override with KLH_SOURCE_DATE_EPOCH=<epoch> when re-running an old build.
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+  if _sde=$(git -C "$REPO_DIR" log -1 --format=%ct 2>/dev/null) && [ -n "$_sde" ]; then
+    export SOURCE_DATE_EPOCH="$_sde"
+    klh_info "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH (HEAD commit time)"
+  fi
+else
+  klh_info "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH (inherited from the environment)"
+fi
 SELF_HASH_START=$(sha256sum "$0" | cut -d' ' -f1)
 # The ISO is written to a staging dir, never straight into the output dir:
 # archiving then moves it into output/iso-buildN/, so a failed or concurrent
