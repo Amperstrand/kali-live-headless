@@ -148,6 +148,47 @@ squashfs and ISO assembly. Use `tools/remote-build.sh --ramdisk 15G`; the
 build.sh free-space guard accepts a smaller budget via `KLH_MIN_FREE_G`
 (passed automatically for RAM builds).
 
+## Identity: (commit, sde), not the build number
+
+Build numbers are an **archive key** — `flash.sh --build N`, `BUILDS.md` rows,
+the retention policy and the `.build-current` marker all key on them, and
+debug/hotpatch builds have no commit of their own to name them after. What a
+build *is*, though, is a commit plus a clock. Two builds of the same commit are
+only comparable when the clock is pinned:
+
+```
+--sde EPOCH      # build.sh / remote-build.sh: pin SOURCE_DATE_EPOCH
+```
+
+The default — HEAD's commit time — quietly breaks comparisons whenever another
+commit lands in between: `#36` and `#37` differed *only* because a docs commit
+moved HEAD by nine minutes (sde 1793010626 vs 1793011156), not because the
+image was non-deterministic.
+
+So the archive carries the identity next to the number:
+
+```
+output/
+  iso-build38/                          the artifact (unchanged layout)
+  by-ref/09b62d0f1234-sde1793010626 -> ../iso-build38
+  ledger.tsv                            one appended row per archived build
+```
+
+`ledger.tsv` columns: `build  ref  sde  iso  bytes  sha512  archived_at
+upstream_ref`. `build.sh` reads it *before* archiving: if the pair already has
+a row, the run is a reproduction check and it prints
+
+```
+✓ REPRODUCED: byte-identical to build #38 (09b62d0f1234 sde=1793010626)
+  MISMATCH: build #38 has the same commit+clock but different bytes
+            classify: tools/iso-content-diff.sh <archived> <new>
+```
+
+That is the mechanical verdict the ledger was missing: no hand-typed row, no
+"checksum gate ran from the wrong directory" class of error. A re-run of a
+known pair is a *test*, not a new release — which is exactly what a
+reproducibility claim needs to be cheap.
+
 ## Freezing the inputs (the Kali problem)
 
 `tools/deb-pool.sh` + `build.sh --pool` implement the "keep it ourselves"
