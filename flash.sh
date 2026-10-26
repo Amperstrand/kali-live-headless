@@ -25,6 +25,7 @@ ISO=""
 BUILD=""
 DEVICE=""
 ASSUME_YES=false
+ALLOW_LARGE=false
 LIST_ONLY=false
 DRY_RUN=false
 VERIFY_ONLY=false
@@ -38,6 +39,9 @@ Usage: ./flash.sh [--build N | --iso PATH] [--device PATH] [--yes] [--dry-run] [
   --iso PATH     ISO to write (default: newest archived build, else the slot)
   --list         List available archived builds with sha512 + verdict, exit
   --device PATH  Target disk, e.g. /dev/sdc (still confirmed unless --yes)
+  --allow-large  Allow flashing a removable device over 64G (default:
+                 refused — that is probably an external SSD/HDD, not a
+                 stick, and the write destroys it wholesale)
   --yes          Skip the typed confirmation (scripted use — dangerous)
   --dry-run      Check ISO, devices and target, then stop before writing
                  (runs unprivileged; use it to convince yourself first)
@@ -61,6 +65,7 @@ EOF
     --list)    LIST_ONLY=true; shift ;;
     --device)  DEVICE=${2:?}; shift 2 ;;
     --yes)     ASSUME_YES=true; shift ;;
+    --allow-large) ALLOW_LARGE=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     --verify-only) VERIFY_ONLY=true; shift ;;
     -h|--help) usage ;;
@@ -217,6 +222,19 @@ validate_device() { # $1 = device path ; returns 0 if usable
     [ "$(realpath "$devname")" = "$(realpath "$dev")" ] && ok=1
   done
   [ "$ok" -eq 1 ] || { klh_warn "$dev is not in the removable USB list above"; return 1; }
+  # Size sanity (owner rule 2026-10-26): a "removable" device over 64G is
+  # far more likely an external SSD/HDD (or a mis-reported reader) than a
+  # stick — and the dd destroys it wholesale. Refuse unless the operator
+  # explicitly opts in with --allow-large.
+  if [ "$ALLOW_LARGE" != true ]; then
+    local size_bytes
+    size_bytes=$(lsblk -drno SIZE -b "$dev" 2>/dev/null || echo 0)
+    if [ "${size_bytes:-0}" -gt 68719476736 ]; then
+      klh_warn "$dev is $(numfmt --to=iec "$size_bytes") — over the 64G stick ceiling"
+      klh_warn "this is probably an external SSD/HDD, not a USB stick; the write would destroy it"
+      klh_die "refusing. If you really mean it: add --allow-large"
+    fi
+  fi
   local sys
   while read -r sys; do
     [ -n "$sys" ] || continue
@@ -273,10 +291,21 @@ fi
 if [ "$VERIFY_ONLY" = true ]; then
   klh_info "verify-only: not writing — checking what is already on $DEVPATH"
 else
-  klh_info "unmounting any partitions on $DEVPATH (best effort)"
-  lsblk -rn -o NAME,MOUNTPOINTS "$DEVPATH" | awk 'NF==2 {print $2}' | while read -r m; do
-    umount "$m" 2>/dev/null || true
-  done
+  # NEVER auto-unmount (owner rule 2026-10-26): the old best-effort
+  # `umount` loop silently ripped automounted partitions out from under a
+  # desktop session — unmounting is a human decision. Instead: RE-assert
+  # nothing is mounted right before the destructive write (udev can
+  # automount in the seconds since selection) and die loudly if something
+  # is, with the exact commands to run.
+  mounted_now=$(lsblk -rn -o MOUNTPOINTS "$DEVPATH" 2>/dev/null | grep -v '^$' || true)
+  if [ -n "$mounted_now" ]; then
+    klh_die "partitions of $DEVPATH got mounted since selection:
+$mounted_now
+
+Unmount them yourself, e.g.:
+$(lsblk -rn -o NAME,MOUNTPOINTS "$DEVPATH" | awk 'NF==2 {print "  umount " $2}')
+then re-run. flash.sh never unmounts on its own."
+  fi
   blockdev --rereadpt "$DEVPATH" 2>/dev/null || true
 
   klh_info "writing ISO to $DEVPATH (this can take several minutes)"
@@ -308,11 +337,47 @@ fi
 klh_info "verifying written data (hashing ${DEVPATH} up to ISO size — can take a while)"
 ISO_HASH=$(sha256sum "$ISO" | awk '{print $1}')
 DEV_HASH=$(head -c "$ISO_SIZE" "$DEVPATH" | sha256sum | awk '{print $1}')
-sync
+if [ "$ISO_HASH" != "$DEV_HASH" ]; then
+  # One retry with an explicit device-buffer flush: cheap USB bridges and
+  # kernel caches can serve STALE blocks on the first read-back right after
+  # a long write — a false mismatch (observed 2026-10-26: verify FAILED on
+  # a stick whose squashfs later hashed EXACT on the running system).
+  klh_warn "first read-back mismatch — flushing device buffers and re-reading once"
+  blockdev --flushbufs "$DEVPATH" 2>/dev/null || true
+  sync; sleep 3
+  DEV_HASH=$(head -c "$ISO_SIZE" "$DEVPATH" | sha256sum | awk '{print $1}')
+fi
 if [ "$ISO_HASH" = "$DEV_HASH" ]; then
   klh_ok "verified: $DEVPATH matches the ISO (sha256 prefix ${ISO_HASH:0:16}...)"
 else
-  klh_die "verification FAILED — $DEVPATH does not match the ISO. Try another port/stick or re-run."
+  # Real mismatch: give the operator EVIDENCE, not just a verdict — where
+  # do the bytes differ, and how widespread is it? A single window = a
+  # dropped flush; widespread = dying medium. Both computed in 64M chunks
+  # (two passes over 2-3G ≈ minutes; worth it — this decides stick vs port
+  # vs cable for the human holding the hardware).
+  klh_warn "second read-back also mismatched — locating the differing regions"
+  first_diff="" diff_chunks=0 chunk_no=0
+  while [ $((chunk_no * 67108864)) -lt "$ISO_SIZE" ]; do
+    skip=$((chunk_no * 65536))    # 64M in 1K blocks
+    count=$(( (ISO_SIZE - chunk_no * 67108864) < 67108864 ? (ISO_SIZE - chunk_no * 67108864 + 1023) / 1024 : 65536 ))
+    h_iso=$(dd if="$ISO" bs=1024 skip="$skip" count="$count" status=none | sha256sum | awk '{print $1}')
+    h_dev=$(dd if="$DEVPATH" bs=1024 skip="$skip" count="$count" status=none | sha256sum | awk '{print $1}')
+    if [ "$h_iso" != "$h_dev" ]; then
+      [ -z "$first_diff" ] && first_diff=$((chunk_no * 67108864))
+      diff_chunks=$((diff_chunks + 1))
+    fi
+    chunk_no=$((chunk_no + 1))
+  done
+  klh_die "verification FAILED — $DEVPATH does not match the ISO.
+  ISO-side hash was verified BEFORE the write (the .iso on disk is good).
+  Differing: ${diff_chunks} of ${chunk_no} 64M chunks, first at byte offset ${first_diff:-unknown}.
+  What this means:
+    * one small window  -> the USB bridge dropped a flush (cheap stick /
+      marginal port); the boot payload often still works but the stick is
+      NOT trustworthy — re-flash on a direct USB3 port
+    * widespread diffs  -> failing medium or cable; use another stick
+  (A USB2-speed write (under ~15 MB/s, see the rate above) is the classic
+  signature of the ports/cables that cause exactly this.)"
 fi
 
 # ------------------------------------------------- KLHCONFIG config partition
