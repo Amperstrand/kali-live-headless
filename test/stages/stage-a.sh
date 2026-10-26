@@ -772,12 +772,12 @@ if [ -x "$HWD" ]; then
   cat > "$SCRATCH/probe-dupe.sh" <<'PROBE'
 #!/bin/sh
 case "$1" in
-  latitude-7490-4c16r128d|latitude-7490-4c16r128d-2) echo 192.168.13.50 ;;
+  latitude-7490-4c16r128d|latitude-7490-4c16r128d-2) echo 192.0.2.50 ;;
   *) exit 1 ;;
 esac
 PROBE
   chmod +x "$SCRATCH/probe-dupe.sh"
-  out=$(KLH_PROBE_CMD="$SCRATCH/probe-dupe.sh" KLH_OWN_ADDRS=192.168.13.217 \
+  out=$(KLH_PROBE_CMD="$SCRATCH/probe-dupe.sh" KLH_OWN_ADDRS=192.0.2.217 \
         KLH_DMI_DIR="$HW2/dmi" KLH_SYSBLOCK="$HW2/sys/block" KLH_MEMINFO="$HW/meminfo" \
         KLH_NPROC=4 "$HWD" 2>/dev/null)
   [ "$out" = "latitude-7490-4c16r128d-3" ] \
@@ -788,15 +788,61 @@ PROBE
   # machine's addresses, or every boot would rename itself to -2).
   cat > "$SCRATCH/probe-self.sh" <<'PROBE'
 #!/bin/sh
-echo 192.168.13.217
+echo 192.0.2.217
 PROBE
   chmod +x "$SCRATCH/probe-self.sh"
-  out=$(KLH_PROBE_CMD="$SCRATCH/probe-self.sh" KLH_OWN_ADDRS=192.168.13.217 \
+  out=$(KLH_PROBE_CMD="$SCRATCH/probe-self.sh" KLH_OWN_ADDRS=192.0.2.217 \
         KLH_DMI_DIR="$HW2/dmi" KLH_SYSBLOCK="$HW2/sys/block" KLH_MEMINFO="$HW/meminfo" \
         KLH_NPROC=4 "$HWD" 2>/dev/null)
   [ "$out" = "latitude-7490-4c16r128d" ] \
     && record pass "hostname derive: own mDNS answer is not a duplicate" \
     || record fail "hostname derive: own mDNS answer is not a duplicate" "got '$out'"
+
+  # Regression (found live on hotpatch #32): avahi also publishes site-local
+  # (fec0::, QEMU user-net's IPv6 subnet) and link-local (fe80::) addresses.
+  # `ip addr show scope global` omitted them, so a SELF answer looked foreign
+  # and every boot falsely gained '-2'. A fake `ip` with all scopes + a fec0
+  # self-answer must stay on the base name; a genuinely foreign address must
+  # still suffix.
+  mkdir -p "$SCRATCH/fakebin"
+  cat > "$SCRATCH/fakebin/ip" <<'IP'
+#!/bin/sh
+printf '%s\n' \
+  '1: lo    inet 127.0.0.1/8 scope host lo' \
+  '2: eth0    inet 192.0.2.217/24 scope global eth0' \
+  '2: eth0    inet6 fec0::2/64 scope site eth0' \
+  '2: eth0    inet6 fe80::1/64 scope link eth0'
+IP
+  chmod +x "$SCRATCH/fakebin/ip"
+  cat > "$SCRATCH/probe-fec0.sh" <<'PROBE'
+#!/bin/sh
+case "$1" in
+  latitude-7490-4c16r128d) echo fec0::2 ;;
+  *) exit 1 ;;
+esac
+PROBE
+  chmod +x "$SCRATCH/probe-fec0.sh"
+  out=$(PATH="$SCRATCH/fakebin:$PATH" KLH_PROBE_CMD="$SCRATCH/probe-fec0.sh" \
+        KLH_DMI_DIR="$HW2/dmi" KLH_SYSBLOCK="$HW2/sys/block" KLH_MEMINFO="$HW/meminfo" \
+        KLH_NPROC=4 "$HWD" 2>/dev/null)
+  [ "$out" = "latitude-7490-4c16r128d" ] \
+    && record pass "hostname derive: site-local/link-local self-answer is not a duplicate" \
+    || record fail "hostname derive: site-local self-answer" "got '$out' (avahi publishes fec0::/fe80:: too)"
+
+  cat > "$SCRATCH/probe-foreign.sh" <<'PROBE'
+#!/bin/sh
+case "$1" in
+  latitude-7490-4c16r128d) echo 192.0.2.99 ;;
+  *) exit 1 ;;
+esac
+PROBE
+  chmod +x "$SCRATCH/probe-foreign.sh"
+  out=$(PATH="$SCRATCH/fakebin:$PATH" KLH_PROBE_CMD="$SCRATCH/probe-foreign.sh" \
+        KLH_DMI_DIR="$HW2/dmi" KLH_SYSBLOCK="$HW2/sys/block" KLH_MEMINFO="$HW/meminfo" \
+        KLH_NPROC=4 "$HWD" 2>/dev/null)
+  [ "$out" = "latitude-7490-4c16r128d-2" ] \
+    && record pass "hostname derive: a genuinely foreign answer still suffixes -2" \
+    || record fail "hostname derive: foreign answer still suffixes" "got '$out'"
 
   # Underscore is not a legal hostname character: the counter MUST be a dash
   # (the requested "_2" form would break avahi/DNS/cert SANs).

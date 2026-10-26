@@ -292,7 +292,10 @@ SCHEME=$(sed -n 's/^HOSTNAME_SCHEME=//p' /etc/default/kali-live-headless 2>/dev/
 # the file is shell-sourced style: VALUE may carry quotes (tr, not ${//} —
 # pattern substitution is a bashism and dash aborts the script at runtime)
 SCHEME=$(printf '%s' "$SCHEME" | tr -d \'\" | tr 'A-Z' 'a-z')
-[ -n "$SCHEME" ] || SCHEME=static
+# No key at all (an image built before the scheme existed, e.g. after
+# tools/iso-hotpatch.sh replaces the provisioner): use the documented
+# default. HOSTNAME_SCHEME=static is the explicit opt-out.
+[ -n "$SCHEME" ] || SCHEME=hardware
 if [ -z "$O_HOST" ] && [ "$SCHEME" = hardware ] && [ -x "$DERIVE" ]; then
     if HN_DERIVED=$("$DERIVE" --no-probe 2>/dev/null) && valid_hostname "$HN_DERIVED"; then
         HN="$HN_DERIVED"

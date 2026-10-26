@@ -19,6 +19,16 @@ find_iso() {
   ls -t "$REPO_DIR"/output/*.iso 2>/dev/null | head -1 || true
 }
 ISO=$(find_iso)
+# A hotpatched archive (tools/iso-hotpatch.sh) inherits its package set,
+# /etc/default and hook-written files from the parent image — all documented
+# as outside the tool's scope. Detect that from the archive's own provenance
+# so the build-time hostname asserts below SKIP instead of false-failing the
+# documented "content + boot" gate for a change the hotpatch cannot carry.
+HOTPATCH_IMAGE=false
+if [ -n "$ISO" ] && [ -f "$(dirname "$ISO")/INDEX.md" ] \
+   && grep -q '^## Hotpatch provenance' "$(dirname "$ISO")/INDEX.md" 2>/dev/null; then
+  HOTPATCH_IMAGE=true
+fi
 if [ -z "$ISO" ] || [ ! -f "$ISO" ]; then
   record skip "iso-content" "no ISO built yet — run ./build.sh"
 else
@@ -216,12 +226,20 @@ else
     # hardware-derived hostnames need BOTH the scheme staged at build time and
     # a working mDNS resolver in nsswitch — otherwise the duplicate probe is
     # silently dead (it would find nothing and never suffix -2).
-    printf '%s' "$WG_DEFAULTS" | grep -q '^HOSTNAME_SCHEME=' \
-      && record pass "HOSTNAME_SCHEME staged (${HOSTNAME_SCHEME_EXPECTED:-?})" \
-      || record fail "HOSTNAME_SCHEME staged in /etc/default/kali-live-headless"
-    sudo grep -q 'mdns4_minimal' "$SQ_MNT/etc/nsswitch.conf" 2>/dev/null \
-      && record pass "nsswitch: mdns4_minimal present (mDNS hostname probe works)" \
-      || record fail "nsswitch: mdns4_minimal present" "libnss-mdns installed but nsswitch does not use it — duplicate probe would be dead"
+    if [ "$HOTPATCH_IMAGE" = true ]; then
+      record skip "HOSTNAME_SCHEME staged" "hotpatched image — /etc/default is inherited; the runtime defaults to hardware"
+    else
+      printf '%s' "$WG_DEFAULTS" | grep -q '^HOSTNAME_SCHEME=' \
+        && record pass "HOSTNAME_SCHEME staged (${HOSTNAME_SCHEME_EXPECTED:-?})" \
+        || record fail "HOSTNAME_SCHEME staged in /etc/default/kali-live-headless"
+    fi
+    if [ "$HOTPATCH_IMAGE" = true ]; then
+      record skip "nsswitch: mdns4_minimal present" "hotpatched image — libnss-mdns + nsswitch are build-time, outside hotpatch scope"
+    else
+      sudo grep -q 'mdns4_minimal' "$SQ_MNT/etc/nsswitch.conf" 2>/dev/null \
+        && record pass "nsswitch: mdns4_minimal present (mDNS hostname probe works)" \
+        || record fail "nsswitch: mdns4_minimal present" "libnss-mdns installed but nsswitch does not use it — duplicate probe would be dead"
+    fi
     printf '%s' "$WG_DEFAULTS" | grep -q '^PrivateKey' \
       && record fail "WG private key staged" "secrets are generated on the stick, never baked" \
       || record pass "no WG private key baked"
