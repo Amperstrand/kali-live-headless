@@ -37,6 +37,20 @@ else
   record pass "overlay free of bytecode"
 fi
 
+# A hook live-build cannot execute is silently skipped, so the image ships
+# without the step and nothing complains (AGENTS #16: derive_identity.py was
+# 100644 for ten builds and never ran). Every hook in the overlay must be +x;
+# the reproducibility hooks are the newest members of that class.
+for f in "$REPO_DIR"/overlay/kali-config/common/hooks/live/*.hook.chroot \
+         "$REPO_DIR"/overlay/kali-config/common/hooks/build/*.hook.*; do
+  [ -f "$f" ] || continue
+  if [ -x "$f" ]; then
+    record pass "hook executable: $(basename "$f")"
+  else
+    record fail "hook executable: $(basename "$f")" "chmod +x it — live-build skips non-executable hooks"
+  fi
+done
+
 # POSIX-sh runtime guard. bash -n happily accepts bashisms in #!/bin/sh
 # scripts, and dash only reports them at RUNTIME ("Bad substitution") — build
 # #11 booted with provision dead on every machine because of \${MODE//\"/}.
