@@ -237,7 +237,7 @@ if [ -f "$REPO_DIR/.git" ]; then
 else
   rsync -a --delete --info=stats1 \
     --exclude 'output/' --exclude 'build/' --exclude '.git/index.lock' \
-    -e "ssh -o BatchMode=yes" "$REPO_DIR/" "$HOST:$ROOT/src/" \
+    -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" "$REPO_DIR/" "$HOST:$ROOT/src/" \
     || die "rsync failed"
 fi
 rsync -a -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" "$REPO_DIR/config" "$HOST:$ROOT/src/config" || die "config copy failed"
