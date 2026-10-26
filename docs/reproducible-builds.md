@@ -173,8 +173,13 @@ What a pooled build does:
 A later build can then resolve from local disk:
 
 ```
-./build.sh --mirror-chroot "file://$KLH_DEB_POOL/repo/b36"
+BUILD_MIRROR="file://$KLH_DEB_POOL/repo/b36" ./build.sh
 ```
+
+(`-m/--mirror` becomes `--parent-mirror-bootstrap`, `--mirror-bootstrap`,
+`--mirror-chroot` and `--mirror-debian-installer` — upstream deliberately does
+**not** set `--mirror-binary`, so the shipped image keeps its public
+`/etc/apt/sources.list` and a local pool never leaks into a release.)
 
 Caveats, stated plainly:
 - the generated `Release` is **not GPG-signed**, so a consumer needs
