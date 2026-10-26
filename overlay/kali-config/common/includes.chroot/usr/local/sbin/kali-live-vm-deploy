@@ -1,0 +1,461 @@
+#!/bin/sh
+# kali-live-vm-deploy — provision one internet-reachable guest, end to end.
+#
+# One command creates the volume, writes a cloud-init seed carrying YOUR
+# SSH keys (plus a host management key), defines and starts the domain,
+# pins the guest's egress into the WireGuard tunnel, opens exactly one
+# inbound port through kali-live-vm-forward, and verifies the result.
+#
+# Usage:
+#   kali-live-vm-deploy --id NAME --cores N --ram-gb N --disk-gb N \
+#                       [--ssh-key KEY_OR_FILE]... [--guest-user debian] \
+#                       [--port N] [--image-url URL] [--cpu MODEL] \
+#                       [--format raw|qcow2] [--no-egress] [--wait SECONDS]
+#   kali-live-vm-deploy --restore --id NAME
+#
+#   --ssh-key        public key literal ("ssh-ed25519 AAAA... comment") or a
+#                    path to a .pub file. Repeatable. At least one is
+#                    required; the host's own management key is always added
+#                    so the platform can verify and maintain the guest.
+#   --guest-user     login user created by cloud-init (default: debian).
+#   --port           external port for guest SSH on the tunnel (wg0). Picked
+#                    automatically from 22023 upward when omitted.
+#   --image-url      cloud image (default: Debian 13 genericcloud).
+#   --cpu            CPU model for virt-install (default: max). NEVER use
+#                    host/host-passthrough on a hybrid-Intel host: the guest
+#                    triple-faults before the kernel prints (2026-10-26).
+#   --no-egress      do not route the guest subnet into wg0 (guest keeps the
+#                    host's own uplink; only choose this deliberately).
+#   --restore        re-define and start an existing guest from the domain
+#                    XML kept on the store (survives a live-session reboot).
+#   --adopt          take over a guest that was created by hand or by an older
+#                    image: save its domain XML, move a RAM-only seed ISO onto
+#                    the store, and write the .deploy/.env state so --restore
+#                    and --verify work on it.
+#
+# Everything the guest needs is derived, not typed: the tunnel address is
+# the hub's derivation of this host's WireGuard public key, the guest subnet
+# comes from libvirt's virbr0 route, and the external port is picked free.
+#
+# State written for the caller (tools/vm-deploy.sh parses it):
+#   /run/kali-live-headless/vm-<id>.env    volatile (this boot)
+#   <store>/<id>.deploy                    persistent copy on the NTFS store
+#   <store>/<id>.xml                       domain XML -> `--restore`
+# The guest disk, its seed ISO and this metadata all live on the NTFS store,
+# so a reboot of the live image loses only the running domain, not the guest.
+
+set -u
+
+TAG=kali-live-vmhost
+STORE_MNT=/mnt/klh-vmstore
+STORE_DIR=$STORE_MNT/vms
+CACHE_DIR=/var/cache/kali-live-headless
+RUN_DIR=/run/kali-live-headless
+HOST_KEY=/var/lib/kali-live-headless/vmhost-ed25519
+DEFAULT_IMAGE=https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
+WG_IF=wg0
+SBIN=/usr/local/sbin
+
+usage() { sed -n '2,/# Everything the guest needs/p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+log()  { logger -t "$TAG" -- "$*" 2>/dev/null || true; printf '%s\n' "$*" >&2; }
+die()  { log "ERROR: $*"; exit 1; }
+say()  { printf '%s\n' "$*"; }
+
+ID="" CORES="" RAM_GB="" DISK_GB="" GUEST_USER=debian PORT="" IMAGE_URL=$DEFAULT_IMAGE
+CPU=Skylake-Client FORMAT=raw EGRESS=wg0 WAIT=240 RESTORE=false ADOPT=false
+KEYS=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --id)            ID=${2:?}; shift 2 ;;
+        --cores)         CORES=${2:?}; shift 2 ;;
+        --ram-gb)        RAM_GB=${2:?}; shift 2 ;;
+        --disk-gb)       DISK_GB=${2:?}; shift 2 ;;
+        --ssh-key)       KEYS="$KEYS
+${2:?}"; shift 2 ;;
+        --ssh-keys-file) KEYS="$KEYS
+$(cat "${2:?}" 2>/dev/null)"; shift 2 ;;
+        --guest-user)    GUEST_USER=${2:?}; shift 2 ;;
+        --port)          PORT=${2:?}; shift 2 ;;
+        --image-url)     IMAGE_URL=${2:?}; shift 2 ;;
+        --cpu)           CPU=${2:?}; shift 2 ;;
+        --format)        FORMAT=${2:?}; shift 2 ;;
+        --no-egress)     EGRESS=none; shift ;;
+        --wait)          WAIT=${2:?}; shift 2 ;;
+        --restore)       RESTORE=true; shift ;;
+        --adopt)         ADOPT=true; shift ;;
+        -h|--help)       usage ;;
+        *) echo "kali-live-vm-deploy: unknown option: $1" >&2; usage ;;
+    esac
+done
+
+# ---------------------------------------------------------------- validate
+[ "$(id -u)" = 0 ] || die "must run as root (libvirt, wireguard, firewall)"
+case "$ID" in
+    '') die "--id is required" ;;
+esac
+printf '%s' "$ID" | grep -Eq '^[a-z0-9][a-z0-9-]{0,47}$' \
+    || die "--id must match [a-z0-9][a-z0-9-]{0,47}"
+case "$GUEST_USER" in ''|*[!a-z0-9_-]*) die "--guest-user must be a simple login name" ;; esac
+
+# ---------------------------------------------------------------- helpers
+# guest subnet as a CIDR, straight from libvirt's own route (never hardcoded)
+guest_net() { ip -4 route show dev virbr0 scope link 2>/dev/null | awk 'NR==1{print $1}'; }
+
+# first free external port at or above 22023, judged by the forward registry
+pick_port() {
+    _p=22023
+    _used=$($SBIN/kali-live-vm-forward list 2>/dev/null)
+    while [ "$_p" -lt 22100 ]; do
+        printf '%s\n' "$_used" | grep -q "ext port $_p on" || { echo "$_p"; return 0; }
+        _p=$((_p + 1))
+    done
+    return 1
+}
+
+key_lines() { # print the key block with the host management key appended
+    printf '%s\n' "$KEYS" | sed '/^[[:space:]]*$/d'
+    cat "$HOST_KEY.pub"
+}
+
+ensure_host_key() {
+    if [ ! -f "$HOST_KEY" ]; then
+        install -d -m 0700 "$(dirname "$HOST_KEY")"
+        ssh-keygen -t ed25519 -N '' -C "kali-live-vmhost@$(hostname)" -f "$HOST_KEY" -q \
+            || die "could not generate the host management key"
+        log "generated host management key $HOST_KEY"
+    fi
+    chmod 600 "$HOST_KEY"
+}
+
+ensure_store() {
+    if ! virsh -c qemu:///system pool-info klh-vmstore >/dev/null 2>&1; then
+        systemctl start kali-live-vmstore-mount 2>/dev/null || true
+        sleep 2
+        virsh -c qemu:///system pool-info klh-vmstore >/dev/null 2>&1 \
+            || die "NTFS store not mounted / pool not active — configure vm-store.conf on KLHCONFIG (docs/vm-store-hw-validation.md)"
+    fi
+    [ -d "$STORE_DIR" ] || die "store directory $STORE_DIR is missing"
+}
+
+ensure_wg0() {
+    ip link show "$WG_IF" >/dev/null 2>&1 && return 0
+    if [ -f "/etc/wireguard/$WG_IF.conf" ]; then
+        wg-quick up "$WG_IF" >/dev/null 2>&1 || return 1
+    fi
+    ip link show "$WG_IF" >/dev/null 2>&1
+}
+
+ensure_egress() {
+    [ "$EGRESS" = wg0 ] || return 0
+    if ! ensure_wg0; then
+        log "WARNING: $WG_IF is down — guest egress stays on the host uplink"
+        log "         (bring the tunnel up first; see docs/vm-deploy.md)"
+        return 1
+    fi
+    _net=$(guest_net)
+    [ -n "$_net" ] || die "cannot determine the guest subnet from virbr0"
+    ip route show table 100 2>/dev/null | grep -q '^default' \
+        || ip route add default dev "$WG_IF" table 100 || die "ip route table 100 failed"
+    # guest <-> host traffic (DHCP, local DNS) must NOT be dragged into the tunnel
+    ip rule show | grep -q "from $_net to $_net lookup main" \
+        || ip rule add from "$_net" to "$_net" lookup main priority 90 || die "ip rule (local) failed"
+    ip rule show | grep -q "from $_net lookup 100" \
+        || ip rule add from "$_net" lookup 100 priority 100 || die "ip rule (egress) failed"
+    return 0
+}
+
+guest_ip() {
+    virsh -c qemu:///system domifaddr "$ID" --source lease 2>/dev/null \
+        | awk '/ipv4/ {print $4}' | cut -d/ -f1 | head -1
+}
+
+wait_ssh() { # $1=ip -> 0 when the host key can log in
+    _i=0
+    while [ "$_i" -lt "$WAIT" ]; do
+        if ssh -i "$HOST_KEY" -o BatchMode=yes -o StrictHostKeyChecking=no \
+               -o UserKnownHostsFile=/dev/null -o ConnectTimeout=4 \
+               -o LogLevel=ERROR "$GUEST_USER@$1" true 2>/dev/null; then
+            return 0
+        fi
+        sleep 5
+        _i=$((_i + 5))
+    done
+    return 1
+}
+
+write_state() { # $1=ip $2=port
+    install -d -m 0755 "$RUN_DIR"
+    _body="ID=$ID
+GUEST_USER=$GUEST_USER
+GUEST_IP=$1
+EXT_PORT=$2
+CORES=$CORES
+RAM_GB=$RAM_GB
+DISK_GB=$DISK_GB
+CPU=$CPU
+EGRESS=$EGRESS
+STICK_WG_PUB=$(wg show "$WG_IF" public-key 2>/dev/null || echo '')
+STICK_WG_IP=$(ip -4 -o addr show "$WG_IF" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+CREATED=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf '%s\n' "$_body" > "$RUN_DIR/vm-$ID.env"
+    printf '%s\n' "$_body" > "$STORE_DIR/$ID.deploy" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------- adopt
+# For a guest that predates this tool (or was built by hand): record the same
+# state a deploy would, so --restore / --verify / the state files work on it.
+# Also rescues the pre-tool habit of keeping the NoCloud seed in /tmp (RAM):
+# the seed is copied onto the store and the saved domain XML re-pointed at it,
+# otherwise the guest cannot be re-defined after a reboot.
+if [ "$ADOPT" = true ]; then
+    ensure_store
+    virsh -c qemu:///system dominfo "$ID" >/dev/null 2>&1 || die "no domain '$ID' to adopt"
+    virsh -c qemu:///system dumpxml --inactive "$ID" > "$STORE_DIR/$ID.xml" 2>/dev/null \
+        || die "could not save the domain XML"
+    _seed=$(sed -n "s|.*<source file='\([^']*seed[^']*\.iso\)'/>.*|\1|p" "$STORE_DIR/$ID.xml" | head -1)
+    case "$_seed" in
+        "$STORE_DIR"/*|'') ;;
+        *)
+            if [ -f "$_seed" ]; then
+                cp -f "$_seed" "$STORE_DIR/$ID-seed.iso" \
+                    && sed -i "s|$_seed|$STORE_DIR/$ID-seed.iso|g" "$STORE_DIR/$ID.xml" \
+                    && virsh -c qemu:///system define "$STORE_DIR/$ID.xml" >/dev/null 2>&1 \
+                    && log "seed ISO copied to the store ($STORE_DIR/$ID-seed.iso) and re-pointed"
+            else
+                log "WARNING: seed source $_seed is missing; the saved XML will not start"
+            fi
+            ;;
+    esac
+    _ip=$(guest_ip)
+    _port=${PORT:-}
+    if [ -z "$_port" ] && [ -n "$_ip" ]; then
+        _port=$($SBIN/kali-live-vm-forward list 2>/dev/null \
+            | awk -v ip="$_ip" 'index($0, ip) {for (i = 1; i < NF; i++) if ($i == "port") print $(i + 1)}' \
+            | head -1)
+    fi
+    [ -n "$_ip" ] || _ip=$(sed -n 's/^GUEST_IP=//p' "$STORE_DIR/$ID.deploy" 2>/dev/null)
+    [ -n "$_port" ] && [ -n "$_ip" ] \
+        && { $SBIN/kali-live-vm-forward add "$ID-ssh" "$_ip" 22 "$_port" >/dev/null 2>&1 || true; }
+    CORES=$(virsh -c qemu:///system dominfo "$ID" 2>/dev/null | sed -n 's/^CPU(s):[[:space:]]*//p')
+    RAM_GB=$(virsh -c qemu:///system dominfo "$ID" 2>/dev/null | sed -n 's/^Max memory:[[:space:]]*\([0-9]*\).*/\1/p')
+    [ -n "${RAM_GB:-}" ] && RAM_GB=$((RAM_GB / 1048576))
+    DISK_GB=$(du -BG --apparent-size "$STORE_DIR/$ID.image" 2>/dev/null | cut -f1 | tr -d 'G')
+    write_state "$_ip" "$_port"
+    say "adopted $ID ($GUEST_USER@$_ip, external port ${_port:-none})"
+    say "  state: $STORE_DIR/$ID.{deploy,xml}   restore: kali-live-vm-deploy --restore --id $ID"
+    exit 0
+fi
+
+# ---------------------------------------------------------------- restore
+if [ "$RESTORE" = true ]; then
+    ensure_store
+    [ -f "$STORE_DIR/$ID.xml" ] || die "no saved domain XML at $STORE_DIR/$ID.xml — nothing to restore"
+    if virsh -c qemu:///system dominfo "$ID" >/dev/null 2>&1; then
+        virsh -c qemu:///system domstate "$ID" 2>/dev/null | grep -q running \
+            || virsh -c qemu:///system start "$ID" || die "could not start $ID"
+    else
+        virsh -c qemu:///system define "$STORE_DIR/$ID.xml" >/dev/null || die "virsh define failed"
+        virsh -c qemu:///system start "$ID" >/dev/null || die "virsh start failed"
+    fi
+    ensure_egress || true
+    _ip=$(guest_ip)
+    [ -n "$_ip" ] || _ip=$(sed -n 's/^GUEST_IP=//p' "$STORE_DIR/$ID.deploy" 2>/dev/null)
+    _port=$(sed -n 's/^EXT_PORT=//p' "$STORE_DIR/$ID.deploy" 2>/dev/null)
+    [ -n "$_port" ] && { $SBIN/kali-live-vm-forward add "$ID-ssh" "$_ip" 22 "$_port" >/dev/null 2>&1 || true; }
+    write_state "$_ip" "$_port"
+    say "restored $ID ($GUEST_USER@$_ip, external port ${_port:-none})"
+    exit 0
+fi
+
+# ---------------------------------------------------------------- fresh guest
+case "$CORES"   in ''|*[!0-9]*) die "--cores is required (positive integer)" ;; esac
+case "$RAM_GB"  in ''|*[!0-9]*) die "--ram-gb is required (positive integer)" ;; esac
+case "$DISK_GB" in ''|*[!0-9]*) die "--disk-gb is required (positive integer)" ;; esac
+case "$FORMAT"  in raw|qcow2) ;; *) die "--format must be raw or qcow2" ;; esac
+
+ensure_store
+ensure_host_key
+[ -n "$(key_lines | head -1)" ] || die "at least one --ssh-key is required (otherwise nobody can log in)"
+
+# keys: literals pass through, paths are read (one per LINE — a key is
+# "ssh-ed25519 AAAA... comment", three words, so IFS must not split on space)
+_norm=""
+_oldifs=$IFS
+IFS='
+'
+for _k in $KEYS; do
+    case "$_k" in
+        ssh-*|ecdsa-*|sk-*) _norm="$_norm
+$_k" ;;
+        */*|*.pub) [ -r "$_k" ] || die "cannot read key file: $_k"
+                   _norm="$_norm
+$(cat "$_k")" ;;
+        '') ;;
+        *) die "not a public key and not a readable file: $_k" ;;
+    esac
+done
+IFS=$_oldifs
+KEYS=$_norm
+
+# volume (reuse kali-live-vm-create: its guards, its .meta sidecar)
+VOL="$STORE_DIR/$ID.image"
+[ -f "$VOL" ] && die "guest '$ID' already exists ($VOL) — pick another --id or kali-live-vm-rm it first"
+$SBIN/kali-live-vm-create --id "$ID" --cores "$CORES" --ram-gb "$RAM_GB" \
+    --disk-gb "$DISK_GB" --format "$FORMAT" >/dev/null \
+    || die "kali-live-vm-create refused (see journal)"
+
+# cloud image (cached; a fresh download is the only slow part)
+install -d -m 0755 "$CACHE_DIR"
+IMG="$CACHE_DIR/$(basename "$IMAGE_URL")"
+if [ ! -s "$IMG" ]; then
+    log "downloading $IMAGE_URL"
+    curl -fsSL --retry 3 -o "$IMG.part" "$IMAGE_URL" || die "image download failed"
+    mv "$IMG.part" "$IMG"
+fi
+qemu-img info "$IMG" >/dev/null 2>&1 || die "cached image is not a valid disk: $IMG"
+
+say "writing $ID image from $(basename "$IMG") ..."
+qemu-img convert -O raw "$IMG" "$VOL" || die "qemu-img convert failed"
+qemu-img resize "$VOL" "${DISK_GB}G" >/dev/null 2>&1 || true
+
+# NoCloud seed: keys + hardening. The guest pins its resolvers to public DNS
+# routed through the tunnel and disables DHCP-provided DNS, so no query can
+# fall back to the host's or the site's resolver.
+SEEDDIR="$RUN_DIR/seed-$ID"
+install -d -m 0700 "$SEEDDIR"
+{
+    printf '#cloud-config\nhostname: %s\n' "$ID"
+    printf 'users:\n  - name: %s\n    shell: /bin/bash\n    sudo: ALL=(ALL) NOPASSWD:ALL\n' "$GUEST_USER"
+    printf '    lock_passwd: false\n    ssh_authorized_keys:\n'
+    key_lines | sed 's/^/      - /'
+    cat <<'CLOUD'
+ssh_pwauth: false
+growpart: {mode: auto, devices: ["/dev/vda"]}
+resize_rootfs: true
+write_files:
+  - path: /usr/local/sbin/klh-guest-hardening
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      # platform baseline: key-only sshd, resolvers pinned away from the host
+      set -e
+      sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/;s/^#*PasswordAuthentication.*/PasswordAuthentication no/;s/^#*PermitEmptyPasswords.*/PermitEmptyPasswords no/' /etc/ssh/sshd_config
+      systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+      install -d /etc/systemd/resolved.conf.d
+      printf '[Resolve]\nDNS=9.9.9.9 149.112.112.112\nFallbackDNS=9.9.9.9 149.112.112.112\nDomains=~.\n' \
+        > /etc/systemd/resolved.conf.d/90-platform-dns.conf
+      IF=$(ip route show default | awk '{print $5}' | head -1)
+      if [ -n "$IF" ]; then
+        install -d "/etc/systemd/network/10-netplan-$IF.network.d"
+        printf '[DHCPv4]\nUseDNS=no\n' > "/etc/systemd/network/10-netplan-$IF.network.d/90-nodns.conf"
+        resolvectl dns "$IF" 9.9.9.9 149.112.112.112 2>/dev/null || true
+        resolvectl domain "$IF" '~.' 2>/dev/null || true
+      fi
+      systemctl restart systemd-resolved 2>/dev/null || true
+      systemctl enable --now systemd-timesyncd 2>/dev/null || true
+runcmd:
+  - /usr/local/sbin/klh-guest-hardening
+CLOUD
+} > "$SEEDDIR/user-data"
+printf 'instance-id: %s-%s\nlocal-hostname: %s\n' "$ID" "$(date +%s)" "$ID" > "$SEEDDIR/meta-data"
+SEED="$STORE_DIR/$ID-seed.iso"
+xorriso -as mkisofs -V cidata -joliet -rock -o "$SEED" "$SEEDDIR" >/dev/null 2>&1 \
+    || die "xorriso could not build the seed ISO"
+
+# domain: generated by virt-install, not hand-written (2026-10-26 lesson).
+#
+# THE BOOT BLOCKER: a q35 domain with NO video device hangs forever in BIOS
+# option-ROM init — `--graphics none` alone omits <video>, and the symptom is
+# brutal to read: GRUB prints "Booting `Debian GNU/Linux'" and the machine
+# reboots in a loop (~1 core busy, zero serial output, no DHCP, and the vCPU
+# parked in 32-bit code with EDX=0xcf8 = PCI config port). `--video vga`
+# keeps a display device without a listener and the guest boots normally.
+# Do not drop --video, and do not "simplify" this into a hand-written XML.
+#
+# --cpu MODEL,check=none is what stops the hybrid-Intel triple fault (plain
+# `--cpu host` resolves to check='full' and resets the guest before the
+# kernel prints anything). --print-xml keeps the XML as our artifact: we
+# define from a file we own, so --restore can replay it verbatim.
+if [ "$CPU" = host-model ]; then
+    CPU_ARG="$CPU"
+else
+    CPU_ARG="$CPU,check=none"
+fi
+virt-install --print-xml 1 --connect qemu:///system --name "$ID" \
+    --memory "$((RAM_GB * 1024))" --vcpus "$CORES" \
+    --cpu "$CPU_ARG" \
+    --disk "path=$VOL,format=$FORMAT,bus=virtio,cache=writeback,discard=unmap" \
+    --disk "path=$SEED,device=cdrom,bus=sata" \
+    --network network=default,model=virtio \
+    --graphics none --video vga --console pty,target_type=serial \
+    --rng /dev/urandom --osinfo detect=on,name=debian13 \
+    --boot hd --import --check all=off \
+    > "$STORE_DIR/$ID.xml" || die "virt-install --print-xml failed"
+
+# virt-install (or libvirt's mitigation heuristics) may add
+# <feature policy='require' name='ibpb|md-clear|spec-ctrl|ssbd'/> to the CPU.
+# Keep the request minimal — the bare model is the form this host is proven
+# with (guest-side mitigations come from the guest kernel anyway). This was
+# NOT the boot blocker (the missing video device was), but a long feature
+# list on a hybrid Intel CPU is exactly the class of thing that resets a
+# guest, so it stays out of the definition.
+python3 - "$STORE_DIR/$ID.xml" <<'PY' || die "could not normalize the CPU element"
+import re, sys
+p = sys.argv[1]
+s = open(p).read()
+m = re.search(r'<cpu\b[^>]*>.*?</cpu>', s, re.S)
+if m:
+    block = re.sub(r'\s*<feature\b[^>]*/>', '', m.group(0))
+    s = s.replace(m.group(0), block)
+open(p, 'w').write(s)
+PY
+
+virsh -c qemu:///system define "$STORE_DIR/$ID.xml" >/dev/null || die "virsh define failed"
+virsh -c qemu:///system start "$ID" >/dev/null || die "virsh start failed"
+
+say "waiting for $ID to come up (cloud-init, up to ${WAIT}s) ..."
+_ip=""
+_i=0
+while [ "$_i" -lt "$WAIT" ]; do
+    _ip=$(guest_ip)
+    [ -n "$_ip" ] && break
+    sleep 5; _i=$((_i + 5))
+done
+[ -n "$_ip" ] || die "no DHCP lease for $ID after ${WAIT}s — check: virsh console $ID"
+wait_ssh "$_ip" || die "guest booted ($_ip) but the host key cannot log in after ${WAIT}s — check cloud-init"
+
+# egress + one inbound port
+_net_status="host-uplink"
+ensure_egress && _net_status="via $WG_IF (hub)"
+_port=${PORT:-$(pick_port)} || die "no free external port in 22023-22099"
+$SBIN/kali-live-vm-forward add "$ID-ssh" "$_ip" 22 "$_port" >/dev/null 2>&1 \
+    || die "$SBIN/kali-live-vm-forward add failed"
+write_state "$_ip" "$_port"
+
+# in-guest verification (facts, not promises)
+_verify=$(ssh -i "$HOST_KEY" -o BatchMode=yes -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null -o ConnectTimeout=6 -o LogLevel=ERROR \
+    "$GUEST_USER@$_ip" '
+    echo "vcpus=$(nproc)"
+    echo "mem_gb=$(awk "/MemTotal/{printf \"%d\", \$2/1048576}" /proc/meminfo)"
+    echo "root_free=$(df -h / | awk "NR==2{print \$4}")"
+    echo "egress_ip=$(curl -sS -m 8 https://ifconfig.me 2>/dev/null || echo unknown)"
+    echo "dns=$(resolvectl status 2>/dev/null | awk "/Current DNS Server/{print \$4; exit}")"
+    echo "sshd_pwauth=$(sudo -n sshd -T 2>/dev/null | awk "/^passwordauthentication/{print \$2}")"' 2>/dev/null)
+
+say ""
+say "=============================================================="
+say " guest:   $ID"
+say " login:   ssh -p $_port $GUEST_USER@<hub>   (guest stays on $_ip behind the tunnel)"
+say " address: $_ip (virbr0)"
+say " spec:    ${CORES} vCPU / ${RAM_GB} GB RAM / ${DISK_GB} GB disk ($FORMAT)"
+say " egress:  $_net_status"
+say " tunnel:  $(ip -4 -o addr show "$WG_IF" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)  pub $(wg show "$WG_IF" public-key 2>/dev/null)"
+say "--------------------------------------------------------------"
+printf '%s\n' "$_verify" | sed 's/^/ /'
+say "--------------------------------------------------------------"
+say " state:   $RUN_DIR/vm-$ID.env  +  $STORE_DIR/$ID.{deploy,xml}"
+say " next:    hub side -> tools/hub-enroll-stick.sh + tools/hub-vm-forward.sh"
+say "          (tools/vm-deploy.sh does both automatically)"
+say "=============================================================="
