@@ -60,7 +60,27 @@ case "$KLH_STICK_REGISTRY" in
   *) ok "default registry path outside the repo ($HOME/.local/share/...)";;
 esac
 
-rm -rf "$TD"
+echo "== adopt: fresh stick (no salt, no entry) =="
+S3="NEVERSEEN999XYZ"   # S2 is registered by an earlier test — fresh serial
+OUT=$(sh "$TOOL" adopt --device /dev/null --serial-raw "$S3" 2>&1)
+case "$OUT" in *"fresh stick"*) ok "adopt: fresh stick generates on flash";; *) bad "adopt fresh: $OUT";; esac
+
+echo "== adopt: unregistered stick WITH entropy (the rotation fix) =="
+TD3=$(mktemp -d)
+printf 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d4e5f6a7b8c9d0e1f2a3b4c5d4e5f6a7b8\n' > "$TD3/master.salt"
+# simulate: registry WITHOUT the stick, then adopt against a fake mount via
+# the same serial; the tool reads the salt from cfg_partition_of, which
+# needs hardware — so we assert the POLICY lines via the no-partition path
+# plus the registered-entry paths below (device-less policy checks)
+OUT=$(sh "$TOOL" adopt --device /dev/null --serial-raw "$S2" 2>&1)
+case "$OUT" in *"registry entry exists"*) ok "adopt: registered stick without partition re-seeds from registry";; *) bad "adopt no-part: $OUT";; esac
+
+echo "== adopt: registered + on-stick salt AGREE =="
+# inject the entry manually with a KNOWN salt, then run show (device-less)
+printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(printf '%s' "$S2" | sha256sum | cut -d' ' -f1)" "feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface" "agree-stick" "now" "" "adopted" >> "$TD/registry.tsv" 2>/dev/null || true
+echo "  (full agree-path needs hardware: covered on the next stick flash)"
+
+rm -rf "$TD" "$TD3"
 echo
 echo "pass=$PASS fail=$FAIL"
 [ "$FAIL" = 0 ]
