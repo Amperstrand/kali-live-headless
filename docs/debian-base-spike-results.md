@@ -6,9 +6,11 @@ Brief: `SPIKE-BRIEF.md`. Prediction under test: `docs/vmhost-base-os-research.md
 ## Verdict
 
 **ACCEPTED.** `BASE=debian ./build.sh` produces a bootable Debian trixie
-live ISO with the full headless stack; the BIOS boot-gate is green
-(**VERDICT PASS 276/0/1**, `output/test-run-b2.log`), and BASE=kali is
-regression-free (static 144/0 = baseline 136/0 + 8 new adapter asserts).
+live ISO with the full headless stack. **Full gate minus uefi, ALL GREEN**:
+bios **276/0/1**, override **262/0/1**, forensic **277/0/1**, vmstore
+**249/0/2** (logs `output/test-run-b2*.log`; uefi not run — no x86 OVMF on
+this host). BASE=kali is regression-free (static 144/0 = baseline 136/0 +
+8 new adapter asserts).
 
 ## What was built
 
@@ -106,10 +108,13 @@ the engine in seconds so the property is enforced, not remembered.
 
 ## Known gaps / follow-ups
 
-- **UEFI/override/forensic/vmstore stages not yet run on the Debian ISO**
-  (brief set BIOS as the gate minimum). OVMF wasn't available to the
-  earlier uefi attempts on this host; the direct-kernel stages should be
-  trivially portable but are unproven — run the full gate before any flash.
+- **UEFI stage not run on the Debian ISO**: this host has no x86 OVMF
+  firmware (uefi skips with a note). Every other stage is green; run the
+  uefi gate on an OVMF-equipped host before any flash.
+- **vmstore stage partially skipped**: the HOST could not populate its
+  NTFS witness fixture (host `ntfs3` mount failed — host limitation, not
+  image); the in-image vmstore decision-logic unit tests all ran green
+  and the override stage proved the KLHCONFIG disk path on Debian.
 - **d-i diet**: `--debian-installer none` → ~1.0–1.1G estimate.
 - **Firmware diet round 2**: drop `firmware-misc-nonfree` → ~150M.
 - `tools/iso-hotpatch.sh` / `suite-parallel.sh` still hardcode kali ISO
