@@ -222,32 +222,6 @@ klh_distro_prepare_upstream
 KLH_COMMON="$UPSTREAM_DIR/kali-config/common"
 mkdir -p "$KLH_COMMON"
 
-# ------------------------------------------------- apt cache (warm builds)
-# Upstream's build.sh ENDS with `cleanup_fs` (its line 629: rm -rf cache/
-# chroot/ config/ ... after EVERY successful build) — live-build's own
-# cache/packages.chroot persistence never survives to the next build, and
-# two post-flight harvest designs missed the window (v26: harvested a dir
-# lb had cleaned; v27: 884 debs wiped at build end). The fix is a symlink:
-# lb populates cache/packages.chroot THROUGH the link into the dotdir,
-# cleanup_fs rm -rf's the symlink, and the dotdir persists — next build lb
-# re-reads the same content natively (no restore hook needed).
-mkdir -p "$UPSTREAM_DIR/.klh-apt-cache" "$UPSTREAM_DIR/cache" 2>/dev/null || true
-ln -sfn ../.klh-apt-cache "$UPSTREAM_DIR/cache/packages.chroot" 2>/dev/null || true
-# cap the persistent cache (full minimal set ~1200 debs / ~900MB; 4000
-# bounds disk while surviving several package-set experiments)
-if [ -d "$UPSTREAM_DIR/.klh-apt-cache" ]; then
-  # fail-proof count: `ls dir/*.deb | wc -l` under pipefail dies silently
-  # when the dir is empty (killed build #30 six minutes in — the block had
-  # never executed in a real build before, hotpatches skip build.sh)
-  _total=0
-  for _f in "$UPSTREAM_DIR/.klh-apt-cache"/*.deb; do
-    if [ -e "$_f" ]; then _total=$((_total + 1)); fi
-  done
-  if [ "$_total" -gt 4000 ]; then
-    ls -1t "$UPSTREAM_DIR/.klh-apt-cache"/*.deb 2>/dev/null | tail -n +"$((4000 + 1))" | while IFS= read -r _old; do rm -f "$_old"; done
-  fi
-fi
-
 klh_info "overlaying repo customizations into kali-config/common/"
 cp -a "$OVERLAY_DIR/." "$KLH_COMMON/"
 
