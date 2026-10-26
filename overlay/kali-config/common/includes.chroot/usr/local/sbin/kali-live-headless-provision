@@ -523,6 +523,19 @@ fi
 # still settle); the suite asserts the service is active and, in QEMU
 # (NAT'd pool reachable), that sync actually happened.
 if command -v timedatectl >/dev/null 2>&1; then
+    # systemd 262 skips systemd-timesyncd at sysinit on this live boot: the
+    # unit's ConditionResult is "no" at that moment (CAP_SYS_TIME and
+    # !container both evaluate true a minute later), and nothing ever retries
+    # it — so the stick boots with no clock and apt/TLS fail (measured
+    # 2026-10-26 on build #40: inactive/dead, zero journal lines, `systemctl
+    # start` then syncs in one second). `try-restart` below is a NO-OP on an
+    # inactive unit, which is why the earlier "restart it after writing the
+    # override" never revived it. Start it explicitly first.
+    if ! systemctl is-active --quiet systemd-timesyncd.service 2>/dev/null; then
+        systemctl start systemd-timesyncd.service 2>/dev/null \
+            && log "timesyncd was not running after boot — started it" \
+            || log "WARNING: could not start systemd-timesyncd"
+    fi
     if [ -n "$O_NTP" ]; then
         # Operator override (KLHCONFIG headless-wifi.conf: NTP_SERVERS=a,b)
         # — highest-priority drop-in; comma list to space list.
