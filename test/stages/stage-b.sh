@@ -62,26 +62,32 @@ else
     else
       record fail "base: .disk/info present"
     fi
-    if [ "$KLH_BASE" = debian ]; then
-      # THE port-proof assert: a Debian image with any kali-* package
-      # installed is a franken-build (stale adapter, stale apt cache).
-      # Count-zero discipline: dpkg status must be readable and non-empty
-      # first, or the zero is vacuous (AGENTS watch-list #12).
+    # ---- franken-build guard (adapter-owned): a base must never carry
+    # packages from ANOTHER base (stale adapter, stale apt cache). The
+    # forbidden prefix comes from the adapter — no base-conditional here.
+    # Count-zero discipline: dpkg status must be readable and non-empty
+    # first, or the zero is vacuous (AGENTS watch-list #12).
+    if [ -n "${KLH_DISTRO_FORBIDDEN_PKG_PREFIX:-}" ]; then
+      _fpfx="$KLH_DISTRO_FORBIDDEN_PKG_PREFIX"
       if sudo test -s "$SQ_MNT/var/lib/dpkg/status" \
          && [ "$(sudo grep -c '^Package: ' "$SQ_MNT/var/lib/dpkg/status" || true)" -gt 100 ]; then
-        _nkali=$(sudo grep -cE '^Package: kali-' "$SQ_MNT/var/lib/dpkg/status" || true)
-        if [ "$_nkali" = "0" ]; then
-          record pass "debian base: no kali-* packages installed"
+        _nforb=$(sudo grep -cE "^Package: ${_fpfx}" "$SQ_MNT/var/lib/dpkg/status" || true)
+        if [ "$_nforb" = "0" ]; then
+          record pass "$KLH_BASE base: no ${_fpfx}* packages installed"
         else
-          record fail "debian base: no kali-* packages installed" "$(sudo grep -m3 -E '^Package: kali-' "$SQ_MNT/var/lib/dpkg/status" | tr '\n' ' ')"
+          record fail "$KLH_BASE base: no ${_fpfx}* packages installed" "$(sudo grep -m3 -E "^Package: ${_fpfx}" "$SQ_MNT/var/lib/dpkg/status" | tr '\n' ' ')"
         fi
       else
-        record fail "debian base: no kali-* packages installed" "dpkg status unreadable — count would be vacuous"
+        record fail "$KLH_BASE base: no ${_fpfx}* packages installed" "dpkg status unreadable — count would be vacuous"
       fi
-      # the keyring swap must have reached the image (lb --keyring-packages)
-      sudo grep -A1 '^Package: debian-archive-keyring$' "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "Status: install ok installed" \
-        && record pass "debian base: debian-archive-keyring installed" \
-        || record fail "debian base: debian-archive-keyring installed"
+    fi
+    # the bootstrap keyring must have reached the image (lb
+    # --keyring-packages) — adapter-owned package name, asserted for BOTH
+    # bases (verified installed in kali #31 and debian #2 squashfs)
+    if [ -n "${KLH_DISTRO_KEYRING_PACKAGE:-}" ]; then
+      sudo grep -A1 "^Package: ${KLH_DISTRO_KEYRING_PACKAGE}\$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "Status: install ok installed" \
+        && record pass "$KLH_BASE base: $KLH_DISTRO_KEYRING_PACKAGE installed" \
+        || record fail "$KLH_BASE base: $KLH_DISTRO_KEYRING_PACKAGE installed"
     fi
 
     # NM profile
@@ -207,6 +213,15 @@ else
       fi
     done
     WG_DEFAULTS=$(sudo cat "$SQ_MNT/etc/default/kali-live-headless" 2>/dev/null || true)
+    # hardware-derived hostnames need BOTH the scheme staged at build time and
+    # a working mDNS resolver in nsswitch — otherwise the duplicate probe is
+    # silently dead (it would find nothing and never suffix -2).
+    printf '%s' "$WG_DEFAULTS" | grep -q '^HOSTNAME_SCHEME=' \
+      && record pass "HOSTNAME_SCHEME staged (${HOSTNAME_SCHEME_EXPECTED:-?})" \
+      || record fail "HOSTNAME_SCHEME staged in /etc/default/kali-live-headless"
+    sudo grep -q 'mdns4_minimal' "$SQ_MNT/etc/nsswitch.conf" 2>/dev/null \
+      && record pass "nsswitch: mdns4_minimal present (mDNS hostname probe works)" \
+      || record fail "nsswitch: mdns4_minimal present" "libnss-mdns installed but nsswitch does not use it — duplicate probe would be dead"
     printf '%s' "$WG_DEFAULTS" | grep -q '^PrivateKey' \
       && record fail "WG private key staged" "secrets are generated on the stick, never baked" \
       || record pass "no WG private key baked"
@@ -241,6 +256,7 @@ wireless-regdb
 iw
 iproute2
 avahi-daemon
+libnss-mdns
 curl
 git
 tmux
@@ -250,29 +266,29 @@ PKGS
     # Kali boot menu preserved (forensic + persistence entries intact)
     sudo test -f "$ISO_MNT/boot/grub/grub.cfg" && sudo grep -q "forensic mode" "$ISO_MNT/boot/grub/grub.cfg" && record pass "grub: forensic entry preserved" || record skip "grub: forensic entry preserved" "no grub.cfg?"
     sudo grep -rq "forensic" "$ISO_MNT/isolinux/" 2>/dev/null && record pass "isolinux: forensic entry preserved" || record skip "isolinux: forensic entry preserved" "no isolinux dir"
-    # variant: the metapackage set must MATCH the configured flavour — a
-    # minimal build carrying kali-linux-default (or vice versa) is a
-    # misconfiguration that silently quadruples the image
+    # variant: the metapackage set must MATCH the configured flavour — the
+    # exact packages are ADAPTER-owned (KLH_DISTRO_META_PKG_MINIMAL_ABSENT /
+    # KLH_DISTRO_BASELINE_PKG); no base-conditional lives here.
     if [ "$VARIANT_EXPECTED" = minimal ]; then
-      if [ "$KLH_BASE" = kali ]; then
-        if sudo grep -A1 "^Package: kali-linux-default$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "install ok installed"; then
-          record fail "variant minimal ships no kali-linux-default" "found it installed — check ./config VARIANT"
+      if [ -n "${KLH_DISTRO_META_PKG_MINIMAL_ABSENT:-}" ]; then
+        if sudo grep -A1 "^Package: ${KLH_DISTRO_META_PKG_MINIMAL_ABSENT}\$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "install ok installed"; then
+          record fail "variant minimal ships no $KLH_DISTRO_META_PKG_MINIMAL_ABSENT" "found it installed — check ./config VARIANT"
         else
-          record pass "variant minimal: kali-linux-default absent"
+          record pass "variant minimal: $KLH_DISTRO_META_PKG_MINIMAL_ABSENT absent"
         fi
-        if [ "$LEAN_EXPECTED" = true ]; then
-          # owner-approved 2026-10-24: kali-linux-core stays in lean — the
-          # big levers were firmware and tools, not the base
-          record pass "LEAN: base present (owner-approved)"
-        else
-          sudo grep -A1 "^Package: kali-linux-core$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "install ok installed" \
-            && record pass "variant minimal: kali-linux-core base present" || record fail "variant minimal: kali-linux-core base present"
-        fi
+      fi
+      if [ "$LEAN_EXPECTED" = true ] && [ -n "${KLH_DISTRO_BASELINE_PKG:-}" ]; then
+        # owner-approved 2026-10-24: the kali baseline stays in lean — the
+        # big levers were firmware and tools, not the base
+        record pass "LEAN: base present (owner-approved)"
+      elif [ -n "${KLH_DISTRO_BASELINE_PKG:-}" ]; then
+        sudo grep -A1 "^Package: ${KLH_DISTRO_BASELINE_PKG}\$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "install ok installed" \
+          && record pass "variant minimal: $KLH_DISTRO_BASELINE_PKG base present" || record fail "variant minimal: $KLH_DISTRO_BASELINE_PKG base present"
       else
-        # BASE=debian: the baseline IS the Debian standard set; the base
-        # identity asserts above (os-release, no-kali-packages) carry the
-        # variant proof here.
-        record pass "variant minimal: debian base set (see base identity asserts)"
+        # this base's minimal baseline is the distro standard set (no
+        # metapackage to carry); the base identity asserts above
+        # (os-release, franken-guard) carry the proof — lean or not
+        record pass "variant minimal: $KLH_BASE base set (see base identity asserts)"
       fi
     fi
     # TollGate client: static binary + trigger script + open-network profile

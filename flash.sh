@@ -128,17 +128,15 @@ flash_detect_base() {
   m="$(dirname "$ISO")/BUILD-MANIFEST.txt"
   if [ -r "$m" ]; then
     line=$(sed -n 's/^base[[:space:]]*: *//p' "$m" | head -1)
-    id=$(printf '%s' "$line" | sed -n 's/^\([a-z]*\).*/\1/p')
-    case "$id" in
-      kali|debian)
-        FLASH_BASE=$id
-        FLASH_BASE_DESC=$(printf '%s' "$line" | sed -n 's/^[a-z]* *(\(.*\))$/\1/p')
-        [ -n "$FLASH_BASE_DESC" ] || FLASH_BASE_DESC=$id
-        ;;
-      *)
-        [ -n "$line" ] && klh_warn "unrecognized base '$line' in $m — assuming kali"
-        ;;
-    esac
+    id=$(printf '%s' "$line" | sed -n 's/^\([a-z0-9-]*\).*/\1/p')
+    # any id that HAS an adapter is valid — future bases need no edit here
+    if [ -n "$id" ] && [ -f "$REPO_DIR/lib/distro/$id.sh" ]; then
+      FLASH_BASE=$id
+      FLASH_BASE_DESC=$(printf '%s' "$line" | sed -n 's/^[a-z0-9-]* *(\(.*\))$/\1/p')
+      [ -n "$FLASH_BASE_DESC" ] || FLASH_BASE_DESC=$id
+    elif [ -n "$line" ]; then
+      klh_warn "manifest names base '$line' but lib/distro/$id.sh does not exist — assuming kali"
+    fi
   fi
 }
 flash_detect_base
@@ -556,7 +554,19 @@ make_config_partition() {
 make_config_partition
 
 klh_info "KLHCONFIG partition: ${KLHCONFIG_STATUS:-MISSING (unknown outcome — treat as missing)}"
-STICK_HOSTNAME=$( ( source "$REPO_DIR/lib/common.sh"; klh_load_config "$REPO_DIR/config" 2>/dev/null && echo "$HOSTNAME" ) || echo kali-live )
+STICK_ID=$( ( source "$REPO_DIR/lib/common.sh"; klh_load_config "$REPO_DIR/config" 2>/dev/null && echo "$HOSTNAME $HOSTNAME_SCHEME" ) || echo "kali-live static" )
+STICK_HOSTNAME=${STICK_ID%% *}
+STICK_HOSTNAME_SCHEME=${STICK_ID##* }
+if [ "$STICK_HOSTNAME_SCHEME" = hardware ]; then
+  SSH_HINT="       ssh kali@<name printed on the console banner>.local
+     The name is derived from THAT machine's hardware (e.g. x280-8c16r256d;
+     identical machines get -2). To list it from another machine:
+       avahi-browse -rt _ssh._tcp
+     (or ssh kali@<IPv4 shown on the stick machine's console>)"
+else
+  SSH_HINT="       ssh kali@${STICK_HOSTNAME}.local
+     (or ssh kali@<IPv4 shown on the stick machine's console>)"
+fi
 cat <<EOF
 
 Done. Next steps:
@@ -564,8 +574,7 @@ Done. Next steps:
   2. Pick "Live system" in the boot menu (or "forensic mode" to also
      block swap + automounting of internal disks).
   3. Wait 1-3 minutes, then from another machine on the same network:
-       ssh kali@${STICK_HOSTNAME}.local
-     (or ssh kali@<IPv4 shown on the stick machine's console>)
+${SSH_HINT}
 
 Wi-Fi password changed? NO rebuild needed: plug the stick into any
 computer, open the KLHCONFIG partition, edit headless-wifi.conf, eject.

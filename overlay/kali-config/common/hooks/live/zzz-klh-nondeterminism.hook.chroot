@@ -1,0 +1,66 @@
+#!/bin/sh
+# zzz-klh-nondeterminism.hook.chroot — remove what cannot be made
+# deterministic, so the image is rebuildable from the same inputs.
+#
+# Runs last in the chroot hook order (zz- < zzz-), after every package is
+# installed, after zz-headless-configure has done its work, and after the
+# kernel postinst built the initrd.
+#
+# The measured list (2026-10-26, builds #34 vs #35 with SOURCE_DATE_EPOCH
+# pinned to the same value: zero metadata differences, 15 content
+# differences — exactly these five classes):
+#
+#   /etc/iscsi/initiatorname.iscsi   random IQN from open-iscsi's postinst
+#   /etc/ssh/ssh_host_*              8 files, generated per build
+#   /etc/xrdp/rsakeys.ini            xrdp's generated key material
+#   /var/cache/apt/{pkg,srcpkg}cache.bin   apt caches carry build-time state
+#   /var/lib/command-not-found/commands.db{,.metadata}  generated DB
+#
+# plus /boot/initrd.img-*: it is NOT independently non-deterministic — it
+# embeds /etc/iscsi/initiatorname.iscsi, and that file was the only
+# difference inside the initramfs. Delete the IQN, rebuild the initrd.
+#
+# Everything removed here is regenerated on the target at first boot:
+#   host keys     kali-live-headless-provision (ssh-keygen -A when missing)
+#   iSCSI IQN     open-iscsi at start (and provision, see below)
+#   xrdp keys     xrdp-keygen when xrdp is first started
+#   apt caches    apt on its next run
+#   c-n-f db      the command-not-found apt hook
+set -u
+
+say() { printf 'I: zzz-klh-nondeterminism: %s\n' "$*"; }
+
+## 1. per-build random identifiers -------------------------------------------
+rm -f /etc/iscsi/initiatorname.iscsi
+rm -f /etc/xrdp/rsakeys.ini
+# the configure hook generates these so `sshd -t` has something to load; the
+# image must ship WITHOUT them (shared host keys across every flashed stick
+# are a security problem as well as a reproducibility one)
+rm -f /etc/ssh/ssh_host_*
+say "removed host keys, iSCSI IQN, xrdp key material"
+
+## 2. generated caches -------------------------------------------------------
+rm -f /var/cache/apt/pkgcache.bin /var/cache/apt/srcpkgcache.bin
+rm -f /var/lib/command-not-found/commands.db \
+      /var/lib/command-not-found/commands.db.metadata
+say "removed apt + command-not-found caches"
+
+## 3. rebuild the initrd without the IQN inside it ---------------------------
+# Only when an initrd exists and initramfs-tools can run here; a failure is
+# reported but not fatal — the image still boots, it would just keep the IQN.
+if command -v update-initramfs >/dev/null 2>&1; then
+    _ird=0
+    for _f in /boot/initrd.img-*; do
+        [ -e "$_f" ] || continue
+        _ird=$((_ird + 1))
+    done
+    if [ "$_ird" -gt 0 ]; then
+        if update-initramfs -u -k all >/tmp/klh-initramfs.log 2>&1; then
+            say "rebuilt $_ird initrd(s) without the build-time IQN"
+        else
+            say "WARNING: update-initramfs failed (see /tmp/klh-initramfs.log)"
+        fi
+    fi
+fi
+
+exit 0

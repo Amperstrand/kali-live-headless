@@ -1,0 +1,226 @@
+#!/bin/sh
+# kali-live-hostname-derive — build a self-describing hostname from hardware.
+#
+# Format: <model>-<cores>c<ram>r<disk>d      e.g.  x280-8c16r256d
+#
+#   model  DMI product_version (then product_family, product_name,
+#          board_name), vendor words stripped, lowercased, runs of
+#          non-alphanumerics collapsed to '-', capped at 20 chars so the
+#          full name stays inside the 63-char hostname limit.
+#   cores  online CPUs (nproc; an 8-thread machine reports 8c)
+#   ram    MemTotal rounded to GiB
+#   disk   largest internal disk (non-removable, not the live boot medium),
+#          decimal GB. Omitted when there is none (e.g. a diskless guest).
+#
+# Prints the chosen name on stdout. Exit 1 when not even a model can be
+# determined (the caller should keep its static hostname).
+#
+# Duplicates: by default the derived base name is probed over mDNS
+# (`<name>.local`). If it resolves to an address this machine does not own,
+# '-2', '-3', ... is appended. A DASH, not '_': underscore is not a legal
+# hostname character (it breaks mDNS/avahi, DNS, and certificate SANs), and
+# the in-image valid_hostname() rejects it too.
+#
+# This tool never touches the running system — the provisioner and the
+# kali-live-hostname-settle unit apply what it prints.
+#
+# Test hooks (never set in the shipped image): KLH_DMI_DIR, KLH_SYSBLOCK,
+# KLH_MEMINFO, KLH_MEDIUM_SRC, KLH_NPROC, KLH_OWN_ADDRS, KLH_PROBE_CMD,
+# KLH_MAX_SUFFIX.
+
+set -u
+
+DMI_DIR=${KLH_DMI_DIR:-/sys/class/dmi/id}
+SYSBLOCK=${KLH_SYSBLOCK:-/sys/block}
+MEMINFO=${KLH_MEMINFO:-/proc/meminfo}
+PROBE=true
+MAX_SUFFIX=${KLH_MAX_SUFFIX:-9}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --no-probe)   PROBE=false ;;
+        --max-suffix) MAX_SUFFIX=${2:?--max-suffix needs a number}; shift ;;
+        -h|--help)    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) printf 'usage: %s [--no-probe] [--max-suffix N]\n' "${0##*/}" >&2; exit 2 ;;
+    esac
+    shift
+done
+case "$MAX_SUFFIX" in ''|*[!0-9]*) MAX_SUFFIX=9 ;; esac
+
+# --------------------------------------------------------------- DMI model
+dmi() {
+    f="$DMI_DIR/$1"
+    [ -r "$f" ] || return 0
+    tr -d '\r\n' < "$f" 2>/dev/null | cut -c1-128
+}
+
+# DMI placeholders that say nothing about the machine.
+placeholder() {
+    case "$(printf '%s' "$1" | tr 'A-Z' 'a-z')" in
+        ''|none|'not specified'|'not applicable'|'to be filled by o.e.m.'|\
+        'system version'|'default string'|'system product name'|unknown|oem|        'o.e.m.'|'system manufacturer')
+            return 0 ;;
+    esac
+    return 1
+}
+
+# Lowercase, keep only alphanumerics as dash-separated tokens, drop vendor
+# noise ("ThinkPad X280" -> "x280", "HP EliteBook 840 G5" -> "elitebook-840-g5"
+# only if "hp" would otherwise lead; vendor words are removed wherever they
+# appear), cap at 20 chars on a token boundary.
+slug() {
+    _out=""
+    for _w in $(printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' ' '); do
+        case "$_w" in
+            lenovo|thinkpad|ibm|dell|hp|hewlett|packard|notebook|laptop|\
+            computer|corporation|inc|'') continue ;;
+        esac
+        if [ -z "$_out" ]; then
+            _nxt=$(printf '%s' "$_w" | cut -c1-20)
+        else
+            _nxt=$_out-$_w
+        fi
+        if [ "${#_nxt}" -le 20 ]; then
+            _out=$_nxt
+        fi
+    done
+    printf '%s' "$_out"
+}
+
+MODEL=""
+for _cand in "$(dmi product_version)" "$(dmi product_family)" \
+             "$(dmi product_name)" "$(dmi board_name)"; do
+    placeholder "$_cand" && continue
+    # a bare version string ("1.0", "2.5") names nothing — skip it so the
+    # next DMI field gets a chance (some vendors put that in product_version)
+    case "$_cand" in *[A-Za-z]*) ;; *) continue ;; esac
+    MODEL=$(slug "$_cand")
+    [ -n "$MODEL" ] && break
+done
+[ -n "$MODEL" ] || exit 1
+
+# ------------------------------------------------------------ cores / RAM
+if [ -n "${KLH_NPROC:-}" ]; then
+    CORES=$KLH_NPROC
+elif command -v nproc >/dev/null 2>&1; then
+    CORES=$(nproc 2>/dev/null || echo 0)
+else
+    CORES=$(ls -d /sys/devices/system/cpu/cpu[0-9]* 2>/dev/null | wc -l)
+fi
+case "$CORES" in ''|*[!0-9]*) CORES=0 ;; esac
+
+RAM_GB=0
+if [ -r "$MEMINFO" ]; then
+    MEM_KB=$(awk '/^MemTotal:/{print $2; exit}' "$MEMINFO" 2>/dev/null || echo 0)
+    case "$MEM_KB" in
+        ''|*[!0-9]*) MEM_KB=0 ;;
+    esac
+    # MemTotal excludes kernel-reserved memory, so it always sits BELOW the
+    # installed size (a 16 GiB box reports ~15.5 GiB). Round UP to the DIMM
+    # granularity the operator would recognise: 4 GiB steps from 8 GiB up
+    # (15.5 -> 16r, 31.0 -> 32r, 62 -> 64r), 2 GiB steps below that.
+    RAM_GIB=$(( (MEM_KB + 1048575) / 1048576 ))
+    if [ "$RAM_GIB" -ge 8 ]; then
+        RAM_GB=$(( (RAM_GIB + 3) / 4 * 4 ))
+    else
+        RAM_GB=$(( (RAM_GIB + 1) / 2 * 2 ))
+    fi
+fi
+
+# ---------------------------------------------------------------- disk
+# The live boot medium must never count as "the machine's disk": a USB stick
+# is usually removable (excluded already), but QEMU/other ISO-as-disk boots
+# present the medium as a non-removable disk. Resolve it through sysfs.
+medium_src=""
+if [ -n "${KLH_MEDIUM_SRC:-}" ]; then
+    medium_src=$KLH_MEDIUM_SRC
+else
+    medium_src=$(awk '$2 == "/run/live/medium" {print $1; exit}' /proc/mounts 2>/dev/null)
+fi
+medium_disk=""
+case "$medium_src" in
+    /dev/*)
+        _b=${medium_src#/dev/}
+        if [ -e "/sys/class/block/$_b/partition" ]; then
+            medium_disk=$(basename "$(readlink -f "/sys/class/block/$_b/.." 2>/dev/null)" 2>/dev/null)
+        else
+            medium_disk=$_b
+        fi
+        ;;
+esac
+
+DISK_GB=0
+NVME_GB=0
+for _d in "$SYSBLOCK"/*; do
+    [ -d "$_d" ] || continue
+    _n=${_d##*/}
+    # virtual/derived/removable-by-design block devices
+    case "$_n" in
+        loop*|ram*|zram*|dm-*|md*|sr*|fd*|nbd*|mmcblk*boot*|mmcblk*rpmb*) continue ;;
+    esac
+    [ -r "$_d/size" ] || continue
+    _rem=$(cat "$_d/removable" 2>/dev/null || echo 1)
+    [ "$_rem" = 0 ] || continue
+    [ "$_n" = "$medium_disk" ] && continue
+    _sec=$(cat "$_d/size" 2>/dev/null || echo 0)
+    case "$_sec" in ''|*[!0-9]*) continue ;; esac
+    _gb=$(( (_sec * 512 + 500000000) / 1000000000 ))
+    [ "$_gb" -gt "$DISK_GB" ] && DISK_GB=$_gb
+    case "$_n" in nvme*) [ "$_gb" -gt "$NVME_GB" ] && NVME_GB=$_gb ;; esac
+done
+# Prefer an NVMe when one is present: desktops often pair a fast system NVMe
+# with a much larger spinning/secondary disk, and naming the machine after
+# the data disk says nothing about the machine ("256 nvme", not "2000 hdd").
+[ "$NVME_GB" -gt 0 ] && DISK_GB=$NVME_GB
+
+# --------------------------------------------------------------- assemble
+NAME=$MODEL
+[ "$CORES" -gt 0 ] && NAME=${NAME}-${CORES}c
+[ "$RAM_GB" -gt 0 ] && NAME=${NAME}${RAM_GB}r
+[ "$DISK_GB" -gt 0 ] && NAME=${NAME}${DISK_GB}d
+
+# ------------------------------------------------------- duplicate probing
+resolve_name() { # $1=name -> addresses on stdout, rc!=0 when nothing found
+    if [ -n "${KLH_PROBE_CMD:-}" ]; then
+        "$KLH_PROBE_CMD" "$1" 2>/dev/null
+        return $?
+    fi
+    getent hosts "$1.local" 2>/dev/null | awk '{print $1}'
+}
+
+own_addrs() {
+    if [ -n "${KLH_OWN_ADDRS:-}" ]; then
+        printf '%s\n' "$KLH_OWN_ADDRS"
+        return 0
+    fi
+    ip -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1
+}
+
+conflict() { # $1=name -> rc 0 when someone ELSE answers for it
+    _addrs=$(resolve_name "$1") || return 1
+    [ -n "$_addrs" ] || return 1
+    _own=$(own_addrs | tr '\n' ' ')
+    for _a in $_addrs; do
+        case " $_own " in
+            *" $_a "*) continue ;;
+            *) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+if [ "$PROBE" = true ]; then
+    _base=$NAME
+    _i=1
+    while conflict "$NAME"; do
+        if [ "$_i" -ge "$MAX_SUFFIX" ]; then
+            printf 'WARNING: %s and every suffix up to -%s are already answered for on the LAN\n' \
+                "$_base" "$MAX_SUFFIX" >&2
+            break
+        fi
+        _i=$((_i + 1))
+        NAME=$_base-$_i
+    done
+fi
+
+printf '%s\n' "$NAME"

@@ -184,8 +184,27 @@ else
         && record pass "$mode: clock synchronized (NTP)" \
         || record fail "$mode: clock synchronized (NTP)" "not synced after settle+30s — apt/TLS at risk"
 
+      # hostname: HOSTNAME_SCHEME=hardware names each machine after itself
+      # (<model>-<cores>c<ram>r<disk>d). The guest's own helper is the source
+      # of truth — the QEMU/DMI strings vary by QEMU version, so computing the
+      # expectation here beats hardcoding. A LAN duplicate may append -2..-9.
+      # (KLHCONFIG HOSTNAME= is the override stage's assertion, not this one.)
       v=$(guest hostname)
-      [ "$v" = "$HOSTNAME_EXPECTED" ] && record pass "$mode: hostname=$HOSTNAME_EXPECTED" || record fail "$mode: hostname (want $HOSTNAME_EXPECTED, got '$v')"
+      if [ "${HOSTNAME_SCHEME_EXPECTED:-static}" = hardware ]; then
+        hw_name=$(guest '/usr/local/sbin/kali-live-hostname-derive --no-probe 2>/dev/null')
+        if [ -z "$hw_name" ]; then
+          record fail "$mode: hardware hostname derive available in guest"
+        else
+          case "$v" in
+            "$hw_name"|"$hw_name"-[0-9]|"$hw_name"-[0-9][0-9])
+              record pass "$mode: hardware hostname=$v" ;;
+            *)
+              record fail "$mode: hardware hostname" "want '$hw_name' (or -N), got '$v'" ;;
+          esac
+        fi
+      else
+        [ "$v" = "$HOSTNAME_EXPECTED" ] && record pass "$mode: hostname=$HOSTNAME_EXPECTED" || record fail "$mode: hostname (want $HOSTNAME_EXPECTED, got '$v')"
+      fi
 
       local eff
       # OpenSSH ≥ 10 prints sshd -T keys in CamelCase (PermitRootLogin no);
