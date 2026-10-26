@@ -1,10 +1,14 @@
-# mksquashfs -ef excludes (wildcards enabled by live-build).
+# mksquashfs -ef excludes (live-build passes -wildcards, so entries must be
+# paths RELATIVE to the squashfs root: a leading / is a FATAL ERROR:
+#   "FATAL ERROR: /, ./ and ../ prefixed excludes not supported with
+#    -wildcards or -regex options"
+# That cost a full build (#36) before test/stages/stage-a.sh learned to check
+# it. Do not add a leading slash here.
 #
 # Everything a *build* needs but a *booted image* must not carry.
 #
-# /var/cache/klh-pool is filled by zzz-klh-deb-pool.hook.chroot (~900MB of the
+# var/cache/klh-pool is filled by zzz-klh-deb-pool.hook.chroot (~900MB of the
 # build's own .deb files) so the host can harvest them into the
 # content-addressed pool after the build. Shipping it would nearly double the
 # ISO; it exists only between the chroot hook and build.sh's harvest step.
-/var/cache/klh-pool
-/var/cache/klh-pool/*
+var/cache/klh-pool
