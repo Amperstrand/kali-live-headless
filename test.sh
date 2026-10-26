@@ -48,12 +48,16 @@ klh_load_distro "$BASE"
 SCRATCH="$REPO_DIR/test/scratch/run-$$-$(date +%s)"
 mkdir -p "$SCRATCH"
 
+# shellcheck disable=SC2034  # RUN_VMSTORE is consumed by the SOURCED test/stages/stage-f-vmstore.sh
 RUN_QEMU=true RUN_BIOS=true RUN_OVERRIDE=true RUN_UEFI=true RUN_FORENSIC=true RUN_VMSTORE=true
 ONLY_STATIC=false
 LEVEL="full"
 ISO_ARG="" SSH_KEY_ARG=""
 
 [ $# -eq 0 ] || while [ $# -gt 0 ]; do
+  # directives may not sit on case BRANCHES (SC1124 — the old inline
+  # placement never worked and shellcheck refused to parse the item)
+  # shellcheck disable=SC2034  # ISO_ARG/SSH_KEY_ARG: consumed by the SOURCED stage modules
   case "$1" in
     --skip-qemu)   RUN_QEMU=false; shift ;;
     --stage)       STAGE=${2:?}; shift 2 ;;
@@ -61,7 +65,7 @@ ISO_ARG="" SSH_KEY_ARG=""
     --level)       LEVEL=${2:?}; shift 2 ;;
     --no-uefi)     RUN_UEFI=false; shift ;;
     --no-forensic) RUN_FORENSIC=false; shift ;;
-    --iso)         ISO_ARG=${2:?}; shift 2 ;;  # shellcheck disable=SC2034  # consumed by the sourced stage modules
+    --iso)         ISO_ARG=${2:?}; shift 2 ;;
     --ssh-key)     SSH_KEY_ARG=${2:?}; shift 2 ;;
     -h|--help)     sed -n '2,30p' "$0"; exit 0 ;;
     *) klh_die "unknown option: $1" ;;
@@ -73,6 +77,7 @@ done
 # anything that ships.
 STAGE="${STAGE:-}"
 [ -n "$STAGE" ] && [ "$STAGE" != full ] && LEVEL=$STAGE
+# shellcheck disable=SC2034  # the RUN_* flags are consumed by the SOURCED stage modules (cde + stage-f)
 case "$LEVEL" in
   static)      ONLY_STATIC=true; RUN_QEMU=false ;;
   # --stage: run ONE boot stage (cheap boot gate for hotpatched builds).
