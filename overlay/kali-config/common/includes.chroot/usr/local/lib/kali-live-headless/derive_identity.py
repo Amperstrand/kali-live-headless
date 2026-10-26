@@ -156,12 +156,14 @@ def _scalar_to_pubkey_xonly(scalar: bytes) -> bytes:
     return tail[1:33]  # BIP340 x-only is X (NOT tail[33:] = Y, and not X||Y)
 
 
-def derive_nsec(ikm: bytes, fingerprint: str):
+def derive_nsec(ikm: bytes, fingerprint: str, purpose: str = "fips"):
     """Derive (nsec, npub). Retries with an info counter on a degenerate
-    scalar (zero or >= n) — probability ~2^-128, but the code must be honest."""
+    scalar (zero or >= n) — probability ~2^-128, but the code must be honest.
+    `purpose` domain-separates the host identity ("fips") from per-VM
+    identities ("fips-vm"): same salt + same fingerprint, different keys."""
     counter = 0
     while True:
-        scalar = derive_bytes(ikm, "fips", fingerprint, counter=counter)
+        scalar = derive_bytes(ikm, purpose, fingerprint, counter=counter)
         k = int.from_bytes(scalar, "big")
         if 0 < k < _N:
             x_only = _scalar_to_pubkey_xonly(scalar)
@@ -186,7 +188,7 @@ def derive_console_password(ikm: bytes, fingerprint: str) -> str:
 def main():
     if len(sys.argv) < 2:
         print("usage: derive_identity.py <salt-hex> [--fingerprint FP|--machine] "
-              "[--purpose wireguard|fips|console|all] [--json]", file=sys.stderr)
+              "[--purpose wireguard|fips|fips-vm|console|all] [--json]", file=sys.stderr)
         return 2
     ikm = bytes.fromhex(sys.argv[1].strip())
     if len(ikm) < 32:
@@ -215,8 +217,8 @@ def main():
     if purpose == "wireguard":
         priv = derive_wireguard(ikm, fp)
         print(json.dumps({"wireguard_privkey": priv, "fingerprint": fp}) if as_json else priv)
-    elif purpose == "fips":
-        nsec, npub, _ = derive_nsec(ikm, fp)
+    elif purpose in ("fips", "fips-vm"):
+        nsec, npub, _ = derive_nsec(ikm, fp, purpose)
         print(json.dumps({"nsec": nsec, "npub": npub, "fingerprint": fp}) if as_json else f"{npub}\t{nsec}")
     elif purpose == "console":
         pw = derive_console_password(ikm, fp)

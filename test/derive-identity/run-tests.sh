@@ -21,6 +21,15 @@ A=$(py "$SALT" --fingerprint "$FP1" --purpose fips)
 B=$(py "$SALT" --fingerprint "$FP1" --purpose fips)
 [ "$A" = "$B" ] && ok "same salt+fingerprint -> same nsec/npub" || bad "nondeterministic"
 
+echo "== per-vm purpose (fips-vm) =="
+V1=$(py "$SALT" --fingerprint "vm-11111111-2222-3333-4444-555555555555" --purpose fips-vm)
+V2=$(py "$SALT" --fingerprint "vm-11111111-2222-3333-4444-555555555555" --purpose fips-vm)
+[ "$V1" = "$V2" ] && ok "same salt+vm-uuid -> same nsec/npub" || bad "per-vm identity nondeterministic"
+V3=$(py "$SALT" --fingerprint "vm-99999999-8888-7777-6666-555555555555" --purpose fips-vm)
+[ "$V1" != "$V3" ] && ok "different vm-uuid -> different identity" || bad "per-vm identities collide"
+H=$(py "$SALT" --fingerprint "vm-11111111-2222-3333-4444-555555555555" --purpose fips)
+[ "$V1" != "$H" ] && ok "fips-vm is domain-separated from fips (same fingerprint)" || bad "host and VM purposes collide"
+
 echo "== divergence =="
 C=$(py "$SALT" --fingerprint "$FP2" --purpose fips)
 [ "$A" != "$C" ] && ok "different machine -> different identity" || bad "identities collide across machines"
