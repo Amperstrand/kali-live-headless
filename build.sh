@@ -544,7 +544,10 @@ fi
 # Untracked files are ignored on purpose — the build stages trees under
 # build/ and output/ that are never part of the source identity.
 KLH_BUILD_REF=$(git -C "$REPO_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
-if ! git -C "$REPO_DIR" diff --quiet --untracked-files=no 2>/dev/null; then
+# `git diff` has no --untracked-files option (it exits 129, which reads as
+# "dirty" for every build — builds #36-#40 all claimed -dirty on clean trees);
+# `git status --porcelain` is the command that takes it.
+if [ -n "$(git -C "$REPO_DIR" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
   KLH_BUILD_REF="$KLH_BUILD_REF-dirty"
 fi
 KLH_BUILD_SDE=${SOURCE_DATE_EPOCH:-unknown}
