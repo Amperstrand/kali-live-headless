@@ -288,7 +288,15 @@ if [ -x "$REPO_DIR/tools/stick-registry.sh" ]; then
     KLH_STICK_REGISTRY="${_sudo_home}/.local/share/kali-live-headless/stick-registry.tsv"
     export KLH_STICK_REGISTRY
   fi
-  "$REPO_DIR/tools/stick-registry.sh" adopt --device "$DEVPATH" --build "${BUILD:-}" || klh_warn "salt adoption skipped (no serial / unreadable stick) — registry state stands"
+  # --build only when there IS one: flashing via --iso passes an empty string,
+  # and stick-registry's "${2:?}" treats empty as missing — the whole adoption
+  # step then died with "parameter not set or null" and the stick's ONLY copy
+  # of its salt sat on the partition the reseed reformats a minute later
+  # (2026-10-26: build #41's flash silently rotated the stick's identity).
+  _sr_args=(adopt --device "$DEVPATH")
+  [ -n "${BUILD:-}" ] && _sr_args+=(--build "$BUILD")
+  "$REPO_DIR/tools/stick-registry.sh" "${_sr_args[@]}" \
+    || klh_warn "salt adoption FAILED (rc=$?) — the on-stick identity will NOT survive this flash"
 fi
 
 if [ "$ASSUME_YES" != true ] && [ "$DRY_RUN" != true ]; then
@@ -551,9 +559,12 @@ make_config_partition() {
     fi
     if [ -x "$REPO_DIR/tools/stick-registry.sh" ]; then
       regrc=0
-      "$REPO_DIR/tools/stick-registry.sh" register --device "$DEVPATH" --build "${BUILD:-}" >/dev/null 2>&1 || regrc=$?
+      _sr_args=(register --device "$DEVPATH")
+      [ -n "${BUILD:-}" ] && _sr_args+=(--build "$BUILD")
+      "$REPO_DIR/tools/stick-registry.sh" "${_sr_args[@]}" >/dev/null 2>&1 || regrc=$?
       if [ "$regrc" = 0 ]; then
-        if "$REPO_DIR/tools/stick-registry.sh" apply --device "$DEVPATH" --build "${BUILD:-}" >/dev/null 2>&1; then
+        _sr_args[0]=apply
+        if "$REPO_DIR/tools/stick-registry.sh" "${_sr_args[@]}" >/dev/null 2>&1; then
           klh_ok "master.salt: seeded from the stick registry (deterministic identities)"
         else
           klh_warn "stick registered but salt apply failed — stick will self-generate one on first boot"
