@@ -195,10 +195,15 @@ else
       v=$(guest 'systemctl is-active avahi-daemon')
       [ "$v" = "active" ] && record pass "$mode: avahi-daemon active" || record fail "$mode: avahi-daemon active ($v)"
 
-      v=$(guest 'systemctl show -p ActiveState,Result --value kali-live-headless-provision 2>/dev/null | paste -sd/')
+      # NB: order-insensitive by design — newer systemd (trixie) reorders
+      # the requested -p fields (prints Result before ActiveState); older
+      # ones honor the request order. Same class as the sshd CamelCase and
+      # iptables-reorder lessons in AGENTS.md: never fixed-string-match
+      # command output that a version may reorder.
+      v=$(guest 'systemctl show -p ActiveState,Result --value kali-live-headless-provision 2>/dev/null | sort | paste -sd/')
       [ "$v" = "active/success" ] \
         && record pass "$mode: provision service succeeded" \
-        || record fail "$mode: provision service" "state '$v' (want active/success) — journal: $(guest 'journalctl -u kali-live-headless-provision --no-pager -n 5 2>/dev/null | tail -2 | tr "\n" ";"' 2>/dev/null)"
+        || record fail "$mode: provision service" "state '$v' (want active+success) — journal: $(guest 'journalctl -u kali-live-headless-provision --no-pager -n 5 2>/dev/null | tail -2 | tr "\n" ";"' 2>/dev/null)"
 
       v=$(guest 'systemctl is-active kali-live-wifi-watchdog')
       [ "$v" = "active" ] && record pass "$mode: wifi watchdog active" || record fail "$mode: wifi watchdog active ($v)"
