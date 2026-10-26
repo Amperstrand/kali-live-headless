@@ -273,13 +273,38 @@ EOFPEER
 fi
 
 # ---------------------------------------------------------------- hostname
+# Precedence: KLHCONFIG HOSTNAME= (explicit operator override) > a
+# hardware-derived name (HOSTNAME_SCHEME=hardware, the default) > the static
+# HOSTNAME baked into the image from ./config.
+#
+# The derived form is self-describing: <model>-<cores>c<ram>r<disk>d, e.g.
+# x280-8c16r256d. It is applied here, before the network exists; the
+# kali-live-hostname-settle unit re-runs the derivation with an mDNS probe
+# once the LAN is up and appends '-2' when an identical machine already
+# answers for the same name (see that unit for the exact semantics).
 HN="kali-live"
 if [ -r "$CFG_DIR/hostname" ]; then
     HN=$(head -n1 "$CFG_DIR/hostname" 2>/dev/null || echo kali-live)
 fi
+HN_AUTO=false
+DERIVE=/usr/local/sbin/kali-live-hostname-derive
+SCHEME=$(sed -n 's/^HOSTNAME_SCHEME=//p' /etc/default/kali-live-headless 2>/dev/null | head -n1)
+# the file is shell-sourced style: VALUE may carry quotes (tr, not ${//} —
+# pattern substitution is a bashism and dash aborts the script at runtime)
+SCHEME=$(printf '%s' "$SCHEME" | tr -d \'\" | tr 'A-Z' 'a-z')
+[ -n "$SCHEME" ] || SCHEME=static
+if [ -z "$O_HOST" ] && [ "$SCHEME" = hardware ] && [ -x "$DERIVE" ]; then
+    if HN_DERIVED=$("$DERIVE" --no-probe 2>/dev/null) && valid_hostname "$HN_DERIVED"; then
+        HN="$HN_DERIVED"
+        HN_AUTO=true
+    else
+        log "WARNING: HOSTNAME_SCHEME=hardware but no hardware identity could be derived — keeping '$HN'"
+    fi
+fi
 if [ -n "$O_HOST" ]; then
     if valid_hostname "$O_HOST"; then
         HN="$O_HOST"
+        HN_AUTO=false
     else
         log "WARNING: invalid HOSTNAME in boot-medium config ignored"
     fi
@@ -289,6 +314,16 @@ if [ "$(hostname)" != "$HN" ]; then
     hostnamectl set-hostname "$HN" 2>/dev/null || hostname "$HN" 2>/dev/null || true
 fi
 echo "$HN" > /etc/hostname 2>/dev/null || true
+
+# marker consumed by kali-live-hostname-settle (it re-probes for duplicates
+# once the LAN is up); absent/removed for static and KLHCONFIG names
+if [ "$HN_AUTO" = true ]; then
+    mkdir -p /run/kali-live-headless 2>/dev/null || true
+    printf '%s\n' "$HN" > /run/kali-live-headless/hostname-auto 2>/dev/null || true
+    log "hostname derived from hardware: $HN (duplicates disambiguated once the LAN is up)"
+else
+    rm -f /run/kali-live-headless/hostname-auto 2>/dev/null || true
+fi
 
 # keep /etc/hosts consistent (avoids "unable to resolve host" noise)
 if grep -q '^127\.0\.1\.1[[:space:]]' /etc/hosts 2>/dev/null; then
