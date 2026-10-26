@@ -129,6 +129,26 @@ Brief: SPIKE-BRIEF.md. Research: docs/vmhost-base-os-research.md.
 - Next: commit+push everything; if time allows, full-gate the remaining
   stages on iso-build2 (override/forensic first — uefi needs OVMF).
 
+## M6 — FULL GATE (minus uefi) ALL GREEN on the Debian base (02:00)
+
+- State: bonus gate run on iso-build2, port 22410, sequential in tmux:
+  **override 262/0/1 · forensic 277/0/1 · vmstore 249/0/2** (with bios
+  276/0/1 from M5). The KLHCONFIG credential-override path, the wg
+  salt-identity provisioning, the forensic noautomount gate and the
+  vm-store logic all work on trixie unchanged.
+- Honest caveats recorded: uefi unrun (host lacks x86 OVMF); vmstore's
+  QEMU-side flow skipped (HOST ntfs3 fixture mount failed — host
+  limitation; in-image vmstore unit tests green).
+- Records updated + pushed (commit bae0871 + this): BUILDS.md #2-d2 row
+  now carries the full-gate verdicts; iso-build2/INDEX.md too;
+  docs/debian-base-spike-results.md verdict + gaps sections updated.
+- Lane COMPLETE per brief. Nothing in flight; tmux sessions cleaned up
+  after each stage; no orphaned QEMU/docker (verified between runs).
+- Next (for whoever picks this up): merge review; optional d-i diet
+  (~570M) and firmware-misc-nonfree diet (~250M) as follow-up experiments
+  behind the same adapter; run uefi gate on an OVMF host before flashing.
+
+
 
 
 
