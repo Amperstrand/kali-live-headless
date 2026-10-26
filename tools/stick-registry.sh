@@ -192,13 +192,24 @@ cmd_adopt() { # harvest the EXISTING salt off a stick before a destructive
     _part=$(cfg_partition_of "$OPT_DEVICE")
     _onsalt=""
     if [ -n "$_part" ]; then
-        _mnt=$(mktemp -d)
-        if mount -t vfat -o ro "$_part" "$_mnt" 2>/dev/null; then
-            _onsalt=$(klh_salt_of "$_mnt/master.salt")
+        # On a RUNNING stick the blackbox service holds KLHCONFIG mounted rw,
+        # so our ro-mount is refused ("would change RO state") — and that
+        # existing mount's PRE-FLASH content is exactly what adoption exists
+        # to read (livebox first flash, 2026-10-26). Read through it; only
+        # mount our own ro view when nobody holds the device.
+        _existing=$(findmnt -no TARGET "$_part" 2>/dev/null || true)
+        if [ -n "$_existing" ]; then
+            _onsalt=$(klh_salt_of "$_existing/master.salt")
             klh_salt_valid "$_onsalt" || _onsalt=""
-            umount "$_mnt" 2>/dev/null
+        else
+            _mnt=$(mktemp -d)
+            if mount -t vfat -o ro "$_part" "$_mnt" 2>/dev/null; then
+                _onsalt=$(klh_salt_of "$_mnt/master.salt")
+                klh_salt_valid "$_onsalt" || _onsalt=""
+                umount "$_mnt" 2>/dev/null
+            fi
+            rmdir "$_mnt" 2>/dev/null || true
         fi
-        rmdir "$_mnt" 2>/dev/null || true
     fi
     _entry=$(find_entry "$_hash")
     if [ -z "$_onsalt" ]; then
