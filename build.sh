@@ -446,6 +446,9 @@ install -m 0644 "$REPO_DIR/templates/headless-wifi.nmconnection.in" \
 cat > "$KLH_COMMON/includes.chroot/etc/default/kali-live-headless" <<EOF
 # Runtime defaults for kali-live-headless (no secrets here).
 WIFI_REGDOM="$WIFI_REGDOM"
+# hardware = derive <model>-<cores>c<ram>r<disk>d at boot (mDNS duplicate
+# probe adds -2/-3 once the LAN is up); static = use HOSTNAME from ./config
+HOSTNAME_SCHEME="$HOSTNAME_SCHEME"
 # random = console password randomized every boot (SSH is key-only,
 #         sudo passwordless); kali = standard Kali live "kali/kali"
 LIVE_PASSWORD_MODE="$LIVE_PASSWORD_MODE"
@@ -489,7 +492,7 @@ MANIFEST="$OUT_DIR/build-manifest-$(date -u '+%Y%m%dT%H%M%SZ').txt"
   echo "base            : $KLH_BASE ($KLH_DISTRO_NAME $BRANCH)"
   echo "variant/arch    : $VARIANT / $ARCH"
   echo "branch          : $BRANCH"
-  echo "hostname        : $HOSTNAME"
+  echo "hostname        : $HOSTNAME (scheme: $HOSTNAME_SCHEME)"
   echo "wifi ssid       : $WIFI_SSID"
   echo "wifi keymgmt    : $WIFI_KEYMGMT hidden=$WIFI_HIDDEN regdom=${WIFI_REGDOM:-<none>}"
   echo "boot default    : $BOOT_DEFAULT (auto-boot 5s)"
