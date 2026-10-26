@@ -298,6 +298,23 @@ drift is absorbed by bumping the pin, nothing else.
    Read keys one per LINE (`IFS='\n'`), and remember a `.pub` path is not a
    private key — probe with the stripped path.
 
+31. **Hostnames are hardware-derived by default** (`HOSTNAME_SCHEME=hardware`,
+   2026-10-26): the provisioner names each boot after the machine
+   (`<model>-<cores>c<ram>r<disk>d`, e.g. `x280-8c16r256d`) via
+   `kali-live-hostname-derive`; `kali-live-hostname-settle.service` probes
+   mDNS once the LAN is up and appends `-2`/`-3` for identical machines
+   (dash, never `_` — underscore is illegal in hostnames and the image's
+   own `valid_hostname()` rejects it). Consequences to keep in mind:
+   `HOSTNAME` in `./config` is now only the static-mode name and the
+   derivation fallback; `scripts/stick-conf.sh` MUST NOT emit a `HOSTNAME=`
+   line for the hardware scheme (that line is the boot-time override and
+   would pin every stick to the build name — asserted in Stage A);
+   `hw-check.sh` needs `--host` in hardware mode; probes are best-effort
+   (no route in 30 s or no mDNS resolver = no disambiguation, and two
+   identical first boots in the same instant can both keep the base name).
+   Test hooks `KLH_DMI_DIR`/`KLH_SYSBLOCK`/`KLH_MEMINFO`/`KLH_NPROC`/
+   `KLH_PROBE_CMD`/`KLH_OWN_ADDRS` exist for fixture-based unit tests.
+
 ## Public-repo hygiene
 
 The repo is **public**. Nothing private may land here, ever: no PSKs, SSIDs,

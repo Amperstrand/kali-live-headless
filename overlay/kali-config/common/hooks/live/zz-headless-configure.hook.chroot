@@ -17,6 +17,7 @@ systemctl enable NetworkManager.service 2>&1 || true
 systemctl enable avahi-daemon.service 2>&1 || true
 systemctl enable systemd-timesyncd.service 2>&1 || true
 systemctl enable kali-live-headless-provision.service 2>&1 || true
+systemctl enable kali-live-hostname-settle.service 2>&1 || true
 systemctl enable kali-live-console-banner.service 2>&1 || true
 systemctl enable kali-live-wifi-watchdog.service 2>&1 || true
 systemctl enable kali-live-blackbox.service 2>&1 || true
@@ -73,6 +74,15 @@ if [ -x /usr/bin/fips-dns ] || [ -x /usr/local/bin/fips-dns ]; then
     if ! grep -q "fips" /etc/nsswitch.conf 2>/dev/null; then
         sed -i 's/^hosts:.*/hosts: files mymachines fips dns [!UNAVAIL=return] mdns4_minimal [NOTFOUND=return]/' /etc/nsswitch.conf 2>/dev/null || true
     fi
+fi
+
+# mDNS hostname resolution: the hardware-hostname duplicate probe resolves
+# <name>.local through nsswitch, and operators use <hostname>.local for SSH.
+# libnss-mdns' postinst normally adds mdns4_minimal, but a Recommends-only
+# install or a nsswitch rewrite can leave it out — then the duplicate probe
+# silently finds nothing. Assert it (idempotent).
+if [ -r /etc/nsswitch.conf ] && ! grep -q 'mdns4_minimal' /etc/nsswitch.conf; then
+    sed -i 's/^hosts:.*/hosts: files mymachines mdns4_minimal [NOTFOUND=return] dns/' /etc/nsswitch.conf 2>/dev/null || true
 fi
 
 # Passwordless sudo for the live user must be 0440 and syntactically valid
