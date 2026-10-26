@@ -44,6 +44,9 @@ LIVE_PASSWORD_MODE=random
 WITH_KVM=true
 
 # --- Build --------------------------------------------------------------
+# Distro base for the image: kali (default — the historical flow) or debian
+# (trixie, same headless stack, SELECTIVE firmware; see lib/distro/).
+#BASE=kali
 # Pinned upstream kali-live commit — reproducible builds.
 KALI_LIVE_REF=adb2e38941662f105b57134e0155ec468da294ad
 VARIANT=default

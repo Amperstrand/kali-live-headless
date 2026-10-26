@@ -36,18 +36,28 @@ REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib/common.sh
 source "$REPO_DIR/lib/common.sh"
 
+# Suite asserts are BASE-aware (os-release ID, package names, ISO naming):
+# load the same distro adapter the build used (BASE env, default kali —
+# matching build.sh's default).
+BASE="${BASE:-kali}"
+klh_load_distro "$BASE"
+
 # Per-run scratch: concurrent suite runs (multi-agent repo — this happened:
 # 2026-10-23, two lanes' runs shared witness.img/serial logs/baked-fp files
 # and cross-contaminated each other's verdicts) must not share state.
 SCRATCH="$REPO_DIR/test/scratch/run-$$-$(date +%s)"
 mkdir -p "$SCRATCH"
 
+# shellcheck disable=SC2034  # RUN_VMSTORE is consumed by the SOURCED test/stages/stage-f-vmstore.sh
 RUN_QEMU=true RUN_BIOS=true RUN_OVERRIDE=true RUN_UEFI=true RUN_FORENSIC=true RUN_VMSTORE=true
 ONLY_STATIC=false
 LEVEL="full"
 ISO_ARG="" SSH_KEY_ARG=""
 
 [ $# -eq 0 ] || while [ $# -gt 0 ]; do
+  # directives may not sit on case BRANCHES (SC1124 — the old inline
+  # placement never worked and shellcheck refused to parse the item)
+  # shellcheck disable=SC2034  # ISO_ARG/SSH_KEY_ARG: consumed by the SOURCED stage modules
   case "$1" in
     --skip-qemu)   RUN_QEMU=false; shift ;;
     --stage)       STAGE=${2:?}; shift 2 ;;
@@ -55,7 +65,7 @@ ISO_ARG="" SSH_KEY_ARG=""
     --level)       LEVEL=${2:?}; shift 2 ;;
     --no-uefi)     RUN_UEFI=false; shift ;;
     --no-forensic) RUN_FORENSIC=false; shift ;;
-    --iso)         ISO_ARG=${2:?}; shift 2 ;;  # shellcheck disable=SC2034  # consumed by the sourced stage modules
+    --iso)         ISO_ARG=${2:?}; shift 2 ;;
     --ssh-key)     SSH_KEY_ARG=${2:?}; shift 2 ;;
     -h|--help)     sed -n '2,30p' "$0"; exit 0 ;;
     *) klh_die "unknown option: $1" ;;
@@ -67,6 +77,7 @@ done
 # anything that ships.
 STAGE="${STAGE:-}"
 [ -n "$STAGE" ] && [ "$STAGE" != full ] && LEVEL=$STAGE
+# shellcheck disable=SC2034  # the RUN_* flags are consumed by the SOURCED stage modules (cde + stage-f)
 case "$LEVEL" in
   static)      ONLY_STATIC=true; RUN_QEMU=false ;;
   # --stage: run ONE boot stage (cheap boot gate for hotpatched builds).
@@ -79,7 +90,7 @@ case "$LEVEL" in
   boot|full)   : ;;
   *) klh_die "unknown --level/--stage '$LEVEL' (static | content | bios | override | uefi | forensic | vmstore | boot)" ;;
 esac
-klh_info "level: $LEVEL (static = no VM, content = + ISO inspection, boot = + QEMU boots)"
+klh_info "level: $LEVEL (static = no VM, content = + ISO inspection, boot = + QEMU boots); BASE=$KLH_BASE"
 
 PASS=0 FAIL=0 SKIP=0
 section() { printf '\n=== %s ===\n' "$*"; }

@@ -5,20 +5,18 @@ find_iso() {
   # Prefer the newest archived build: archives are the versioned artifacts and
   # the slot is only a last-write convenience pointer (which a failed build can
   # leave stale). Fall back to the slot when nothing is archived yet.
-  # Both flavour names are checked: the minimal variant is the default now,
-  # and the original name-only lookup silently fell through to the slot for
-  # every minimal build (found 2026-10-25 pre-cut review).
-  local newest
+  # The archive lookup takes the archive's ISO whatever it is NAMED — the
+  # original fixed-name list silently fell through to the slot for every
+  # minimal build (found 2026-10-25), and BASE=debian renames the image
+  # (kali-linux-trixie-live-...) which would false-skip the same way.
+  local newest iso
   newest=$(find "$REPO_DIR/output" -maxdepth 1 -type d -name 'iso-build*' 2>/dev/null \
     | sed 's/.*iso-build//' | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
   if [ -n "$newest" ]; then
-    for name in kali-linux-rolling-live-minimal-amd64.iso kali-linux-rolling-live-amd64.iso; do
-      if [ -f "$REPO_DIR/output/iso-build$newest/$name" ]; then
-        echo "$REPO_DIR/output/iso-build$newest/$name"; return
-      fi
-    done
+    iso=$(ls "$REPO_DIR/output/iso-build$newest"/*.iso 2>/dev/null | head -1 || true)
+    [ -n "$iso" ] && { echo "$iso"; return; }
   fi
-  ls -t "$REPO_DIR"/output/kali-linux-*-live-*.iso 2>/dev/null | head -1 || true
+  ls -t "$REPO_DIR"/output/*.iso 2>/dev/null | head -1 || true
 }
 ISO=$(find_iso)
 if [ -z "$ISO" ] || [ ! -f "$ISO" ]; then
@@ -43,6 +41,48 @@ else
     record pass "squashfs mounted"
 
     sq() { sudo stat -c "$1" "$SQ_MNT/$2" 2>/dev/null; }
+
+    # ---- base identity (BASE-aware): the squashfs must BE the configured
+    # distro — a base mismatch (adapter drift, wrong branch) is a different
+    # image than the one the rest of these asserts were written for.
+    if sudo test -r "$SQ_MNT/etc/os-release"; then
+      _osid=$(sudo sed -n 's/^ID=//p' "$SQ_MNT/etc/os-release" | head -1 | tr -d '"')
+      if [ "$_osid" = "$KLH_OS_ID" ]; then
+        record pass "base: os-release ID=$KLH_OS_ID ($KLH_DISTRO_NAME)"
+      else
+        record fail "base: os-release ID" "want $KLH_OS_ID ($KLH_DISTRO_NAME), got '$_osid' — run the suite with BASE=$BASE?"
+      fi
+    else
+      record fail "base: os-release readable" "no /etc/os-release in squashfs (assert would be vacuous)"
+    fi
+    if sudo test -r "$ISO_MNT/.disk/info"; then
+      sudo grep -qi "$KLH_DISTRO_NAME" "$ISO_MNT/.disk/info" \
+        && record pass "base: .disk/info names $KLH_DISTRO_NAME" \
+        || record fail "base: .disk/info names $KLH_DISTRO_NAME" "$(sudo head -c 120 "$ISO_MNT/.disk/info")"
+    else
+      record fail "base: .disk/info present"
+    fi
+    if [ "$KLH_BASE" = debian ]; then
+      # THE port-proof assert: a Debian image with any kali-* package
+      # installed is a franken-build (stale adapter, stale apt cache).
+      # Count-zero discipline: dpkg status must be readable and non-empty
+      # first, or the zero is vacuous (AGENTS watch-list #12).
+      if sudo test -s "$SQ_MNT/var/lib/dpkg/status" \
+         && [ "$(sudo grep -c '^Package: ' "$SQ_MNT/var/lib/dpkg/status" || true)" -gt 100 ]; then
+        _nkali=$(sudo grep -cE '^Package: kali-' "$SQ_MNT/var/lib/dpkg/status" || true)
+        if [ "$_nkali" = "0" ]; then
+          record pass "debian base: no kali-* packages installed"
+        else
+          record fail "debian base: no kali-* packages installed" "$(sudo grep -m3 -E '^Package: kali-' "$SQ_MNT/var/lib/dpkg/status" | tr '\n' ' ')"
+        fi
+      else
+        record fail "debian base: no kali-* packages installed" "dpkg status unreadable — count would be vacuous"
+      fi
+      # the keyring swap must have reached the image (lb --keyring-packages)
+      sudo grep -A1 '^Package: debian-archive-keyring$' "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "Status: install ok installed" \
+        && record pass "debian base: debian-archive-keyring installed" \
+        || record fail "debian base: debian-archive-keyring installed"
+    fi
 
     # NM profile
     nmp="$SQ_MNT/etc/NetworkManager/system-connections/headless-wifi.nmconnection"
@@ -153,11 +193,13 @@ else
       && record pass "identity: wg key provenance recorded (KEYSOURCE)" \
       || record fail "identity: wg key provenance recorded (KEYSOURCE)"
 
-    # WireGuard M1 + BitLocker unlock: packages installed in the image, and
-    # the /etc/default staging carries the non-secret values when the
-    # features are on (both runtime inits treat "not configured" as off).
-    # A private key must NEVER be staged — keys are generated on the stick.
-    for klh_pkg in wireguard-tools dislocker fips; do
+    # WireGuard M1 + BitLocker unlock + live-config (the live-user creation
+    # mechanism both bases rely on — upstream's LIVE_USERNAME=kali conf):
+    # packages installed in the image, and the /etc/default staging carries
+    # the non-secret values when the features are on (both runtime inits
+    # treat "not configured" as off). A private key must NEVER be staged —
+    # keys are generated on the stick.
+    for klh_pkg in wireguard-tools dislocker fips live-config; do
       if sudo grep -A1 "^Package: $klh_pkg$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "Status: install ok installed"; then
         record pass "$klh_pkg installed in image"
       else
@@ -212,18 +254,25 @@ PKGS
     # minimal build carrying kali-linux-default (or vice versa) is a
     # misconfiguration that silently quadruples the image
     if [ "$VARIANT_EXPECTED" = minimal ]; then
-      if sudo grep -A1 "^Package: kali-linux-default$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "install ok installed"; then
-        record fail "variant minimal ships no kali-linux-default" "found it installed — check ./config VARIANT"
+      if [ "$KLH_BASE" = kali ]; then
+        if sudo grep -A1 "^Package: kali-linux-default$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "install ok installed"; then
+          record fail "variant minimal ships no kali-linux-default" "found it installed — check ./config VARIANT"
+        else
+          record pass "variant minimal: kali-linux-default absent"
+        fi
+        if [ "$LEAN_EXPECTED" = true ]; then
+          # owner-approved 2026-10-24: kali-linux-core stays in lean — the
+          # big levers were firmware and tools, not the base
+          record pass "LEAN: base present (owner-approved)"
+        else
+          sudo grep -A1 "^Package: kali-linux-core$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "install ok installed" \
+            && record pass "variant minimal: kali-linux-core base present" || record fail "variant minimal: kali-linux-core base present"
+        fi
       else
-        record pass "variant minimal: kali-linux-default absent"
-      fi
-      if [ "$LEAN_EXPECTED" = true ]; then
-        # owner-approved 2026-10-24: kali-linux-core stays in lean — the
-        # big levers were firmware and tools, not the base
-        record pass "LEAN: base present (owner-approved)"
-      else
-        sudo grep -A1 "^Package: kali-linux-core$" "$SQ_MNT/var/lib/dpkg/status" 2>/dev/null | grep -q "install ok installed" \
-          && record pass "variant minimal: kali-linux-core base present" || record fail "variant minimal: kali-linux-core base present"
+        # BASE=debian: the baseline IS the Debian standard set; the base
+        # identity asserts above (os-release, no-kali-packages) carry the
+        # variant proof here.
+        record pass "variant minimal: debian base set (see base identity asserts)"
       fi
     fi
     # TollGate client: static binary + trigger script + open-network profile
