@@ -246,13 +246,33 @@ ISO wrapper                 install/initrd.gz, install/gtk/initrd.gz differ
 ```
 
 The `.deb` inputs did not move in that window, but the mirror re-synced the
-**debian-installer** artifacts, and `binary_debian-installer` fetches them
+**debian-installer** artifacts, and `installer_debian-installer` fetches them
 straight from `--mirror-debian-installer`. So: the *process* is deterministic —
-what moved is an *input* the pool does not yet cover. Extending the pool to
-harvest `install/*` from the built tree into
-`repo/<label>/dists/<suite>/install-amd64/` freezes that too, and since
-`-m` already sets `--mirror-debian-installer`, a pool-backed build would then
-fetch d-i from the pool with no other change.
+what moved is an *input* the pool did not cover.
+
+`deb-pool.sh harvest-iso --label L --iso ISO` covers it now: it freezes the
+four installer files into
+`repo/<L>/dists/<suite>/main/installer-<arch>/current/images/`, under the
+names the fetcher uses (note the kernel rename: fetched as `linux`, shipped as
+`install/vmlinuz`), and `index` folds them into the `Release` without wiping
+them. The mapping is not a guess — it is read from the stage's own
+`Download_file` calls (`installer_debian-installer:400-438`).
+
+### What a pool-backed build still needs (measured 2026-10-26)
+
+Pointing `BUILD_MIRROR` at the pool is one flag, but the pool's `Release` is
+unsigned, and both consumers refuse it — probed directly, not assumed:
+
+- apt: `E: The repository 'file:/…/deb-pool/repo/b39 kali-rolling Release' is not signed.`
+- debootstrap is invoked with `--keyring=kali-archive-keyring.gpg` by the
+  pinned upstream build args, so an unsigned pool fails its integrity check.
+
+The clean fix is two args in the pinned upstream `build.sh` on the next pin
+bump (`--debootstrap-options --no-check-gpg`, and either `[trusted=yes]` on
+the chroot sources or a signed pool + keyring injection) — not worth forking
+the pin for. One more fetch to cover then: `installer_debian-installer:715`
+pulls `dists/<suite>/main/debian-installer/binary-<arch>/Release` from the
+*chroot* mirror for the udeb indices.
 
 ## Caching (asked 2026-10-26)
 
