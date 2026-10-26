@@ -213,6 +213,15 @@ else
       fi
     done
     WG_DEFAULTS=$(sudo cat "$SQ_MNT/etc/default/kali-live-headless" 2>/dev/null || true)
+    # hardware-derived hostnames need BOTH the scheme staged at build time and
+    # a working mDNS resolver in nsswitch — otherwise the duplicate probe is
+    # silently dead (it would find nothing and never suffix -2).
+    printf '%s' "$WG_DEFAULTS" | grep -q '^HOSTNAME_SCHEME=' \
+      && record pass "HOSTNAME_SCHEME staged (${HOSTNAME_SCHEME_EXPECTED:-?})" \
+      || record fail "HOSTNAME_SCHEME staged in /etc/default/kali-live-headless"
+    sudo grep -q 'mdns4_minimal' "$SQ_MNT/etc/nsswitch.conf" 2>/dev/null \
+      && record pass "nsswitch: mdns4_minimal present (mDNS hostname probe works)" \
+      || record fail "nsswitch: mdns4_minimal present" "libnss-mdns installed but nsswitch does not use it — duplicate probe would be dead"
     printf '%s' "$WG_DEFAULTS" | grep -q '^PrivateKey' \
       && record fail "WG private key staged" "secrets are generated on the stick, never baked" \
       || record pass "no WG private key baked"
@@ -247,6 +256,7 @@ wireless-regdb
 iw
 iproute2
 avahi-daemon
+libnss-mdns
 curl
 git
 tmux

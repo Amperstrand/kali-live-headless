@@ -10,7 +10,8 @@
 #
 # Usage:
 #   kali-live-vm-create --id NAME --cores N --ram-gb N --disk-gb N
-#                       [--format raw|qcow2] [--prealloc] [--meta k=v ...]
+#                       [--format raw|qcow2] [--prealloc] [--cpu MODEL]
+#                       [--meta k=v ...]
 #
 #   --id        VM identifier: [a-z0-9-], first char alnum, max 48 — also
 #               the Windows-side file name C:\vms\<id>.<format> and the
@@ -19,6 +20,14 @@
 #   --format    raw (default, best I/O path through ntfs-3g) or qcow2
 #               (pick this if the VM will later need snapshots/resume).
 #   --prealloc  fully allocate instead of sparse.
+#   --cpu       CPU model printed in the virt-install hint (default: max).
+#               Do NOT use host / host-passthrough: on a hybrid-Intel host
+#               (P+E cores) the resolved model is written as
+#               mode=custom match=exact check=full and the guest triple-faults
+#               before the kernel can print a line — an endless GRUB reset
+#               loop with zero serial output (vps1 bring-up, 2026-10-26).
+#               'max' boots there; a bare named model (e.g. Skylake-Client)
+#               with check=none does too.
 #
 # Guards: refuses when the store is not mounted, the pool is not active,
 # free space would drop below reserved_free_mb, or the id is taken.
@@ -32,10 +41,10 @@ set -u
 TAG=kali-live-vmstore
 ENVFILE=/run/kali-live-vmstore.env
 
-usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,/# Guards:/p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 [ $# -ge 1 ] || usage
 
-ID="" CORES="" RAM_GB="" DISK_GB="" FORMAT="" PREALLOC=false
+ID="" CORES="" RAM_GB="" DISK_GB="" FORMAT="" PREALLOC=false CPU=""
 METAS=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -44,6 +53,7 @@ while [ $# -gt 0 ]; do
         --ram-gb)  RAM_GB=${2:?}; shift 2 ;;
         --disk-gb) DISK_GB=${2:?}; shift 2 ;;
         --format)  FORMAT=${2:?}; shift 2 ;;
+        --cpu)     CPU=${2:?}; shift 2 ;;
         --prealloc) PREALLOC=true; shift ;;
         --meta)    METAS="$METAS $2"; shift 2 ;;
         -h|--help) usage ;;
@@ -67,6 +77,7 @@ case "$DISK_GB" in ''|*[!0-9]*) die "--disk-gb must be a positive integer" ;; es
 [ "$RAM_GB" -ge 1 ] 2>/dev/null || die "--ram-gb must be >= 1"
 [ "$DISK_GB" -ge 1 ] 2>/dev/null || die "--disk-gb must be >= 1"
 [ "$FORMAT" = "" ] && FORMAT=raw
+[ "$CPU" = "" ] && CPU=Skylake-Client
 case "$FORMAT" in raw|qcow2) ;; *) die "--format must be raw or qcow2" ;; esac
 
 # The libvirt volume name — and therefore the Windows-side file name — is
@@ -131,7 +142,7 @@ echo "created: $VOLPATH"
 echo "meta:    $METAFILE"
 echo "next (prebuilt rootfs image):"
 echo "  virt-install --connect qemu:///system --name $ID --vcpus $CORES --memory $((RAM_GB * 1024)) \\"
-echo "    --cpu host --controller scsi,model=virtio-scsi --import --noreboot \\"
+echo "    --cpu $CPU --controller scsi,model=virtio-scsi --import --noreboot \\"
 echo "    --disk vol=$POOL/$VOL,bus=scsi,cache=writeback,discard=unmap,format=$FORMAT"
 echo "next (cloud-init seed / install ISO): add --disk path=<seed-or-iso>,bus=scsi \\"
 echo "  and the corresponding install/import flags (docs/vm-store-ntfs-research.md §8)"

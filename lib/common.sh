@@ -127,6 +127,10 @@ klh_load_config() {
   source "$f"
 
   : "${HOSTNAME:=kali-live}"
+  # hardware = boot-time self-describing name derived from DMI/CPU/RAM/disk
+  # (x280-8c16r256d), with an mDNS probe that appends -2 for identical
+  # machines; static = the HOSTNAME above, verbatim.
+  : "${HOSTNAME_SCHEME:=hardware}"
   : "${WIFI_SSID:=}"
   : "${WIFI_PSK:=}"
   : "${WIFI_KEYMGMT:=wpa-psk}"
@@ -177,6 +181,10 @@ klh_load_config() {
   : "${FIPS_PEER_NPUB:=}"
 
   klh_validate_hostname "$HOSTNAME"     || klh_die "invalid HOSTNAME '$HOSTNAME' in $f"
+  case "${HOSTNAME_SCHEME:-}" in
+    hardware|static) ;;
+    *) klh_die "invalid HOSTNAME_SCHEME '${HOSTNAME_SCHEME:-}' in $f (hardware|static)" ;;
+  esac
   klh_validate_ssid "$WIFI_SSID"        || klh_die "invalid WIFI_SSID in $f (1-32 chars, no control chars, no leading/trailing whitespace)"
   klh_validate_psk "$WIFI_PSK"          || klh_die "invalid WIFI_PSK in $f (8-63 chars, no control chars, no leading/trailing whitespace)" 
   klh_validate_keymgmt "$WIFI_KEYMGMT"  || klh_die "invalid WIFI_KEYMGMT '$WIFI_KEYMGMT' (must be wpa-psk or sae)"

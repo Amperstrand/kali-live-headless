@@ -133,13 +133,13 @@ fi
 LEAN_EXPECTED="false"
 
 # load config values if available (non-fatal)
-HOSTNAME_EXPECTED="kali-live" WIFI_SSID_EXPECTED="" PUBKEY_FP_EXPECTED="" SSH_KEY=""
+HOSTNAME_EXPECTED="kali-live" HOSTNAME_SCHEME_EXPECTED="hardware" WIFI_SSID_EXPECTED="" PUBKEY_FP_EXPECTED="" SSH_KEY=""
 BOOT_DEFAULT_EXPECTED="live" LIVE_PASSWORD_MODE_EXPECTED="random" WITH_KVM_EXPECTED="true" WG_ENDPOINT_EXPECTED="" VARIANT_EXPECTED="minimal" TORAM_EXPECTED="true"
 if [ -r "$REPO_DIR/config" ]; then
   rm -f "$SCRATCH/env" "$SCRATCH/pubkeypath"
   # shellcheck disable=SC1091
   ( set -a; source "$REPO_DIR/lib/common.sh"; klh_load_config "$REPO_DIR/config"; \
-    printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$HOSTNAME" "$WIFI_SSID" "$BOOT_DEFAULT" "$LIVE_PASSWORD_MODE" "$WITH_KVM" "${WG_ENDPOINT:-}" "$VARIANT" "$TORAM_ENTRY" "${LEAN:-false}" > "$SCRATCH/env"; \
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$HOSTNAME" "$WIFI_SSID" "$BOOT_DEFAULT" "$LIVE_PASSWORD_MODE" "$WITH_KVM" "${WG_ENDPOINT:-}" "$VARIANT" "$TORAM_ENTRY" "${LEAN:-false}" "${HOSTNAME_SCHEME:-hardware}" > "$SCRATCH/env"; \
     printf '%s\n' "$(klh_expand_tilde "$SSH_PUBKEY_PATH")" > "$SCRATCH/pubkeypath" )
   HOSTNAME_EXPECTED=$(sed -n 1p "$SCRATCH/env")
   WIFI_SSID_EXPECTED=$(sed -n 2p "$SCRATCH/env")
@@ -150,6 +150,7 @@ if [ -r "$REPO_DIR/config" ]; then
   VARIANT_EXPECTED=$(sed -n 7p "$SCRATCH/env")
   TORAM_EXPECTED=$(sed -n 8p "$SCRATCH/env")
   LEAN_EXPECTED=$(sed -n 9p "$SCRATCH/env")
+  HOSTNAME_SCHEME_EXPECTED=$(sed -n 10p "$SCRATCH/env")
   PUBKEY_PATH=$(cat "$SCRATCH/pubkeypath")
   if [ -r "$PUBKEY_PATH" ] && command -v ssh-keygen >/dev/null; then
     if PUBKEY_FP_EXPECTED=$(ssh-keygen -lf "$PUBKEY_PATH" 2>/dev/null | sed 's/^ *[0-9]* //'); then
@@ -363,7 +364,7 @@ case "$v" in "kali — Kali (assumed"*) record pass "flash: base detect — no m
   *) record fail "flash: base detect — no manifest defaults to kali" "got '${v:-<none>}'" ;; esac
 
 # systemd unit sanity
-UNITS=(kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-blackbox)
+UNITS=(kali-live-headless-provision kali-live-hostname-settle kali-live-console-banner kali-live-wifi-watchdog kali-live-blackbox)
 for u in "${UNITS[@]}"; do
   f="$REPO_DIR/overlay/kali-config/common/includes.chroot/etc/systemd/system/$u.service"
   if grep -q '^\[Unit\]' "$f" && grep -q '^\[Service\]' "$f" && grep -q '^\[Install\]' "$f" && grep -q '^ExecStart=' "$f"; then
@@ -652,4 +653,164 @@ STUB
     || record fail "tollgate trigger: no staged mint = bare invocation"
 else
   record fail "tollgate trigger shipped+executable"
+fi
+
+# ============================================ hardware-derived hostname
+# The boot-time name is <model>-<cores>c<ram>r<disk>d (x280-8c16r256d).
+# Derivation is pure sysfs/procfs parsing, so it is unit-testable here from
+# fixtures — the boot stages only prove the QEMU machine's own name, which
+# cannot exercise Lenovo DMI, dm-*/zram exclusion, or the duplicate probe.
+HWD="$REPO_DIR/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-hostname-derive"
+HWS="$REPO_DIR/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-hostname-settle"
+if [ -x "$HWD" ]; then
+  record pass "hostname derive shipped+executable"
+  HW="$SCRATCH/hw"; mkdir -p "$HW/dmi" "$HW/sys/block"
+  # Lenovo X280 (the machine this feature was written for): product_version
+  # is the descriptive string, product_name is the SKU. 8 threads, 15.5 GiB
+  # (label: 16), 500118192 sectors = 256 GB. dm-0/zram0/loop0 must be ignored.
+  printf '20KE003KMX\n'      > "$HW/dmi/product_name"
+  printf 'ThinkPad X280\n'   > "$HW/dmi/product_version"
+  printf 'ThinkPad X280\n'   > "$HW/dmi/product_family"
+  printf 'MemTotal:       16255472 kB\n' > "$HW/meminfo"
+  for d in nvme0n1 loop0 zram0 dm-0; do mkdir -p "$HW/sys/block/$d"; echo 0 > "$HW/sys/block/$d/removable"; done
+  echo 500118192 > "$HW/sys/block/nvme0n1/size"
+  echo 4000      > "$HW/sys/block/loop0/size"
+  echo 32509952  > "$HW/sys/block/zram0/size"
+  echo 999999999 > "$HW/sys/block/dm-0/size"
+  out=$(KLH_DMI_DIR="$HW/dmi" KLH_SYSBLOCK="$HW/sys/block" KLH_MEMINFO="$HW/meminfo" \
+        KLH_NPROC=8 "$HWD" --no-probe 2>/dev/null)
+  [ "$out" = "x280-8c16r256d" ] \
+    && record pass "hostname derive: Lenovo X280 -> x280-8c16r256d" \
+    || record fail "hostname derive: Lenovo X280 -> x280-8c16r256d" "got '$out'"
+  klh_validate_hostname "$out" \
+    && record pass "hostname derive: output passes hostname(7) rules" \
+    || record fail "hostname derive: output passes hostname(7) rules" "'$out'"
+
+  # Dell: product_version is a DMI placeholder, model lives in product_name;
+  # sda is the live medium in this run, so no disk component must appear
+  # (a stick-less machine descends to model+cores+RAM instead of counting
+  # the boot medium's size as hardware).
+  HW2="$SCRATCH/hw-dell"; mkdir -p "$HW2/dmi" "$HW2/sys/block/sda"
+  printf 'Latitude 7490\n'      > "$HW2/dmi/product_name"
+  printf 'Not Specified\n'      > "$HW2/dmi/product_version"
+  : > "$HW2/dmi/product_family"; : > "$HW2/dmi/board_name"
+  echo 0 > "$HW2/sys/block/sda/removable"
+  echo 250069680 > "$HW2/sys/block/sda/size"
+  out=$(KLH_DMI_DIR="$HW2/dmi" KLH_SYSBLOCK="$HW2/sys/block" KLH_MEMINFO="$HW/meminfo" \
+        KLH_NPROC=4 KLH_MEDIUM_SRC=/dev/sda "$HWD" --no-probe 2>/dev/null)
+  [ "$out" = "latitude-7490-4c16r" ] \
+    && record pass "hostname derive: DMI placeholder skipped + live medium not counted as disk" \
+    || record fail "hostname derive: DMI placeholder skipped + live medium not counted as disk" "got '$out'"
+
+  # A bare vendor version string in product_version ("1.0") names nothing and
+  # must fall through to product_name instead of producing "1-0-...".
+  printf '1.0\n' > "$HW2/dmi/product_version"
+  out=$(KLH_DMI_DIR="$HW2/dmi" KLH_SYSBLOCK="$HW2/sys/block" KLH_MEMINFO="$HW/meminfo" \
+        KLH_NPROC=4 KLH_MEDIUM_SRC=/dev/sda "$HWD" --no-probe 2>/dev/null)
+  printf 'Not Specified\n' > "$HW2/dmi/product_version"
+  [ "$out" = "latitude-7490-4c16r" ] \
+    && record pass "hostname derive: bare version string skipped" \
+    || record fail "hostname derive: bare version string skipped" "got '$out'"
+
+  # Desktop/big-core case (Lenovo Legion-class tower): 20 cores, 32 GiB
+  # installed (MemTotal ~31 GiB — must round UP to 32r), 1 TB NVMe + a 2 TB
+  # SATA data disk (NVMe wins). Model comes from product_version;
+  # product_name is the SKU.
+  HW3="$SCRATCH/hw-legion"; mkdir -p "$HW3/dmi" "$HW3/sys/block/nvme0n1" "$HW3/sys/block/sda"
+  printf '90RC00ABCD
+'          > "$HW3/dmi/product_name"
+  printf 'Legion T5 26AMR5\n'    > "$HW3/dmi/product_version"
+  printf 'Legion T5 26AMR5\n'    > "$HW3/dmi/product_family"
+  : > "$HW3/dmi/board_name"
+  printf 'MemTotal:       32400000 kB\n' > "$HW3/meminfo"
+  echo 0 > "$HW3/sys/block/nvme0n1/removable"
+  echo 1953525168 > "$HW3/sys/block/nvme0n1/size"
+  # ...plus a larger secondary SATA disk: the NVMe must win (desktops pair a
+  # fast system drive with a big data disk; naming the machine after the
+  # data disk would be wrong).
+  echo 0 > "$HW3/sys/block/sda/removable"
+  echo 4000787030016 > "$HW3/sys/block/sda/size"
+  out=$(KLH_DMI_DIR="$HW3/dmi" KLH_SYSBLOCK="$HW3/sys/block" KLH_MEMINFO="$HW3/meminfo" \
+        KLH_NPROC=20 "$HWD" --no-probe 2>/dev/null)
+  [ "$out" = "legion-t5-26amr5-20c32r1000d" ] \
+    && record pass "hostname derive: 20-core Legion tower -> legion-t5-26amr5-20c32r1000d" \
+    || record fail "hostname derive: 20-core Legion tower" "got '$out'"
+
+  # Duplicate resolution: base and -2 already answered by another host ->
+  # -3. Uses the documented KLH_PROBE_CMD/KLH_OWN_ADDRS hooks.
+  cat > "$SCRATCH/probe-dupe.sh" <<'PROBE'
+#!/bin/sh
+case "$1" in
+  latitude-7490-4c16r128d|latitude-7490-4c16r128d-2) echo 192.168.13.50 ;;
+  *) exit 1 ;;
+esac
+PROBE
+  chmod +x "$SCRATCH/probe-dupe.sh"
+  out=$(KLH_PROBE_CMD="$SCRATCH/probe-dupe.sh" KLH_OWN_ADDRS=192.168.13.217 \
+        KLH_DMI_DIR="$HW2/dmi" KLH_SYSBLOCK="$HW2/sys/block" KLH_MEMINFO="$HW/meminfo" \
+        KLH_NPROC=4 "$HWD" 2>/dev/null)
+  [ "$out" = "latitude-7490-4c16r128d-3" ] \
+    && record pass "hostname derive: duplicate probe suffixes -3 (base and -2 taken)" \
+    || record fail "hostname derive: duplicate probe suffixes -3 (base and -2 taken)" "got '$out'"
+
+  # Our OWN mDNS answer is not a duplicate (the probe must exclude this
+  # machine's addresses, or every boot would rename itself to -2).
+  cat > "$SCRATCH/probe-self.sh" <<'PROBE'
+#!/bin/sh
+echo 192.168.13.217
+PROBE
+  chmod +x "$SCRATCH/probe-self.sh"
+  out=$(KLH_PROBE_CMD="$SCRATCH/probe-self.sh" KLH_OWN_ADDRS=192.168.13.217 \
+        KLH_DMI_DIR="$HW2/dmi" KLH_SYSBLOCK="$HW2/sys/block" KLH_MEMINFO="$HW/meminfo" \
+        KLH_NPROC=4 "$HWD" 2>/dev/null)
+  [ "$out" = "latitude-7490-4c16r128d" ] \
+    && record pass "hostname derive: own mDNS answer is not a duplicate" \
+    || record fail "hostname derive: own mDNS answer is not a duplicate" "got '$out'"
+
+  # Underscore is not a legal hostname character: the counter MUST be a dash
+  # (the requested "_2" form would break avahi/DNS/cert SANs).
+  case "$out" in *_) record fail "hostname derive: counter uses '-' not '_'" ;; esac
+else
+  record fail "hostname derive shipped+executable"
+fi
+if [ -x "$HWS" ]; then
+  record pass "hostname settle shipped+executable"
+else
+  record fail "hostname settle shipped+executable"
+fi
+if grep -q '^HOSTNAME_SCHEME=' "$REPO_DIR/config.example"; then
+  record pass "config.example documents HOSTNAME_SCHEME"
+else
+  record fail "config.example documents HOSTNAME_SCHEME"
+fi
+
+# stick-conf must NOT write an explicit HOSTNAME= for the hardware scheme:
+# that line is the highest-precedence override at boot, so flashing would
+# pin every stick to the build host's ./config name and silently disable
+# HOSTNAME_SCHEME=hardware.
+SCC="$REPO_DIR/scripts/stick-conf.sh"
+if [ -x "$SCC" ]; then
+  SHC="$SCRATCH/stick-hw.conf"
+  cat > "$SHC" <<'SCCFG'
+WIFI_SSID=SomeNet
+WIFI_PSK=SomePassphrase123
+WIFI_KEYMGMT=wpa-psk
+WIFI_HIDDEN=false
+WIFI_REGDOM=US
+HOSTNAME=kali-live
+HOSTNAME_SCHEME=hardware
+SCCFG
+  out=$("$SCC" --config "$SHC" 2>/dev/null)
+  if printf '%s' "$out" | grep -q '^HOSTNAME='; then
+    record fail "stick-conf: hardware scheme omits HOSTNAME override" "flashed sticks would be pinned to the build name"
+  else
+    record pass "stick-conf: hardware scheme omits HOSTNAME override"
+  fi
+  sed -i 's/^HOSTNAME_SCHEME=hardware$/HOSTNAME_SCHEME=static/' "$SHC"
+  out=$("$SCC" --config "$SHC" 2>/dev/null)
+  printf '%s' "$out" | grep -q '^HOSTNAME=kali-live$' \
+    && record pass "stick-conf: static scheme writes HOSTNAME override" \
+    || record fail "stick-conf: static scheme writes HOSTNAME override"
+else
+  record skip "stick-conf hostname scheme" "script missing"
 fi

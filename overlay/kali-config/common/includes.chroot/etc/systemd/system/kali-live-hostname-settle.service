@@ -1,0 +1,17 @@
+[Unit]
+Description=kali-live-headless: disambiguate an auto-derived hostname once the LAN is up
+Documentation=man:hostname(7)
+# The provisioner derives the hardware name before NetworkManager starts, so
+# the mDNS duplicate probe can only run later. After the network AND after
+# provisioning (the provisioner writes the marker this unit gates on).
+After=network-online.target avahi-daemon.service kali-live-headless-provision.service
+Wants=network-online.target
+ConditionPathExists=/run/kali-live-headless/hostname-auto
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/kali-live-hostname-settle
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
