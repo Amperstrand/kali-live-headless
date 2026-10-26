@@ -37,6 +37,20 @@ else
   record pass "overlay free of bytecode"
 fi
 
+# mksquashfs refuses "/", "./" and "../" prefixed excludes when live-build
+# passes -wildcards — and it refuses at the END of a build, after the whole
+# chroot has been built (cost: build #36, 2026-10-26). Cheap to check here.
+_excl="$REPO_DIR/overlay/kali-config/common/rootfs/excludes"
+if [ -f "$_excl" ]; then
+  if grep -qE '^[[:space:]]*(/|\./|\.\./)' "$_excl"; then
+    record fail "rootfs/excludes paths are squashfs-relative" "strip the leading / — mksquashfs -wildcards rejects it fatally"
+  else
+    record pass "rootfs/excludes paths are squashfs-relative"
+  fi
+else
+  record skip "rootfs/excludes present" "no excludes file in the overlay"
+fi
+
 # A hook live-build cannot execute is silently skipped, so the image ships
 # without the step and nothing complains (AGENTS #16: derive_identity.py was
 # 100644 for ten builds and never ran). Every hook in the overlay must be +x;
