@@ -148,6 +148,37 @@ Brief: SPIKE-BRIEF.md. Research: docs/vmhost-base-os-research.md.
   (~570M) and firmware-misc-nonfree diet (~250M) as follow-up experiments
   behind the same adapter; run uefi gate on an OVMF host before flashing.
 
+## M7 — review + merge to main + flash.sh BASE-aware (2026-10-26, morning)
+
+- Review findings en route to the merge (all fixed in the branch):
+  1. main's stage-f restore left the stale Stage F section in stage-cde
+     (DOUBLE execution on every RUN_VMSTORE run) — stale section deleted,
+     stage-f-vmstore.sh (the evolved copy) is the single source.
+  2. main's new files failed static: kali-live-vm-tenant shipped a bashism
+     in #!/bin/sh (build-#11 class), vm-security-audit SC2124/SC2034.
+  3. stage-f guard crashed at content level (KERN_OK unbound under set -u).
+  4. TWO pre-existing vacuous-pass lint gates: aggregate shellcheck read
+     stderr-only (findings go to stdout → always PASS), and the per-file
+     shebang gate skipped every '#!/usr/bin/env bash' script — build.sh/
+     flash.sh/test.sh had ZERO warning-level coverage ever. Both fixed;
+     first real findings cleaned (test.sh SC1124 directive, flash.sh
+     SC2155/SC2034, stage-a's '# shellcheck' prose comment SC1073-ing
+     the sourced chain).
+- flash.sh now BASE-aware: derives the base from the archive manifest
+  (build.sh has written 'base :' since the spike), shows it pre-flight
+  ('debian — Debian trixie'), no-manifest defaults to kali (historical
+  behavior); slot discovery widened to *.iso; 3 fixture asserts in
+  stage-a (debian/kali/none) — no hardware needed. Flash FLOW itself is
+  base-identical by design.
+- Merged to main @ eb22168 (--no-ff, main tree idle+clean+at origin/main
+  verified first; static 167/0 both bases re-verified IN the main tree
+  post-merge). Branch and main pushed; workspace-state.md updated.
+- Physical test (flashing a debian stick) deliberately deferred to the
+  owner — "we can test later". Known post-merge content-level note:
+  iso-build2 vs HEAD suite = vm-tenant age-mismatch (expected; any
+  post-merge build resolves it).
+
+
 
 
 
