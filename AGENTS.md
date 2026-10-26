@@ -370,6 +370,23 @@ drift is absorbed by bumping the pin, nothing else.
     drops `.deploy`/`.xml`/seed so a dead guest leaves no resurrection
     debris.
 
+34. **The flashed medium is not the ISO file — by design** (2026-10-26,
+    X280 read-back): `flash.sh` dd's, verifies whole-device, THEN appends the
+    KLHCONFIG partition, and `sfdisk` rewrites the MBR **inside the ISO's own
+    32 KiB system area** — from that moment a whole-device hash can never
+    match the ISO again (read-back `5320c820…` vs `7dcfa092…`, while the
+    ISO's internal `sha256sum.txt` verified clean on the same medium).
+    xorriso would solve this natively (`-md5` images + `-check_media`) but
+    our ISOs carry no MD5 sums — checked empirically, `-check_media` on this
+    image reports only `+ good`, i.e. blocks READ, not that they match.
+    The contract lives in `tools/medium-verify.sh`: payload region
+    `[32768, ISO_SIZE)` byte-identical + table entries only ADDED (asserted
+    in Stage A on a synthetic medium); `--verify-only` is region-aware for
+    the same reason. If the image format ever grows xorriso MD5 sums
+    (one `-md5` flag upstream), switch the payload check to
+    `xorriso -indev stdio:/dev/sdX -check_media` — it also covers the
+    system-area boot code, which a region compare deliberately does not.
+
 ## Public-repo hygiene
 
 The repo is **public**. Nothing private may land here, ever: no PSKs, SSIDs,
