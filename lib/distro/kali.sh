@@ -25,6 +25,32 @@ KLH_DISTRO_KEYRING=/usr/share/keyrings/kali-archive-keyring.gpg
 # shellcheck disable=SC2034
 KLH_DISTRO_KEYRING_PACKAGE=kali-archive-keyring
 
+# ---- ownership properties ---------------------------------------------------
+# build.sh and the suite read these instead of comparing KLH_BASE anywhere
+# outside lib/distro/ — the adapter owns every base delta.
+# Pin BRANCH to KLH_DISTRO_DEFAULT_BRANCH when the operator gave none?
+# false here: the historical flow defaulted BRANCH via klh_load_config
+# (kali-rolling) — byte-identical to the pre-adapter behavior.
+# shellcheck disable=SC2034
+KLH_DISTRO_PIN_BRANCH_WHEN_UNSET=false
+# Must build.sh inject -m when no mirror is configured? (Upstream's own
+# default is a kali URL.) false: leave BUILD_MIRROR untouched — the exact
+# pre-adapter flow passed no -m at all.
+# shellcheck disable=SC2034
+KLH_DISTRO_NEEDS_EXPLICIT_MIRROR=false
+# Baseline metapackage the minimal variant must carry (suite assert);
+# unset/empty = this base needs no such package.
+# shellcheck disable=SC2034
+KLH_DISTRO_BASELINE_PKG=kali-linux-core
+# Metapackage that must be ABSENT on the minimal variant (a misconfigured
+# VARIANT silently quadruples the image); unset/empty = no such check.
+# shellcheck disable=SC2034
+KLH_DISTRO_META_PKG_MINIMAL_ABSENT=kali-linux-default
+# Package-name prefix that must never appear in this base's image (the
+# franken-build guard); unset/empty = no forbidden prefix.
+# shellcheck disable=SC2034
+KLH_DISTRO_FORBIDDEN_PKG_PREFIX=""
+
 klh_distro_validate_branch() { # $1 = BRANCH value
   case " $KLH_DISTRO_BRANCHES " in
     *" $1 "*) ;;

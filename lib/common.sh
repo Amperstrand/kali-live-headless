@@ -33,19 +33,26 @@ klh_require_cmd() {
   command -v "$1" >/dev/null 2>&1 || klh_die "'$1' is required but not found in PATH"
 }
 
-# Load the BASE=<kali|debian> distro adapter (lib/distro/<base>.sh). The
+# Load the BASE=<adapter> distro adapter (lib/distro/<base>.sh). The
 # adapter defines KLH_BASE/DISTRO_NAME/OS_ID/BRANCHES/DEFAULT_BRANCH/
-# DEFAULT_MIRROR/KEYRING* plus the klh_distro_* hooks build.sh and the test
-# stages call. BASE=kali's adapter is all no-ops — the pre-spike behavior.
+# DEFAULT_MIRROR/KEYRING*/ownership properties plus the klh_distro_*
+# hooks build.sh and the test stages call. Adapters are DISCOVERED from
+# lib/distro/*.sh — adding a base is dropping a file there, no loader
+# edit. BASE=kali's adapter is all no-ops — the pre-spike behavior.
 klh_load_distro() {
-  case "${1:-}" in
-    kali|debian) ;;
-    *) klh_die "BASE must be 'kali' or 'debian' (got '${1:-<empty>}')" ;;
-  esac
   _klh_repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+  _klh_known=$(cd "$_klh_repo_dir/lib/distro" 2>/dev/null && ls -- *.sh 2>/dev/null | sed 's/\.sh$//' | paste -sd' ' -)
+  case "${1:-}" in
+    # path-safety first: the name is used in a source path
+    ''|*[!a-z0-9-]*)
+      klh_die "BASE must be one of: ${_klh_known:-<none found>} (got '${1:-<empty>}')" ;;
+  esac
   # shellcheck source=distro/kali.sh
+  [ -f "$_klh_repo_dir/lib/distro/$1.sh" ] \
+    || klh_die "BASE must be one of: ${_klh_known:-<none found>} (got '$1')"
+  # shellcheck disable=SC1090  # the adapter file is chosen by BASE at runtime
   . "$_klh_repo_dir/lib/distro/$1.sh"
-  unset _klh_repo_dir
+  unset _klh_repo_dir _klh_known
   [ "${KLH_BASE:-}" = "$1" ] || klh_die "adapter lib/distro/$1.sh set KLH_BASE='${KLH_BASE:-<unset>}' — contract violation"
   return 0
 }

@@ -65,8 +65,15 @@ if [ -n "$ISO_ARG" ]; then
   [ -n "$SRC" ] && [ -f "$SRC" ] || klh_die "ISO not found: $ISO_ARG"
   BUILD=${BUILD_ARG:-$(next_build)}
 elif [ -n "$BUILD_ARG" ]; then
-  SRC="$OUT_DIR/iso-build$BUILD_ARG/$ISO_NAME"
-  [ -f "$SRC" ] || klh_die "build $BUILD_ARG has no archive at $SRC (available: $(archived_builds | tr '\n' ' '))"
+  # any ISO name the BASE/variant produced — the fixed kali name broke
+  # --build for every debian archive (spike lesson, 2026-10-26)
+  set -- "$OUT_DIR/iso-build$BUILD_ARG"/*.iso
+  if [ ! -e "$1" ]; then
+    klh_die "build $BUILD_ARG has no ISO archived (available: $(archived_builds | tr '\n' ' '))"
+  elif [ $# -gt 1 ]; then
+    klh_die "build $BUILD_ARG archives MULTIPLE ISOs — pass --iso to pick one"
+  fi
+  SRC=$1
   BUILD=$BUILD_ARG
 else
   # bare run: only trust the marker build.sh writes when a build really finished

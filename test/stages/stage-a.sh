@@ -266,7 +266,17 @@ for d in "$REPO_DIR"/lib/distro/*.sh; do
   else
     record fail "distro adapter: $_dname" "$_dout"
   fi
-  # adapter's own branches must validate; a foreign one must be refused
+  # ownership properties: build.sh and the suite branch on these instead
+  # of comparing KLH_BASE — a missing/invalid one silently changes build
+  # behavior (the flag contract IS the modularity)
+  _dprops=$(bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro '$_dname' >/dev/null; printf '%s|%s' \"\${KLH_DISTRO_PIN_BRANCH_WHEN_UNSET:-<unset>}\" \"\${KLH_DISTRO_NEEDS_EXPLICIT_MIRROR:-<unset>}\"" 2>/dev/null)
+  case "$_dprops" in
+    "true|true"|"true|false"|"false|true"|"false|false") record pass "distro adapter: $_dname ownership properties ($_dprops)" ;;
+    *) record fail "distro adapter: $_dname ownership properties" "PIN|MIRROR must each be true or false — got '$_dprops'" ;;
+  esac
+  # adapter's own branches must validate; a FOREIGN adapter's default
+  # branch must be refused (pairwise — every adapter vs every other; no
+  # adapter names hardcoded in the suite)
   for _db in $(
     bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro '$_dname'; printf '%s' \"\$KLH_DISTRO_BRANCHES\"" 2>/dev/null
   ); do
@@ -276,16 +286,21 @@ for d in "$REPO_DIR"/lib/distro/*.sh; do
       record fail "distro adapter: $_dname accepts branch $_db"
     fi
   done
+  for _other in "$REPO_DIR"/lib/distro/*.sh; do
+    _oname=$(basename "$_other" .sh)
+    [ "$_oname" != "$_dname" ] || continue
+    _obranch=$(bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro '$_oname'; printf '%s' \"\$KLH_DISTRO_DEFAULT_BRANCH\"" 2>/dev/null)
+    if bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro '$_dname'; klh_distro_validate_branch '$_obranch'" >/dev/null 2>&1; then
+      record fail "distro adapter: $_dname refuses foreign branch $_obranch ($_oname's default)"
+    else
+      record pass "distro adapter: $_dname refuses foreign branch $_obranch ($_oname's default)"
+    fi
+  done
 done
 if bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro nosuchbase" >/dev/null 2>&1; then
   record fail "klh_load_distro rejects unknown BASE"
 else
   record pass "klh_load_distro rejects unknown BASE"
-fi
-if bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro debian; klh_distro_validate_branch kali-rolling" >/dev/null 2>&1; then
-  record fail "debian adapter refuses foreign branch (kali-rolling)"
-else
-  record pass "debian adapter refuses foreign branch (kali-rolling)"
 fi
 
 # ---- flash.sh base detection (BASE-agnostic flashing) ------------------------
