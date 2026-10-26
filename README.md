@@ -292,8 +292,10 @@ it, the name gains `-2`, `-3`, … (a **dash**, not `_`: underscore is not a
 legal hostname character and breaks mDNS/DNS/certificate SANs). The probe is
 best-effort: no default route within 30 s, or no mDNS resolver, leaves the
 base name in place; two identical machines *first-booting at the same
-instant* can both probe before either is registered and keep the base name
-until the next boot (avahi still publishes one of them as `<name>-2.local`).
+instant* are re-probed after a few seconds, once avahi has resolved the
+collision at the mDNS layer (it renames one of them to `<name>-2.local`).
+Only a LAN with no mDNS answer at all leaves both on the base name until
+the next boot.
 
 Set `HOSTNAME_SCHEME=static` in `./config` for the old behaviour, or put
 `HOSTNAME=<name>` in a KLHCONFIG `headless-wifi.conf` to pin one machine

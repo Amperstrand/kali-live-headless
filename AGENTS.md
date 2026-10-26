@@ -344,8 +344,9 @@ drift is absorbed by bumping the pin, nothing else.
    line for the hardware scheme (that line is the boot-time override and
    would pin every stick to the build name — asserted in Stage A);
    `hw-check.sh` needs `--host` in hardware mode; probes are best-effort
-   (no route in 30 s or no mDNS resolver = no disambiguation, and two
-   identical first boots in the same instant can both keep the base name).
+   (no route in 30 s or no mDNS resolver = no disambiguation; simultaneous
+   first boots are re-probed twice after avahi's collision resolution, but
+   a LAN that never answers mDNS can still leave both on the base name).
    Test hooks `KLH_DMI_DIR`/`KLH_SYSBLOCK`/`KLH_MEMINFO`/`KLH_NPROC`/
    `KLH_PROBE_CMD`/`KLH_OWN_ADDRS` exist for fixture-based unit tests.
 
