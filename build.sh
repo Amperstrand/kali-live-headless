@@ -58,7 +58,7 @@ KEEP_ARTIFACTS=false
 POOL_DIR=""
 ARCHIVE=true
 SQUASHFS_COMP="zstd"
-OPT_OUT="" OPT_VARIANT="" OPT_ARCH="" OPT_BRANCH="" OPT_REF="" OPT_NUMBER=""
+OPT_OUT="" OPT_VARIANT="" OPT_ARCH="" OPT_BRANCH="" OPT_REF="" OPT_NUMBER="" OPT_SDE=""
 
 usage() {
   cat <<EOF
@@ -70,6 +70,11 @@ Options:
   -a, --arch A         Architecture (default: amd64)
   -b, --branch B       Kali branch (default: kali-rolling)
   -R, --ref REF        Pin upstream kali-live git ref (commit or branch)
+      --sde EPOCH      Pin SOURCE_DATE_EPOCH explicitly. A build is identified
+                       by (commit, sde): re-running the same pair is a
+                       *reproduction check*, not a new artifact — build.sh
+                       compares the sha512 against the archived one and says
+                       REPRODUCED or MISMATCH. Default: HEAD's commit time
       --keep-artifacts Keep the chroot/binary tree after the build (upstream
                        -k) — for debugging a failed run, not for speed
       --pool           Freeze this build's .deb set into the content-addressed
@@ -111,6 +116,7 @@ EOF
                        KEEP_ARTIFACTS=true; shift ;;
     --zstd)            SQUASHFS_COMP=zstd; shift ;;
     --xz)              SQUASHFS_COMP=xz; shift ;;
+    --sde)             OPT_SDE=${2:?}; shift 2 ;;
     --number)          OPT_NUMBER=${2:?}; shift 2 ;;
     --no-archive)      ARCHIVE=false; shift ;;
     --keep-secrets)    KEEP_SECRETS=true; shift ;;
@@ -532,7 +538,15 @@ fi
 # 2454269952 B sha512 30c25031…, #33 2454269952 B sha512 8fc5b712…).
 # Pin it to HEAD's commit time: same source ⇒ same clock, by construction.
 # Override with KLH_SOURCE_DATE_EPOCH=<epoch> when re-running an old build.
-if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+if [ -n "$OPT_SDE" ]; then
+  # Identity is (commit, sde). Pinning the clock from the command line is what
+  # makes two runs of the same commit comparable even when other commits landed
+  # in between — without it, "same source" is not the same clock (2026-10-26:
+  # #36 and #37 differed only because a docs commit moved HEAD by 9 minutes).
+  case "$OPT_SDE" in (''*[!0-9]*) klh_die "--sde wants a unix epoch, got: $OPT_SDE" ;; esac
+  export SOURCE_DATE_EPOCH="$OPT_SDE"
+  klh_info "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH (pinned with --sde)"
+elif [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
   if _sde=$(git -C "$REPO_DIR" log -1 --format=%ct 2>/dev/null) && [ -n "$_sde" ]; then
     export SOURCE_DATE_EPOCH="$_sde"
     klh_info "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH (HEAD commit time)"
@@ -540,6 +554,17 @@ if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
 else
   klh_info "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH (inherited from the environment)"
 fi
+
+# Build identity for the archive + ledger: what was built, not when.
+# Untracked files are ignored on purpose — the build stages trees under
+# build/ and output/ that are never part of the source identity.
+KLH_BUILD_REF=$(git -C "$REPO_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+if ! git -C "$REPO_DIR" diff --quiet --untracked-files=no 2>/dev/null; then
+  KLH_BUILD_REF="$KLH_BUILD_REF-dirty"
+fi
+KLH_BUILD_SDE=${SOURCE_DATE_EPOCH:-unknown}
+export KLH_BUILD_REF KLH_BUILD_SDE
+klh_info "build identity: $KLH_BUILD_REF sde=$KLH_BUILD_SDE"
 SELF_HASH_START=$(sha256sum "$0" | cut -d' ' -f1)
 # The ISO is written to a staging dir, never straight into the output dir:
 # archiving then moves it into output/iso-buildN/, so a failed or concurrent
@@ -648,6 +673,30 @@ fi
 # ------------------------------------------------------------- archive
 STAGE_ISO=$(find "$STAGE_OUT" -maxdepth 1 -name '*.iso' -print -quit 2>/dev/null || true)
 [ -n "$STAGE_ISO" ] || klh_die "build reported success (rc=0) but no ISO in $STAGE_OUT"
+
+# ------------------------------------------------- reproducibility verdict
+# Identity is (commit, sde), not the build number. If the ledger already holds
+# an archived build for this pair, this run is a *reproduction check*: compare
+# the bytes and say so, rather than quietly adding a second artifact for the
+# same source. The ledger row itself is written by tools/iso-archive.sh.
+LEDGER="$OUT_DIR/ledger.tsv"
+if [ -f "$LEDGER" ] && [ "$KLH_BUILD_REF" != unknown ] && [ "$KLH_BUILD_SDE" != unknown ]; then
+  _prev=$(awk -F'\t' -v r="$KLH_BUILD_REF" -v s="$KLH_BUILD_SDE" \
+            'NR>1 && $2==r && $3==s {print $1"\t"$6; exit}' "$LEDGER" 2>/dev/null || true)
+  if [ -n "$_prev" ]; then
+    _prev_build=${_prev%%$'\t'*}
+    _prev_sha=${_prev#*$'\t'}
+    _now_sha=$(sha512sum "$STAGE_ISO" | cut -d' ' -f1)
+    if [ "$_prev_sha" = "$_now_sha" ]; then
+      klh_ok "REPRODUCED: byte-identical to build #$_prev_build ($KLH_BUILD_REF sde=$KLH_BUILD_SDE)"
+    else
+      klh_warn "MISMATCH: build #$_prev_build has the same commit+clock but different bytes"
+      klh_info "  archived: ${_prev_sha:0:32}…"
+      klh_info "  this run: ${_now_sha:0:32}…"
+      klh_info "  classify: tools/iso-content-diff.sh \"$OUT_DIR/iso-build$_prev_build/${STAGE_ISO##*/}\" \"$STAGE_ISO\""
+    fi
+  fi
+fi
 
 if [ "$ARCHIVE" = true ]; then
   # Marker lets a manual `tools/iso-archive.sh` (no args) archive this build.
