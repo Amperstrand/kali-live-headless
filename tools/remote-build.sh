@@ -19,6 +19,9 @@
 #   --variant V         VARIANT passed to build.sh                      [default: from local ./config]
 #   --number N          archive as iso-buildN (default: next free on target)
 #   --no-archive        leave the ISO unarchived on the target
+#   --ramdisk SIZE      hold the whole build tree in tmpfs (fastest, but RAM
+#                       is the budget: peak build is ~12-15G on top of the
+#                       running live system and any guests)
 #   --scratch-image P   sparse ext4 image on the target to hold the tree
 #                       (for live boots: put it on a real disk, e.g. the NTFS
 #                       store). Implies the build root lives on that image.
@@ -41,7 +44,8 @@ info() { printf '\033[36mremote-build: %s\033[0m\n' "$*"; }
 ok() { printf '\033[32mremote-build: %s\033[0m\n' "$*"; }
 
 HOST="" NAME="" BASE=kali VARIANT="" NUMBER="" ARCHIVE=true
-SCRATCH_IMAGE="" SCRATCH_SIZE=40G SCRATCH_MNT=""  # empty = $HOME/klh-scratch on the target
+ENGINE=auto DOCKER_DATA_ROOT=""
+SCRATCH_IMAGE="" RAMDISK="" SCRATCH_SIZE=40G SCRATCH_MNT=""  # empty = $HOME/klh-scratch on the target
 MIN_FREE=30 SYNC_ONLY=false WAIT=false FETCH_DIR=""
 
 while [ $# -gt 0 ]; do
@@ -52,8 +56,11 @@ while [ $# -gt 0 ]; do
     --base)          BASE=${2:?}; shift 2 ;;
     --variant)       VARIANT=${2:?}; shift 2 ;;
     --number)        NUMBER=${2:?}; shift 2 ;;
+    --engine)        ENGINE=${2:?}; shift 2 ;;
+    --docker-data-root) DOCKER_DATA_ROOT=${2:?}; shift 2 ;;
     --no-archive)    ARCHIVE=false; shift ;;
     --scratch-image) SCRATCH_IMAGE=${2:?}; shift 2 ;;
+    --ramdisk)       RAMDISK=${2:?}; shift 2 ;;
     --scratch-size)  SCRATCH_SIZE=${2:?}; shift 2 ;;
     --scratch-mnt)   SCRATCH_MNT=${2:?}; shift 2 ;;
     --min-free)      MIN_FREE=${2:?}; shift 2 ;;
@@ -88,23 +95,21 @@ RPCPU=$(sed -n 1p <<<"$PROBE"); RRAM=$(sed -n 2p <<<"$PROBE"); RFREE=$(sed -n 3p
 grep -q rsync-ok <<<"$PROBE" || die "target lacks rsync"
 grep -q tmux-ok <<<"$PROBE" || die "target lacks tmux (a build must survive an ssh drop)"
 grep -q git-ok <<<"$PROBE" || die "target lacks git"
-BUILD_ENGINE="host (live-build installed)"
-grep -q docker-ok <<<"$PROBE" && BUILD_ENGINE="docker"
-info "target: ${RPCPU:-?} cores, ${RRAM:-?}G RAM, ${RFREE:-?}G free on /, engine: $BUILD_ENGINE"
-
-# live-build on the host demands root (the docker path gets it from sudo
-# itself). A live image boots an unprivileged user, so run the build under
-# sudo -E and hand the artifacts back afterwards.
-BUILD_PREFIX=""
-if ! grep -q docker-ok <<<"$PROBE" && [ "${RTUID:-0}" != 0 ]; then
-  "${SSH[@]}" 'sudo -n true' 2>/dev/null \
-    || die "target needs root for live-build and sudo is not NOPASSWD"
-  BUILD_PREFIX="sudo -E env"
-  info "host engine + non-root user: build will run under sudo -E"
-fi
+DOCKER_PRESENT=false
+grep -q docker-ok <<<"$PROBE" && DOCKER_PRESENT=true
+info "target: ${RPCPU:-?} cores, ${RRAM:-?}G RAM, ${RFREE:-?}G free on /, docker: $DOCKER_PRESENT"
 
 # ------------------------------------------------- 2. resolve the build root
-if [ -n "$SCRATCH_IMAGE" ]; then
+if [ -n "$RAMDISK" ]; then
+  mnt=${SCRATCH_MNT:-/mnt/klh-ram}
+  ROOT="$mnt/klh-$NAME"
+  info "RAM build: tmpfs ($RAMDISK) at $mnt — fastest, but watch the RAM budget"
+  "${SSH[@]}" "set -e
+    sudo mkdir -p '$mnt'
+    mountpoint -q '$mnt' || sudo mount -t tmpfs -o size=$RAMDISK,mode=0755 tmpfs '$mnt'
+    sudo chown \$(id -u):\$(id -g) '$mnt'" \
+    || die "tmpfs setup failed on $HOST"
+elif [ -n "$SCRATCH_IMAGE" ]; then
   # paths stay shell-literal ("$HOME") on purpose: the whole command string is
   # evaluated on the TARGET, so $HOME means the target user's home, not ours
   mnt="${SCRATCH_MNT:-\$HOME/klh-scratch}"
@@ -125,6 +130,64 @@ if [ -n "$SCRATCH_IMAGE" ]; then
     || die "scratch filesystem setup failed on $HOST"
 else
   ROOT="\$HOME/klh-remote/$NAME"
+fi
+
+# ---------------------------------------------------- 2b. engine selection
+# docker is the default when available: the build then runs in upstream's own
+# container (toolchain from the tree's Dockerfile) instead of whatever
+# live-build the target's distro happens to ship — fewer host variables.
+case "$ENGINE" in
+  auto)   if [ "$DOCKER_PRESENT" = true ]; then ENGINE=docker; else ENGINE=host; fi ;;
+  docker|host) ;;
+  *) die "--engine must be auto|docker|host (got '$ENGINE')" ;;
+esac
+BUILD_PREFIX=""
+
+if [ "$ENGINE" = docker ]; then
+  if [ "$DOCKER_PRESENT" = false ]; then
+    info "docker missing on $HOST — installing (one-time per boot on a live image)"
+    "${SSH[@]}" "tmux kill-session -t klh-docker 2>/dev/null || true
+      tmux new-session -d -s klh-docker 'sudo DEBIAN_FRONTEND=noninteractive apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io > /tmp/klh-docker.log 2>&1; echo DOCKER-EXIT rc=\$? >> /tmp/klh-docker.log'" \
+      || die "could not start the docker install"
+    WAITED=0
+    while ! "${SSH[@]}" "grep -q DOCKER-EXIT /tmp/klh-docker.log 2>/dev/null"; do
+      sleep 15; WAITED=$((WAITED + 15))
+      [ "$WAITED" -lt 900 ] || die "docker install timed out — see $HOST:/tmp/klh-docker.log"
+    done
+    "${SSH[@]}" "grep DOCKER-EXIT /tmp/klh-docker.log" | grep -q 'rc=0' \
+      || die "docker install failed: $("${SSH[@]}" "tail -3 /tmp/klh-docker.log" | tr '\n' ' ')"
+    ok "docker installed"
+  fi
+  # The data-root MUST live on the build filesystem: on a live image
+  # /var/lib/docker sits on a 16G tmpfs and the image layers fill it mid-build.
+  DROOT=${DOCKER_DATA_ROOT:-$ROOT/docker}
+  info "docker data-root -> $DROOT"
+  "${SSH[@]}" "set -e
+    sudo mkdir -p '$DROOT'
+    printf '{\"data-root\":\"%s\"}\n' '$DROOT' | sudo tee /etc/docker/daemon.json >/dev/null
+    sudo systemctl start docker 2>/dev/null || true" || die "docker data-root setup failed"
+  if ! "${SSH[@]}" "sudo docker info >/dev/null 2>&1"; then
+    info "starting dockerd directly (no systemd on this target)"
+    "${SSH[@]}" "tmux kill-session -t klh-dockerd 2>/dev/null || true
+      tmux new-session -d -s klh-dockerd 'sudo dockerd > /tmp/dockerd.log 2>&1'"
+    for _ in $(seq 30); do
+      "${SSH[@]}" "sudo docker info >/dev/null 2>&1" && break
+      sleep 1
+    done
+    "${SSH[@]}" "sudo docker info >/dev/null 2>&1" \
+      || die "dockerd did not come up — see $HOST:/tmp/dockerd.log"
+  fi
+  ok "docker ready (data-root $DROOT)"
+else
+  # live-build on the host demands root; the docker path gets root from sudo
+  # itself. A live image boots an unprivileged user, so run under sudo -E and
+  # hand the artifacts back afterwards.
+  if [ "${RTUID:-0}" != 0 ]; then
+    "${SSH[@]}" 'sudo -n true' 2>/dev/null \
+      || die "host engine needs root for live-build and sudo is not NOPASSWD"
+    BUILD_PREFIX="sudo -E env"
+    info "host engine + non-root user: build runs under sudo -E"
+  fi
 fi
 
 # ------------------------------------------------------- 3. sync the checkout
@@ -180,7 +243,7 @@ if [ "$SYNC_ONLY" = true ]; then
   exit 0
 fi
 
-ARGS=(--variant "$VARIANT" -o "$ROOT/build-out")
+ARGS=(--variant "$VARIANT")  # no -o: build.sh archives into <repo>/output
 [ "$ARCHIVE" = true ] && [ -n "$NUMBER" ] && ARGS+=(--number "$NUMBER")
 [ "$ARCHIVE" = false ] && ARGS+=(--no-archive)
 
@@ -211,7 +274,7 @@ if [ -n "$FETCH_DIR" ]; then
   mkdir -p "$FETCH_DIR"
   info "fetching artifacts -> $FETCH_DIR"
   rsync -a -e "ssh -o BatchMode=yes" --include '*/' --include '*.iso' --include '*.sha512sum' --include '*.iso.log' --include 'INDEX.md' --include 'BUILD-MANIFEST.txt' --exclude '*' \
-    "$HOST:$ROOT/build-out/" "$FETCH_DIR/" || die "artifact fetch failed"
+    "$HOST:$ROOT/src/output/" "$FETCH_DIR/" || die "artifact fetch failed"
   ls -la "$FETCH_DIR"/*.iso 2>/dev/null || die "no ISO came back"
   ok "artifacts in $FETCH_DIR — archive locally with tools/iso-archive.sh --iso <path>"
 fi

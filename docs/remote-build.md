@@ -63,7 +63,7 @@ match reality before any `apt-get update`.
 ## Flashing from the remote box
 
 If the target is the machine you want to flash, skip the fetch: the ISO is in
-`<root>/build-out/iso-buildN/`. Otherwise fetch it back and flash locally:
+`<root>/src/output/iso-buildN/`. Otherwise fetch it back and flash locally:
 
     tools/remote-build.sh --host kali@kali-live --scratch-image … --wait --fetch /tmp/opencode/remote-iso
     tools/iso-archive.sh --iso /tmp/opencode/remote-iso/<name>.iso
