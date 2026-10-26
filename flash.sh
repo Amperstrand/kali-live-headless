@@ -276,6 +276,23 @@ cat >&2 <<EOF
            ISO  : $ISO
 
 EOF
+# SALT ADOPTION — must run BEFORE the destructive write: dd restores the
+# ISO's own partition table and orphans the config partition, so the only
+# moment the stick's EXISTING entropy is readable is right here. A stick
+# that carried a salt from before the registry keeps its identities across
+# flashes; a registered stick's registry entry wins (warn on divergence —
+# see tools/stick-registry.sh adopt for the policy).
+if [ -x "$REPO_DIR/tools/stick-registry.sh" ]; then
+  if [ -n "${SUDO_USER:-}" ]; then
+    # sudo's HOME is /root: resolve the invoking user's home from passwd
+    # (AGENTS.md #17), and assign before exporting so a failed lookup is visible
+    _sudo_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+    KLH_STICK_REGISTRY="${_sudo_home}/.local/share/kali-live-headless/stick-registry.tsv"
+    export KLH_STICK_REGISTRY
+  fi
+  "$REPO_DIR/tools/stick-registry.sh" adopt --device "$DEVPATH" --build "${BUILD:-}" || klh_warn "salt adoption skipped (no serial / unreadable stick) — registry state stands"
+fi
+
 if [ "$ASSUME_YES" != true ] && [ "$DRY_RUN" != true ]; then
   read -r -p "Type the full device path ($DEVPATH) to confirm: " typed || klh_die "aborted"
   [ "$typed" = "$DEVPATH" ] || klh_die "confirmation mismatch — aborting (nothing was written)"

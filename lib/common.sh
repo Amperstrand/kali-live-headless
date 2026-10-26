@@ -171,7 +171,7 @@ klh_load_config() {
 
   klh_validate_hostname "$HOSTNAME"     || klh_die "invalid HOSTNAME '$HOSTNAME' in $f"
   klh_validate_ssid "$WIFI_SSID"        || klh_die "invalid WIFI_SSID in $f (1-32 chars, no control chars, no leading/trailing whitespace)"
-  klh_validate_psk "$WIFI_PSK"          || klh_die "invalid WIFI_PSK in $f (8-63 chars, no control chars, no leading/trailing whitespace)" 
+  klh_validate_psk "$WIFI_PSK"          || klh_die "invalid WIFI_PSK in $f (8-63 chars, no control chars, no leading/trailing whitespace)"
   klh_validate_keymgmt "$WIFI_KEYMGMT"  || klh_die "invalid WIFI_KEYMGMT '$WIFI_KEYMGMT' (must be wpa-psk or sae)"
   klh_validate_bool "$WIFI_HIDDEN"      || klh_die "invalid WIFI_HIDDEN '$WIFI_HIDDEN' (true|false)"
   klh_validate_regdom "$WIFI_REGDOM"    || klh_die "invalid WIFI_REGDOM '$WIFI_REGDOM' (empty or two uppercase letters, e.g. US)"

@@ -99,6 +99,22 @@ Re-run them any time without touching the guest:
 tools/vm-deploy.sh --verify-only --name vps1
 ```
 
+Those six are the deploy gate. The **full** desired-behaviour list — persistence
+artifacts, domain-XML lessons, resolver pinning, authorized keys, cross-VM
+isolation, cloud-metadata reachability, TLS/clock via `apt` — lives in
+`tools/vm-check.sh`, which the deploy runs automatically at the end
+(`--no-check` to skip):
+
+```sh
+tools/vm-check.sh --preflight --cores 4 --ram-gb 8 --disk-gb 20
+tools/vm-check.sh --postflight --name vps1 --expect-key ~/.ssh/id_ed25519.pub --peer vps2 --deep
+```
+
+Every check has a stable id (`post.iso.metadata`, `post.host.cpu_mode`, …) and
+the run ends with `=== vm-check: N pass, N fail, N skip ===`, so a failure names
+the property that broke instead of starting an investigation. The full table is
+in `docs/vm-checklist.md`.
+
 ## Logging in
 
 ```sh
@@ -229,6 +245,8 @@ defined or provisioned guests.
 | path | role |
 | --- | --- |
 | `tools/vm-deploy.sh` | operator entry point: provision, publish, verify |
+| `tools/vm-check.sh` | preflight/postflight checklist (named checks, `--json`) |
+| `docs/vm-checklist.md` | every check id, the property it proves, how to fix it |
 | `tools/hub-vm-forward.sh` | concentrator-side DNAT unit manager |
 | `tools/hub-enroll-stick.sh` | concentrator-side WireGuard peer enrollment |
 | `overlay/.../usr/local/sbin/kali-live-vm-deploy` | VM-host-side orchestrator |

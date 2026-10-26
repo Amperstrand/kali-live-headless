@@ -114,7 +114,7 @@ else
     bad "0-byte salt not regenerated (rc=$RC, salt='$NEW', out='$OUT')"
 fi
 OUT2=$(sh "$IDENT_INIT" "$TD2" 2>&1); RC2=$?
-[ "$RC2" = 0 ] && [ "$(head -n1 "$TD2/master.salt")" = "$NEW" ] && ok "valid salt left untouched" || bad "valid salt churned"
+[ "$RC2" = 0 ] && [ "$(head -n1 "$TD2/master.salt")" = "$NEW" ] && ok "valid salt left untouched" || bad "valid salt churned (out='${OUT2:-empty}')"
 printf 'not-hex-at-all\n' > "$TD2/master.salt"
 sh "$IDENT_INIT" "$TD2" >/dev/null 2>&1 && bad "malformed salt accepted" || ok "malformed non-empty salt refused"
 rm -rf "$TD" "$TD2"

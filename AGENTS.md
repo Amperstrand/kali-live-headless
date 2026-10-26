@@ -298,6 +298,32 @@ drift is absorbed by bumping the pin, nothing else.
    Read keys one per LINE (`IFS='\n'`), and remember a `.pub` path is not a
    private key — probe with the stripped path.
 
+28. **Guest egress reaches the CONCENTRATOR's cloud metadata** (2026-10-26,
+   found by `tools/vm-check.sh` on its first run): a guest's
+   `http://169.254.169.254/` is NAT'd at the hub, so the reply is the hub's own
+   cloud metadata service (`hetzner/v1` — instance metadata, which can carry
+   user-data and secrets), not a dead link-local address. Link-local must never
+   leave a guest: `-i virbr0 -d 169.254.0.0/16 -j DROP` is now part of
+   `kali-live-kvm-firewall`'s invariants (and added immediately by
+   `kali-live-vm-deploy`'s egress step). The lesson generalizes: an egress
+   tunnel moves the *location* of every special-use address, so assert
+   reachability of the metadata/link-local/loopback surface from inside a
+   guest, never from the host.
+29. **`while read` drops the LAST line of an unterminated list**: `read`
+   returns non-zero at EOF even when it filled the variable, so
+   `while read -r x; do` silently skips the final entry — `post.ssh.keys`
+   reported a key "missing" that was present (2026-10-26). Always
+   `while IFS= read -r x || [ -n "$x" ]; do`. Same family as #27: parsing a
+   multi-entry list is where checks lie.
+30. **`tools/vm-check.sh` is the VM desired-behaviour checklist** (preflight +
+    postflight, `--json`, exit 1 on any FAIL; the id → property table is
+    `docs/vm-checklist.md`). `tools/vm-deploy.sh` runs the postflight
+    automatically at the end of every deploy. When you fix a VM-hosting defect,
+    add the check that would have caught it — this is the regression suite for
+    properties the QEMU boot stages cannot see (egress, isolation, resolver
+    pinning, persistence artifacts, port ownership). Its find on day one:
+    guests could read the concentrator's cloud metadata (item 28).
+
 ## Public-repo hygiene
 
 The repo is **public**. Nothing private may land here, ever: no PSKs, SSIDs,
@@ -310,6 +336,36 @@ print its contents (tools print digests only). Before any push that adds
 docs or diagnostics, grep the diff for MAC patterns
 (`([0-9a-f]{2}:){5}[0-9a-f]{2}`) and private IP ranges. History rewrites
 require a fresh bundle in `~/backups/` first and a force-push to origin.
+
+## Pre-commit gate (`.githooks/pre-commit`)
+
+Enable once per clone — it is a hook, not a CI-only convention:
+
+```sh
+git config core.hooksPath .githooks      # then every commit runs it
+.githooks/pre-commit --all               # or check the whole tree on demand
+```
+
+What it enforces, and why each rule exists:
+
+| rule | reason |
+|---|---|
+| shell syntax (`bash -n` / `sh -n`) | a wrapper edited mid-run once died at a stale byte offset |
+| shellcheck, warning+ | the recurring quoting/parsing defect class (#5, #26, #27, #29) |
+| no public IPv4 / MAC / private key / token | the repo is PUBLIC; addresses here are geolocatable or ours |
+| no literal `./config` secret values | compares without ever printing the value |
+| no ISO / disk-image bytes | images bake the PSK, host keys and console password |
+| exec bit on shipped shell files | AGENTS.md #16 — a 100644 file under an `-x` guard ships the feature dead |
+| trailing whitespace / CRLF / 2 MiB cap / final newline | noise that hides real diffs |
+
+Escape hatches, both requiring a reason on the same line: `leak-ok: <why>` for a
+legitimate public address (documented resolvers, examples) and `nocover: <why>`
+for shellcheck context it cannot see. Bypassing with `--no-verify` is a last
+resort and should be named in the commit message.
+
+The hook is also a *repair* tool: run `--all` before a release. Its first run
+found a 100644 `kali-live-blackbox` (masked only by a build-time `chmod`), a
+9.9 MB binary being text-scanned, and four whitespace/quoting defects.
 
 ## Collaboration
 
