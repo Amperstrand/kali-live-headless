@@ -63,6 +63,22 @@ remove_one() { # $1 = vm id (<id>; the volume file is <id>.image); 0 = removed
         $VIRSH undefine "$vmid" --nvram >/dev/null 2>&1 || $VIRSH undefine "$vmid" >/dev/null 2>&1 || true
         log "domain '$vmid' undefined"
     fi
+    # Inbound port rules belong to the guest: a forward left behind keeps
+    # publishing a port that DNATs to an address nobody owns (found live
+    # 2026-10-26: a removed guest's 22024 rule survived the removal).
+    # Match by name convention (<id>-*) and by the guest IP recorded in the
+    # deploy state, so a half-cleaned guest still gets its rules dropped.
+    fwd=
+    if [ -n "$STORE_DIR" ] && [ -f "$STORE_DIR/$vmid.deploy" ]; then
+        fwd=$(sed -n 's/^GUEST_IP=//p' "$STORE_DIR/$vmid.deploy" 2>/dev/null | head -1)
+    fi
+    for name in $(/usr/local/sbin/kali-live-vm-forward list 2>/dev/null \
+            | awk -v id="$vmid" -v ip="$fwd" \
+                'index($1, id "-") == 1 || (ip != "" && index($0, ip)) {print $1}'); do
+        if /usr/local/sbin/kali-live-vm-forward remove "$name" >/dev/null 2>&1; then
+            log "forward '$name' removed (guest '$vmid')"
+        fi
+    done
     if $VIRSH vol-delete "$volid" --pool "$POOL" >/dev/null 2>&1; then
         [ -n "$STORE_DIR" ] && rm -f "$STORE_DIR/$vmid.meta" 2>/dev/null || true
         log "volume '$volid' deleted from pool $POOL"

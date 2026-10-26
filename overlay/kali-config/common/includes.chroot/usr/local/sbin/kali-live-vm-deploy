@@ -162,6 +162,13 @@ ensure_egress() {
         || ip rule add from "$_net" to "$_net" lookup main priority 90 || die "ip rule (local) failed"
     ip rule show | grep -q "from $_net lookup 100" \
         || ip rule add from "$_net" lookup 100 priority 100 || die "ip rule (egress) failed"
+    # Link-local (169.254/16) must never leave a guest: NAT'd through the
+    # concentrator it reaches the CONCENTRATOR's cloud metadata service
+    # (found live 2026-10-26: a guest read the Hetzner metadata endpoint
+    # through the tunnel). kvm-firewall owns the durable rule; add it now so
+    # a fresh deploy never has the window open.
+    iptables -C FORWARD -i virbr0 -d 169.254.0.0/16 -j DROP >/dev/null 2>&1 \
+        || iptables -I FORWARD -i virbr0 -d 169.254.0.0/16 -j DROP 2>/dev/null || true
     return 0
 }
 
