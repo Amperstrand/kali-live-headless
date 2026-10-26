@@ -96,7 +96,12 @@ fi
 [ -n "$NAME" ] || NAME=$(basename "$REPO_DIR")
 NAME=${NAME//[^a-z0-9-]/-}
 
-SSH=(ssh -o BatchMode=yes -o ConnectTimeout=8 "$HOST")
+# Live-booted targets regenerate host keys on EVERY boot, so a persistent
+# known_hosts is wrong by construction for them: accept the key fresh each
+# run (BatchMode still enforces key AUTH; only the host-key check loosens —
+# the wire is the LAN, and the stick's identity is proven by its baked
+# authorized_key accepting us, not by a stable host key).
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$HOST")
 
 # ---------------------------------------------------------------- 1. probe
 info "probing $HOST"
@@ -225,7 +230,7 @@ if [ -f "$REPO_DIR/.git" ]; then
   BUNDLE=$(mktemp "${TMPDIR:-/tmp}/klh-bundle.XXXXXX")
   git -C "$REPO_DIR" bundle create "$BUNDLE" HEAD >/dev/null 2>&1 \
     || die "git bundle failed"
-  rsync -a -e "ssh -o BatchMode=yes" "$BUNDLE" "$HOST:$ROOT/klh.bundle" || die "bundle copy failed"
+  rsync -a -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" "$BUNDLE" "$HOST:$ROOT/klh.bundle" || die "bundle copy failed"
   rm -f "$BUNDLE"
   "${SSH[@]}" "rm -rf '$ROOT/src' && git clone -q '$ROOT/klh.bundle' '$ROOT/src' && rm -f '$ROOT/klh.bundle'" \
     || die "remote clone failed"
@@ -235,7 +240,7 @@ else
     -e "ssh -o BatchMode=yes" "$REPO_DIR/" "$HOST:$ROOT/src/" \
     || die "rsync failed"
 fi
-rsync -a -e "ssh -o BatchMode=yes" "$REPO_DIR/config" "$HOST:$ROOT/src/config" || die "config copy failed"
+rsync -a -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" "$REPO_DIR/config" "$HOST:$ROOT/src/config" || die "config copy failed"
 "${SSH[@]}" "chmod 600 '$ROOT/src/config'"
 
 # The build bakes the operator's SSH PUBLIC key into the image (never the
@@ -244,7 +249,7 @@ rsync -a -e "ssh -o BatchMode=yes" "$REPO_DIR/config" "$HOST:$ROOT/src/config" |
 PUBKEY=$(sed -n 's/^SSH_PUBKEY_PATH=//p' "$REPO_DIR/config" | head -1 | tr -d '"')
 PUBKEY=${PUBKEY/#\~/$HOME}
 if [ -f "$PUBKEY" ]; then
-  rsync -a -e "ssh -o BatchMode=yes" "$PUBKEY" "$HOST:$ROOT/ssh-operator.pub" || die "pubkey copy failed"
+  rsync -a -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" "$PUBKEY" "$HOST:$ROOT/ssh-operator.pub" || die "pubkey copy failed"
   if "${SSH[@]}" "grep -q '^SSH_PUBKEY_PATH=' '$ROOT/src/config'"; then
     "${SSH[@]}" "sed -i 's|^SSH_PUBKEY_PATH=.*|SSH_PUBKEY_PATH=$ROOT/ssh-operator.pub|' '$ROOT/src/config'"
   else
@@ -298,7 +303,7 @@ RC=$("${SSH[@]}" "sed -n 's/^BUILD-EXIT rc=//p' '$LOG'" | tail -1)
 if [ -n "$FETCH_DIR" ]; then
   mkdir -p "$FETCH_DIR"
   info "fetching artifacts -> $FETCH_DIR"
-  rsync -a -e "ssh -o BatchMode=yes" --include '*/' --include '*.iso' --include '*.sha512sum' --include '*.iso.log' --include 'INDEX.md' --include 'BUILD-MANIFEST.txt' --exclude '*' \
+  rsync -a -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" --include '*/' --include '*.iso' --include '*.sha512sum' --include '*.iso.log' --include 'INDEX.md' --include 'BUILD-MANIFEST.txt' --exclude '*' \
     "$HOST:$ROOT/src/output/" "$FETCH_DIR/" || die "artifact fetch failed"
   ls -la "$FETCH_DIR"/*.iso 2>/dev/null || die "no ISO came back"
   ok "artifacts in $FETCH_DIR — archive locally with tools/iso-archive.sh --iso <path>"
