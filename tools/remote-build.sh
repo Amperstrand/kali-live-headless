@@ -31,6 +31,9 @@
 #                       pool on the target (build.sh --pool); the pool path is
 #                       $KLH_DEB_POOL from this environment, forwarded to the
 #                       build, or ~/.local/share/kali-live-headless/deb-pool
+#   --sde EPOCH         pin SOURCE_DATE_EPOCH (build.sh --sde). Identity is
+#                       (commit, sde): re-running a pair is a reproduction
+#                       check, so this is how you ask for one explicitly
 #   --min-free G        refuse if the target has less free space        [default: 30]
 #   --sync-only         sync + start nothing (inspect the tree first)
 #   --wait              stay attached and stream until the build exits
@@ -51,7 +54,7 @@ HOST="" NAME="" BASE=kali VARIANT="" NUMBER="" ARCHIVE=true
 ENGINE=auto DOCKER_DATA_ROOT=""
 SCRATCH_IMAGE="" RAMDISK="" SCRATCH_SIZE=40G SCRATCH_MNT=""  # empty = $HOME/klh-scratch on the target
 POOL=false
-MIN_FREE=30 SYNC_ONLY=false WAIT=false FETCH_DIR=""
+MIN_FREE=30 SYNC_ONLY=false WAIT=false FETCH_DIR="" SDE=""
 BUILD_ENV=()   # extra env vars for the remote build.sh (space-joined)
 
 while [ $# -gt 0 ]; do
@@ -70,6 +73,7 @@ while [ $# -gt 0 ]; do
     --scratch-size)  SCRATCH_SIZE=${2:?}; shift 2 ;;
     --scratch-mnt)   SCRATCH_MNT=${2:?}; shift 2 ;;
     --pool)          POOL=true; shift ;;
+    --sde)           SDE=${2:?}; shift 2 ;;
     --min-free)      MIN_FREE=${2:?}; shift 2 ;;
     --sync-only)     SYNC_ONLY=true; shift ;;
     --wait)          WAIT=true; shift ;;
@@ -254,6 +258,7 @@ if [ "$SYNC_ONLY" = true ]; then
 fi
 
 ARGS=(--variant "$VARIANT")  # no -o: build.sh archives into <repo>/output
+[ -n "$SDE" ] && ARGS+=(--sde "$SDE")
 if [ "$POOL" = true ]; then
   ARGS+=(--pool)
   # the pool path is meaningful on the TARGET (a live box has no home storage),
