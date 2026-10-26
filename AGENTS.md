@@ -247,6 +247,17 @@ drift is absorbed by bumping the pin, nothing else.
 20. **A slow dd is a diagnosis** (2026-10-26): a flash writing at ~6 MB/s
    failed verification — USB2 port or bad cable; flash.sh now warns on
    <15 MB/s before the verify wastes minutes.
+21. **A live stick with no synced clock hard-fails apt and TLS** (2026-10-26,
+   v31 `apt update` on hardware): apt's **sqv** verifier (unlike gpgv)
+   REFUSES signatures whose creation time is in the guest's future —
+   `sqv: Not live until 2026-10-26T06:21:15Z` can be (a) upstream signer
+   clock skew (transient: the sig goes live minutes later — **retry, never
+   `[trusted=yes]`**), or (b) the stick's own clock behind reality (dead
+   RTC battery on live boots). Fix shipped: systemd-timesyncd in every
+   package list + enabled by the chroot hook + FallbackNTP drop-in +
+   KLHCONFIG `NTP_SERVERS=` override + a BOUNDED sync-wait in provision
+   before the settled marker; suite asserts active+synced. Same root cause
+   class as TLS not-yet-valid failures.
 
 ## Public-repo hygiene
 

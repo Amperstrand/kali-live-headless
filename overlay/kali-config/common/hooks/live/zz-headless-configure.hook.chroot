@@ -15,6 +15,7 @@ echo "I: zz-headless-configure: enabling services"
 systemctl enable ssh.service 2>&1 || true
 systemctl enable NetworkManager.service 2>&1 || true
 systemctl enable avahi-daemon.service 2>&1 || true
+systemctl enable systemd-timesyncd.service 2>&1 || true
 systemctl enable kali-live-headless-provision.service 2>&1 || true
 systemctl enable kali-live-console-banner.service 2>&1 || true
 systemctl enable kali-live-wifi-watchdog.service 2>&1 || true

@@ -18,3 +18,4 @@ tcpdump
 ## README "WireGuard access".
 wireguard-tools
 dislocker
+systemd-timesyncd
