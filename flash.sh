@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# flash.sh — write the generated Kali Live ISO to a removable USB device.
+# flash.sh — write the generated headless live ISO (BASE=kali or debian) to
+# a removable USB device.
 #
 # Safety rules:
 #   * lists removable USB disks (name/size/model) and requires an explicit
@@ -42,6 +43,10 @@ Usage: ./flash.sh [--build N | --iso PATH] [--device PATH] [--yes] [--dry-run] [
                  (runs unprivileged; use it to convince yourself first)
   --verify-only  Finish an interrupted flash: verify what dd already wrote
                  and add the KLHCONFIG partition. No write to the stick.
+
+Works the same for BASE=kali and BASE=debian images (build.sh BASE=...):
+the distro base is read from the archive's BUILD-MANIFEST and shown in
+the pre-flight summary; the write/verify/KLHCONFIG flow is identical.
 
 If no removable USB device is found, manual flashing instructions are
 printed instead.
@@ -93,7 +98,10 @@ elif [ -z "$ISO" ]; then
     ISO=$(find "$REPO_DIR/output/iso-build$newest" -maxdepth 1 -name '*.iso' -print -quit 2>/dev/null || true)
     NAMED="build #$newest (newest archive)"
   else
-    ISO=$(ls -t "$REPO_DIR"/output/kali-linux-*-live-*.iso 2>/dev/null | head -1 || true)
+    # Slot fallback: any ISO name the current (or past) BASE produces —
+    # kali-linux-rolling-*, kali-linux-trixie-* (BASE=debian keeps
+    # upstream's naming), and whatever a future adapter names it.
+    ISO=$(ls -t "$REPO_DIR"/output/*.iso 2>/dev/null | head -1 || true)
     NAMED="the slot (no archives yet)"
   fi
 fi
@@ -101,10 +109,40 @@ fi
 ISO=$(realpath "$ISO")
 ISO_SIZE=$(stat -c '%s' "$ISO")
 
+# ------------------------------------------------------------- base detect
+# Which distro base is this image? BASE only exists at BUILD time; the
+# flashed artifact carries it in the archive manifest (build.sh writes
+# "base : <kali|debian> (...)"). Pre-spike archives have no base line and
+# bare --iso paths have no manifest: both mean kali — the historical
+# behavior, preserved. Display-only: the flash flow itself (dd, verify,
+# KLHCONFIG, wifi.conf, salt) is identical for every base.
+flash_detect_base() {
+  FLASH_BASE=kali
+  FLASH_BASE_DESC="Kali (assumed — no base in this archive's manifest)"
+  local m line id
+  m="$(dirname "$ISO")/BUILD-MANIFEST.txt"
+  if [ -r "$m" ]; then
+    line=$(sed -n 's/^base[[:space:]]*: *//p' "$m" | head -1)
+    id=$(printf '%s' "$line" | sed -n 's/^\([a-z]*\).*/\1/p')
+    case "$id" in
+      kali|debian)
+        FLASH_BASE=$id
+        FLASH_BASE_DESC=$(printf '%s' "$line" | sed -n 's/^[a-z]* *(\(.*\))$/\1/p')
+        [ -n "$FLASH_BASE_DESC" ] || FLASH_BASE_DESC=$id
+        ;;
+      *)
+        [ -n "$line" ] && klh_warn "unrecognized base '$line' in $m — assuming kali"
+        ;;
+    esac
+  fi
+}
+flash_detect_base
+
 echo
 printf 'ISO      : %s\n' "$ISO"
 [ -n "$NAMED" ] && printf 'Selected : %s\n' "$NAMED"
 printf 'Size     : %s\n' "$(numfmt --to=iec "$ISO_SIZE" 2>/dev/null || echo "$ISO_SIZE bytes")"
+printf 'Base     : %s — %s\n' "$FLASH_BASE" "$FLASH_BASE_DESC"
 if [ -f "$ISO.sha512sum" ]; then
   klh_info "verifying ISO checksum first"
   (cd "$(dirname "$ISO")" && sha512sum --check --quiet < "$ISO.sha512sum") && klh_ok "ISO checksum OK" || klh_die "ISO checksum FAILED — do not flash"
@@ -409,7 +447,10 @@ make_config_partition() {
     # the registry lives in the INVOKING user's home; sudo's HOME is /root
     # (found live 2026-10-26: the hook silently used root's empty registry)
     if [ -n "${SUDO_USER:-}" ]; then
-      export KLH_STICK_REGISTRY="$(getent passwd "$SUDO_USER" | cut -d: -f6)/.local/share/kali-live-headless/stick-registry.tsv"
+      # separate declare+assign (SC2155): a failed substitution inside the
+      # export would otherwise mask its exit code
+      _klh_reg_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+      export KLH_STICK_REGISTRY="$_klh_reg_home/.local/share/kali-live-headless/stick-registry.tsv"
     fi
     if [ -x "$REPO_DIR/tools/stick-registry.sh" ]; then
       regrc=0

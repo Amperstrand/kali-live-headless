@@ -30,7 +30,7 @@ done
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10)
 SSH_KEY=${SSH_KEY:-$(grep SSH_PUBKEY_PATH config 2>/dev/null | cut -d= -f2 | xargs | sed 's/\.pub$//')}
 [ -n "$SSH_KEY" ] && SSH_OPTS+=(-i "$SSH_KEY")
-GUEST="ssh ${SSH_OPTS[@]} kali@$HOST"
+GUEST="ssh ${SSH_OPTS[*]} kali@$HOST"
 
 echo "=== VM Security Audit: $HOST ==="
 echo ""
@@ -112,6 +112,8 @@ if [ "$VM_COUNT" -ge 2 ]; then
   if [ -n "$VM1_IP" ] && [ -n "$VM2_IP" ]; then
     # from the stick (as a proxy for inside a VM), check if VM1 can reach VM2
     # (the FORWARD rules apply regardless of the source being a VM or the host)
+    # shellcheck disable=SC2034  # diagnostic only: the verdict below uses the
+    # RULES mechanism check; CROSS is kept for future strict-mode gating
     CROSS=$($GUEST "timeout 3 bash -c 'echo > /dev/tcp/$VM2_IP/22' 2>/dev/null && echo OPEN || echo CONTROL" 2>/dev/null)
     # NOTE: the stick itself CAN reach VMs (it's the management plane).
     # Cross-VM isolation means VM1 cannot reach VM2. We approximate by

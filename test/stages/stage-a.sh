@@ -62,13 +62,23 @@ else
 fi
 if [ -n "$SC" ]; then
   if [ "$SC" = "shellcheck" ]; then
-    shellcheck -x "$REPO_DIR"/build.sh "$REPO_DIR"/configure.sh "$REPO_DIR"/flash.sh "$REPO_DIR"/test.sh "$REPO_DIR"/lib/common.sh "$REPO_DIR"/tools/*.sh 2>"$SCRATCH/sc.out" \
-      && shellcheck -s sh "$REPO_DIR"/overlay/kali-config/common/hooks/live/*.hook.chroot \
-                    "$REPO_DIR"/overlay/kali-config/common/includes.chroot/usr/local/sbin/* >>"$SCRATCH/sc.out" 2>&1 \
+    # BOTH streams into sc.out (2026-10-26 vacuous-pass fix: shellcheck
+    # prints findings to STDOUT; the old `2>sc.out` left sc.out empty, so
+    # the [ -s ] fallback recorded a PASS over a console full of findings).
+    # -S warning: same bar as the per-file loop below — the aggregate gates
+    # what we keep clean, not the historical info-level noise. The -s sh set
+    # is shebang-filtered: python CLIs legitimately live in sbin/ too.
+    KLH_SH_HOOKS=()
+    for f in "$REPO_DIR"/overlay/kali-config/common/includes.chroot/usr/local/sbin/*; do
+      head -n1 "$f" | grep -qE '^#![[:space:]]*([^[:space:]]*/)?(env[[:space:]]+)?(ba|z|da)?sh$' && KLH_SH_HOOKS+=("$f")
+    done
+    shellcheck -x -S warning "$REPO_DIR"/build.sh "$REPO_DIR"/configure.sh "$REPO_DIR"/flash.sh "$REPO_DIR"/test.sh "$REPO_DIR"/lib/common.sh "$REPO_DIR"/lib/distro/*.sh "$REPO_DIR"/tools/*.sh >"$SCRATCH/sc.out" 2>&1 \
+      && shellcheck -s sh -S warning "$REPO_DIR"/overlay/kali-config/common/hooks/live/*.hook.chroot \
+                    "${KLH_SH_HOOKS[@]}" >>"$SCRATCH/sc.out" 2>&1 \
       && record pass "shellcheck" || { [ -s "$SCRATCH/sc.out" ] && record fail "shellcheck" "$(grep -c '^' "$SCRATCH/sc.out") findings" || record pass "shellcheck"; }
   else
     $SC run --rm -v "$REPO_DIR:/src:ro" koalaman/shellcheck:stable \
-      /src/build.sh /src/configure.sh /src/flash.sh /src/test.sh /src/lib/common.sh /src/tools/*.sh >"$SCRATCH/sc.out" 2>&1 \
+      /src/build.sh /src/configure.sh /src/flash.sh /src/test.sh /src/lib/common.sh /src/lib/distro/*.sh /src/tools/*.sh >"$SCRATCH/sc.out" 2>&1 \
       && $SC run --rm -v "$REPO_DIR:/src:ro" -i koalaman/shellcheck:stable -s sh \
           /src/overlay/kali-config/common/hooks/live/zz-headless-configure.hook.chroot \
           /src/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-headless-provision \
@@ -180,18 +190,26 @@ else
   record fail "host-role identity generator present+executable"
 fi
 
-# shellcheck at WARNING level over everything we ship or run: this is the
+# Lint pass at WARNING level over everything we ship or run: this is the
 # gate that would have caught the console-banner 7-format/8-args bug BEFORE
 # commit (found in the 2026-10-25 dead-code/drift review — the KLHCONFIG
 # banner line silently dropped the WireGuard line from every future boot).
+# NB: comments must NOT start with "shellcheck" — the parser reads any
+# such line as a DIRECTIVE and dies (this very header was SC1073-ing
+# test.sh's sourced chain until 2026-10-26).
 for f in "$REPO_DIR"/overlay/kali-config/common/includes.chroot/usr/local/sbin/* \
          "$REPO_DIR"/overlay/kali-config/common/hooks/live/*.chroot \
          "$REPO_DIR"/overlay/kali-config/common/hooks/build/*.build \
-         "$REPO_DIR"/tools/*.sh "$REPO_DIR"/lib/*.sh "$REPO_DIR"/build.sh \
+         "$REPO_DIR"/lib/*.sh "$REPO_DIR"/lib/distro/*.sh \
+         "$REPO_DIR"/tools/*.sh "$REPO_DIR"/build.sh \
          "$REPO_DIR"/flash.sh "$REPO_DIR"/test.sh; do
   # only shell-shebang files: python CLIs legitimately live in sbin
-  # (kali-live-wg-enroll) and must not be parsed as shell
-  head -n1 "$f" | grep -qE '^#![^ ]*(ba|z|da)?sh' || continue
+  # (kali-live-wg-enroll) and must not be parsed as shell. The pattern must
+  # accept /usr/bin/env INTERPRETERS — the old '^#![^ ]*(ba|z|da)?sh' matched
+  # only direct paths (#!/bin/sh) and silently skipped every '#!/usr/bin/env
+  # bash' script: build.sh, flash.sh and test.sh had NO warning-level
+  # coverage until 2026-10-26 (vacuous-pass class, AGENTS stage-split lesson)
+  head -n1 "$f" | grep -qE '^#![[:space:]]*([^[:space:]]*/)?(env[[:space:]]+)?(ba|z|da)?sh$' || continue
   if shellcheck -S warning "$f" 2>/dev/null; then
     record pass "shellcheck $(basename "$f")"
   else
@@ -231,6 +249,75 @@ done
 for f in "$REPO_DIR"/test/stages/*.sh; do
   if bash -n "$f" 2>/dev/null; then record pass "bash -n $(basename "$f")"; else record fail "bash -n $(basename "$f")" "$(bash -n "$f" 2>&1 | head -1)"; fi
 done
+
+# ---- distro adapter layer (BASE=kali|debian) --------------------------------
+# Each adapter must parse, define the full contract (KLH_BASE/OS_ID/NAME,
+# default branch), and accept only its own branches; the loader must reject
+# anything else. A broken adapter is a BUILD-path defect — assert it at the
+# 17-second level, not 3 hours into a build.
+for d in "$REPO_DIR"/lib/distro/*.sh; do
+  _dname=$(basename "$d" .sh)
+  _dout=$(bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro '$_dname'; printf '%s|%s|%s|%s' \"\$KLH_BASE\" \"\$KLH_OS_ID\" \"\$KLH_DISTRO_NAME\" \"\$KLH_DISTRO_DEFAULT_BRANCH\"" 2>&1) || _dout="load failed: $_dout"
+  _dflds=$(printf '%s' "$_dout" | tr '|' '\n')
+  if [ "$(printf '%s\n' "$_dflds" | sed -n 1p)" = "$_dname" ] \
+     && [ -n "$(printf '%s\n' "$_dflds" | sed -n 2p)" ] \
+     && bash -n "$d" 2>/dev/null; then
+    record pass "distro adapter: $_dname" "os-id $(printf '%s\n' "$_dflds" | sed -n 2p), branch $(printf '%s\n' "$_dflds" | sed -n 4p)"
+  else
+    record fail "distro adapter: $_dname" "$_dout"
+  fi
+  # adapter's own branches must validate; a foreign one must be refused
+  for _db in $(
+    bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro '$_dname'; printf '%s' \"\$KLH_DISTRO_BRANCHES\"" 2>/dev/null
+  ); do
+    if bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro '$_dname'; klh_distro_validate_branch '$_db'" >/dev/null 2>&1; then
+      record pass "distro adapter: $_dname accepts branch $_db"
+    else
+      record fail "distro adapter: $_dname accepts branch $_db"
+    fi
+  done
+done
+if bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro nosuchbase" >/dev/null 2>&1; then
+  record fail "klh_load_distro rejects unknown BASE"
+else
+  record pass "klh_load_distro rejects unknown BASE"
+fi
+if bash -c "source '$REPO_DIR/lib/common.sh'; klh_load_distro debian; klh_distro_validate_branch kali-rolling" >/dev/null 2>&1; then
+  record fail "debian adapter refuses foreign branch (kali-rolling)"
+else
+  record pass "debian adapter refuses foreign branch (kali-rolling)"
+fi
+
+# ---- flash.sh base detection (BASE-agnostic flashing) ------------------------
+# The flash flow is identical for every base, but the operator must SEE which
+# base a stick will boot: flash.sh derives it from the archive manifest. Prove
+# all three cases with fixtures: debian manifest, kali manifest, no manifest
+# (pre-spike archives and bare --iso paths — must stay kali, the historical
+# behavior). --dry-run + </dev/null: the device prompt (if any removable disk
+# exists on this host) EOFs into 'aborted' AFTER the pre-flight lines print,
+# so the Base line is observable on any host, hardware or not.
+mk_flash_fixture() { # $1=dir $2=manifest-base-line ("" = no manifest)
+  mkdir -p "$1"
+  : > "$1/kali-linux-fixture-live-minimal-amd64.iso"
+  [ -n "$2" ] && printf 'base            : %s\n' "$2" > "$1/BUILD-MANIFEST.txt"
+}
+flash_base_line() { # $1=dir -> the "Base :" pre-flight line
+  "$REPO_DIR/flash.sh" --iso "$1/kali-linux-fixture-live-minimal-amd64.iso" --dry-run </dev/null 2>/dev/null \
+    | sed -n 's/^Base     : //p'
+}
+_fbx="$SCRATCH/flash-base"
+mk_flash_fixture "$_fbx/debian" "debian (Debian trixie)"
+mk_flash_fixture "$_fbx/kali"   "kali (Kali kali-rolling)"
+mk_flash_fixture "$_fbx/none"   ""
+v=$(flash_base_line "$_fbx/debian")
+[ "$v" = "debian — Debian trixie" ] && record pass "flash: base detect — debian manifest" "$v" \
+  || record fail "flash: base detect — debian manifest" "got '${v:-<none>}'"
+v=$(flash_base_line "$_fbx/kali")
+[ "$v" = "kali — Kali kali-rolling" ] && record pass "flash: base detect — kali manifest" "$v" \
+  || record fail "flash: base detect — kali manifest" "got '${v:-<none>}'"
+v=$(flash_base_line "$_fbx/none")
+case "$v" in "kali — Kali (assumed"*) record pass "flash: base detect — no manifest defaults to kali" "$v" ;;
+  *) record fail "flash: base detect — no manifest defaults to kali" "got '${v:-<none>}'" ;; esac
 
 # systemd unit sanity
 UNITS=(kali-live-headless-provision kali-live-console-banner kali-live-wifi-watchdog kali-live-blackbox)
