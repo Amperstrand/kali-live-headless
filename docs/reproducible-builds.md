@@ -234,6 +234,26 @@ Caveats, stated plainly:
   `http.kali.org`) can serve slightly different index metadata. Pinning one
   host is a precondition for a clean claim, and is separate from this tooling.
 
+### The last mile: the installer initrds (measured 2026-10-26, #41 vs #42)
+
+Same commit (`44c2005`), same `--sde 1793017647`, 90 minutes apart:
+
+```
+root filesystem (squashfs)  BYTE-IDENTICAL — 0 content, 0 metadata diffs
+ISO wrapper                 install/initrd.gz, install/gtk/initrd.gz differ
+                            (28428070 -> 28429089 B), and md5sum.txt /
+                            sha256sum.txt carry those changed hashes
+```
+
+The `.deb` inputs did not move in that window, but the mirror re-synced the
+**debian-installer** artifacts, and `binary_debian-installer` fetches them
+straight from `--mirror-debian-installer`. So: the *process* is deterministic —
+what moved is an *input* the pool does not yet cover. Extending the pool to
+harvest `install/*` from the built tree into
+`repo/<label>/dists/<suite>/install-amd64/` freezes that too, and since
+`-m` already sets `--mirror-debian-installer`, a pool-backed build would then
+fetch d-i from the pool with no other change.
+
 ## Caching (asked 2026-10-26)
 
 
