@@ -1,0 +1,91 @@
+#!/bin/sh
+# kali-live-hostname-settle — finish the hardware-derived hostname once the
+# LAN is reachable.
+#
+# The provisioner derives a self-describing name from DMI/CPU/RAM/disk and
+# applies it BEFORE NetworkManager starts, so it cannot see the LAN yet. Two
+# identical machines therefore both come up as e.g. x280-8c16r256d. This
+# oneshot re-runs the derivation WITH the mDNS duplicate probe, and appends
+# '-2', '-3', ... when another machine already answers for the name.
+#
+# Only runs when the provisioner opted in (it writes
+# /run/kali-live-headless/hostname-auto). A static HOSTNAME — from ./config
+# or a KLHCONFIG HOSTNAME= override — never lands here and is never renamed.
+#
+# Best-effort by design: no default route within the bounded window, or no
+# mDNS resolver in nsswitch, leaves the base name in place (the machine
+# stays usable; the name is merely not disambiguated).
+#
+# RACE: two identical machines first-booting in the same instant can both
+# probe before either is registered and both keep the base name. avahi will
+# still publish one of them as <name>-2.local, but the kernel hostname is not
+# re-derived until the next boot. Bounded retry does not fix this without a
+# shared registry, which a live stick deliberately does not have.
+
+set -u
+
+MARKER=/run/kali-live-headless/hostname-auto
+DERIVE=/usr/local/sbin/kali-live-hostname-derive
+TAG=kali-live-hostname
+
+log() {
+    printf '<5>%s: %s\n' "$TAG" "$*" > /dev/kmsg 2>/dev/null \
+        || logger -t "$TAG" -- "$*" 2>/dev/null \
+        || true
+}
+
+valid_hostname() {
+    [ -n "$1" ] || return 1
+    case "$1" in -*|*-|*'*'*|*'?'*|*'['*) return 1 ;; esac
+    printf '%s' "$1" | grep -Eq '^[A-Za-z0-9-]{1,63}$'
+}
+
+[ -r "$MARKER" ] || exit 0
+BASE=$(head -n1 "$MARKER" 2>/dev/null || true)
+valid_hostname "$BASE" || exit 0
+[ -x "$DERIVE" ] || exit 0
+
+# Wait (bounded) for a default route — probing without one is a guaranteed
+# false negative, i.e. a silent "no duplicate" on every boot.
+_i=0
+until ip route 2>/dev/null | grep -q '^default '; do
+    _i=$((_i + 1))
+    if [ "$_i" -ge 15 ]; then
+        log "no default route after 30s — keeping auto hostname '$BASE' (no duplicate probe this boot)"
+        exit 0
+    fi
+    sleep 2
+done
+
+NEW=$("$DERIVE" 2>/dev/null || true)
+valid_hostname "$NEW" || { log "derivation failed — keeping '$BASE'"; exit 0; }
+
+CUR=$(hostname 2>/dev/null || true)
+if [ "$NEW" = "$CUR" ]; then
+    log "auto hostname '$NEW' is unique on the LAN"
+    # refresh the marker so the base name is never re-probed unnecessarily
+    printf '%s\n' "$NEW" > "$MARKER" 2>/dev/null || true
+    exit 0
+fi
+
+if ! hostnamectl set-hostname "$NEW" 2>/dev/null; then
+    hostname "$NEW" 2>/dev/null || { log "could not apply hostname '$NEW' — keeping '$CUR'"; exit 0; }
+fi
+printf '%s\n' "$NEW" > /etc/hostname 2>/dev/null || true
+
+# keep /etc/hosts consistent (same rule as the provisioner)
+if grep -q '^127\.0\.1\.1[[:space:]]' /etc/hosts 2>/dev/null; then
+    sed -i -e "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1\t$NEW/" /etc/hosts 2>/dev/null || true
+else
+    printf '127.0.1.1\t%s\n' "$NEW" >> /etc/hosts 2>/dev/null || true
+fi
+
+# re-register mDNS under the final name (--no-block: restarting avahi from
+# inside a unit that ordered itself after avahi must not deadlock)
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl try-restart --no-block avahi-daemon 2>/dev/null || true
+fi
+
+printf '%s\n' "$NEW" > "$MARKER" 2>/dev/null || true
+log "duplicate auto hostname '$BASE' resolved to '$NEW'"
+exit 0

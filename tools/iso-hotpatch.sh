@@ -300,6 +300,7 @@ fi
 # blackbox must be enabled in EVERY repack (the 2026-10-25 drift review:
 # the old hand list omitted them)
 for link in multi-user.target.wants/kali-live-headless-provision.service \
+            multi-user.target.wants/kali-live-hostname-settle.service \
             multi-user.target.wants/kali-live-console-banner.service \
             multi-user.target.wants/kali-live-wifi-watchdog.service \
             multi-user.target.wants/kali-live-blackbox.service; do

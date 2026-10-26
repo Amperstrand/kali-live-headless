@@ -9,6 +9,9 @@ wireless-regdb
 iw
 iproute2
 avahi-daemon
+## mDNS client NSS module: <name>.local resolution is how the boot-time
+## duplicate-hostname probe sees other machines (avahi-daemon only recommends it)
+libnss-mdns
 curl
 git
 tmux

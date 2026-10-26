@@ -31,7 +31,7 @@ done through supported upstream customization points:
 | Your public key | staged to `/etc/kali-live-headless/authorized_keys` + `/etc/skel/.ssh/authorized_keys` — Kali's live-config creates the live user `kali` (uid 1000) from `/etc/skel` on **every boot**, so the key lands in `/home/kali/.ssh/` without any console interaction |
 | SSH host keys | generated once per ISO build inside the live-build chroot (unique per build, stable across boots of the same stick), plus a runtime fallback that regenerates them only if missing |
 | Services at boot | `hooks/live/zz-headless-configure.hook.chroot` enables `ssh`, `NetworkManager`, `avahi-daemon` and the three custom units below |
-| Hostname | upstream `build.sh --hostname` (live-config `LIVE_HOSTNAME`) + a boot-time oneshot that also fixes it under boot menu entries that hard-code `hostname=kali` |
+| Hostname | **hardware-derived by default** (`HOSTNAME_SCHEME=hardware`): a boot-time oneshot names the machine after itself — `<model>-<cores>c<ram>r<disk>d`, e.g. `x280-8c16r256d`; a second oneshot appends `-2`/`-3` when an identical machine already answers on the LAN (mDNS). Fixes the `hostname=kali` of hard-coded boot entries too. `HOSTNAME_SCHEME=static` restores the old one-name behaviour |
 | Console help | `kali-live-console-banner.service` prints IPv4 addresses and the SSH host-key fingerprints on the console and the login prompt |
 | Wi-Fi retry + diagnostics | `kali-live-wifi-watchdog.service` (explicit `nmcli connection up` retries every 30 s; logs device state, regulatory domain, link state and recent NetworkManager journal lines — `journalctl -t kali-live-wifi-watchdog -b`) |
 | Surviving Kali's live init | `kali-live-headless-provision.service` re-asserts hostname/user/key/permissions/regulatory domain on every boot |
@@ -147,7 +147,8 @@ the next build.)
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `HOSTNAME` | `kali-live` | Hostname and mDNS name (`<HOSTNAME>.local`) |
+| `HOSTNAME_SCHEME` | `hardware` | `hardware`: derive `<model>-<cores>c<ram>r<disk>d` at every boot (`x280-8c16r256d`) and disambiguate identical machines with `-2`, `-3`; `static`: use `HOSTNAME` verbatim. A KLHCONFIG `HOSTNAME=` override always wins |
+| `HOSTNAME` | `kali-live` | Static hostname/mDNS name when `HOSTNAME_SCHEME=static`; also the fallback if hardware identity cannot be read |
 | `WIFI_SSID` | — | Network name |
 | `WIFI_PSK` | — | WPA2/WPA3 passphrase (8–63 chars) |
 | `WIFI_KEYMGMT` | `wpa-psk` | `wpa-psk` (WPA2 + WPA2/WPA3 transition) or `sae` (WPA3-Personal only) |
@@ -259,11 +260,50 @@ Notes:
   The **forensic** entry is the belt-and-braces choice (also disables swap
   on internal disks).
 * The syslinux (BIOS) forensic entry hard-codes `hostname=kali` on the
-  kernel cmdline; the boot-time provisioner corrects the hostname to your
-  configured one under every entry.
+  kernel cmdline; the boot-time provisioner replaces it with the
+  hardware-derived name (or your static `HOSTNAME`) under every entry.
 * All runtime writes (logs, `/home/kali`, NM state) live in RAM
   (tmpfs overlay) and vanish on power-off — nothing is written back to the
   USB stick or to internal disks.
+
+## Hostnames: hardware-derived by default
+
+A headless stick's name has to answer "which machine is this?" on a bench
+with several identical laptops. The default (`HOSTNAME_SCHEME=hardware`)
+derives the name from the machine at every boot:
+
+```
+<model>-<cores>c<ram>r<disk>d      e.g.  x280-8c16r256d
+```
+
+| Part | Source |
+|---|---|
+| `model` | DMI `product_version`, then `product_family`/`product_name`/`board_name`; vendor noise (`Lenovo`, `ThinkPad`, `HP`, …) stripped, lowercased, non-alphanumerics collapsed to `-`, capped at 20 chars |
+| `<n>c` | online CPUs (`nproc`; an 8-thread X280 is `8c`) |
+| `<n>r` | `MemTotal` rounded **up** to DIMM granularity (16 GiB box reports ~15.5 GiB → `16r`; 32 GiB reports ~31 GiB → `32r`) |
+| `<n>d` | **NVMe** if the machine has one (largest), else the largest internal disk — non-removable, never the live boot medium — in decimal GB; omitted when the machine has none |
+
+The name describes the **machine, not the stick** — the same stick in another
+laptop gets that laptop's name.
+
+**Identical machines.** `kali-live-hostname-settle.service` runs once the LAN
+is up and resolves `<name>.local` over mDNS. If another machine answers for
+it, the name gains `-2`, `-3`, … (a **dash**, not `_`: underscore is not a
+legal hostname character and breaks mDNS/DNS/certificate SANs). The probe is
+best-effort: no default route within 30 s, or no mDNS resolver, leaves the
+base name in place; two identical machines *first-booting at the same
+instant* can both probe before either is registered and keep the base name
+until the next boot (avahi still publishes one of them as `<name>-2.local`).
+
+Set `HOSTNAME_SCHEME=static` in `./config` for the old behaviour, or put
+`HOSTNAME=<name>` in a KLHCONFIG `headless-wifi.conf` to pin one machine
+(the override always wins and is never suffixed). **Existing sticks** written
+by an older `flash.sh` carry a `HOSTNAME=kali-live` line in that file —
+delete the line (or set it deliberately) to opt that stick into
+hardware-derived names; `flash.sh` from this revision writes no `HOSTNAME=`
+line for the default scheme. Finding the name:
+the console banner prints it, `avahi-browse -rt _ssh._tcp` lists it, or
+pass `--host` to `tools/hw-check.sh`.
 
 ## Lean profile (small images, full project stack)
 
