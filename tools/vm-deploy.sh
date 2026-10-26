@@ -38,6 +38,12 @@
 #                 the checklist proves the properties the six deploy checks do
 #                 not (persistence artifacts, cross-VM isolation, DNS pinning,
 #                 authorized keys, port ownership).
+#   --fips        give the guest its own FIPS mesh identity (kali-live-vm-fips):
+#                 nsec/npub derived from the stick's salt + the guest uuid,
+#                 daemon + fips-dns installed in the guest. Identity-only when
+#                 no --fips-peer is given (same split as the host's mesh).
+#   --fips-peer   static peer for the guest's fips, "npub...@host:port"
+#                 (repeatable; implies --fips).
 #
 # Exit codes: 0 all steps + verification passed, 1 any step or check failed.
 set -euo pipefail
@@ -48,7 +54,7 @@ REPO=$(cd -- "$HERE/.." && pwd)
 NAME="" CORES="" RAM_GB="" DISK_GB="" GUEST_USER=debian PORT=""
 STICK="kali@kali-live.local" HUB="root@inr2.cashu.exchange"
 NO_HUB=false NO_EGRESS=false RESTORE=false ADOPT=false VERIFY_ONLY=false WAIT=300 STATE=""
-NO_CHECK=false
+NO_CHECK=false FIPS=false
 KEYS=()
 
 pass() { PASSED=$((PASSED + 1)); printf '  PASS  %s\n' "$1"; }
@@ -72,6 +78,8 @@ while [ $# -gt 0 ]; do
         --no-hub)     NO_HUB=true; shift ;;
         --no-egress)  NO_EGRESS=true; shift ;;
         --no-check)   NO_CHECK=true; shift ;;
+        --fips)       FIPS=true; shift ;;
+        --fips-peer)  FIPS_PEERS+=("${2:?}"); shift 2 ;;
         --restore)    RESTORE=true; shift ;;
         --adopt)      ADOPT=true; shift ;;
         --verify-only) VERIFY_ONLY=true; shift ;;
@@ -116,6 +124,13 @@ if ! ssh "${SSH_OPTS[@]}" "$STICK" 'command -v /usr/local/sbin/kali-live-vm-depl
         "$REPO/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-vm-deploy" \
         "$STICK:/tmp/kali-live-vm-deploy"
     ssh "${SSH_OPTS[@]}" "$STICK" 'sudo -n install -m 0755 /tmp/kali-live-vm-deploy /usr/local/sbin/kali-live-vm-deploy'
+fi
+if ! ssh "${SSH_OPTS[@]}" "$STICK" 'command -v /usr/local/sbin/kali-live-vm-fips >/dev/null'; then
+    echo "  installing kali-live-vm-fips on the VM host (not in this image yet)"
+    scp -q -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        "$REPO/overlay/kali-config/common/includes.chroot/usr/local/sbin/kali-live-vm-fips" \
+        "$STICK:/tmp/kali-live-vm-fips"
+    ssh "${SSH_OPTS[@]}" "$STICK" 'sudo -n install -m 0755 /tmp/kali-live-vm-fips /usr/local/sbin/kali-live-vm-fips'
 fi
 
 # ---- 2. keys travel as a file (no quoting games) ---------------------------
@@ -251,7 +266,43 @@ else
     fi
 fi
 
-# ---- 6. hand-off ------------------------------------------------------------
+# ---- 6. optional per-VM FIPS identity ---------------------------------------
+# Modular on purpose: the identity (salt+uuid -> nsec/npub) and the wire
+# (daemon in the guest) are separable, exactly like the host's mesh. Without
+# --fips-peer the guest holds an identity and no wire — a valid state.
+if $FIPS || [ ${#FIPS_PEERS[@]:-0} -gt 0 ]; then
+    step "fips: per-VM mesh identity (kali-live-vm-fips)"
+    fargs="install --id $NAME"
+    [ -n "$GUEST_USER" ] && fargs="$fargs"          # daemon runs as root in the guest
+    for fp in ${FIPS_PEERS+"${FIPS_PEERS[@]}"}; do fargs="$fargs --peer $fp"; done
+    # no persistent salt on a toram boot: fall back to a guest-generated key
+    # (identity NOT rebuild-stable) rather than failing the deploy
+    if ! ssh "${SSH_OPTS[@]}" "$STICK" 'sudo -n test -s /var/lib/kali-live-headless/master.salt'; then
+        echo "  no master salt on the host (toram) — guest gets an ephemeral key"
+        fargs="$fargs --ephemeral"
+    fi
+    if out=$(ssh "${SSH_OPTS[@]}" "$STICK" "sudo -n /usr/local/sbin/kali-live-vm-fips $fargs" 2>&1); then
+        np=$(printf '%s\n' "$out" | sed -n 's/^npub=//p')
+        pass "fips identity installed in the guest${np:+ ($np)}"
+    else
+        fail "fips install: $(printf '%s\n' "$out" | tail -2 | tr '\n' ' ')"
+    fi
+fi
+
+# ---- 7. registry (alias <-> uuid <-> npub <-> port) --------------------------
+# The map that makes a port change or a rename a one-line operation. Cheap,
+# read-only towards guests, always refreshed at the end of a deploy.
+if [ -x "$HERE/vm-registry.sh" ]; then
+    step "registry"
+    if "$HERE/vm-registry.sh" sync --stick "$STICK" >/dev/null 2>&1; then
+        "$HERE/vm-registry.sh" list --stick "$STICK" 2>/dev/null | tail -n +3 | sed 's/^/  /'
+        pass "registry synced (/mnt/klh-vmstore/registry.tsv)"
+    else
+        fail "registry sync (tools/vm-registry.sh sync)"
+    fi
+fi
+
+# ---- 8. hand-off ------------------------------------------------------------
 printf '\n'
 if $NO_HUB; then
     printf 'guest ready (LAN only):  ssh %s@%s\n' "$GUEST_USER" "$GUEST_IP"

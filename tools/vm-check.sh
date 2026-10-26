@@ -253,6 +253,12 @@ echo "fw_active=$(systemctl is-active kali-live-kvm-firewall 2>/dev/null || true
 echo "fw_drop=$(iptables -S FORWARD 2>/dev/null | awk '/-i virbr0/ && /DROP/ && /192\.168/' | wc -l | tr -d ' ')"
 echo "fw_meta=$(iptables -S FORWARD 2>/dev/null | awk '/-i virbr0/ && /DROP/ && /169\.254/' | wc -l | tr -d ' ')"
 echo "store_free_gb=$(df -BG --output=avail /mnt/klh-vmstore 2>/dev/null | tail -1 | tr -dc 0-9)"
+echo "dom_uuid=$($v dominfo "$NAME" 2>/dev/null | sed -n "s/^UUID: *//p" | head -1)"
+echo "fips=$(sed -n "s/^FIPS=//p" /mnt/klh-vmstore/vms/$NAME.deploy 2>/dev/null | head -1)"
+echo "npub=$(sed -n "s/^NPUB=//p" /mnt/klh-vmstore/vms/$NAME.deploy 2>/dev/null | head -1)"
+# the registry row is the port->npub map (tools/vm-registry.sh)
+awk -F'\t' -v n="$NAME" '$1==n {print "reg_uuid="$2; print "reg_npub="$3; print "reg_port="$4}' \
+    /mnt/klh-vmstore/registry.tsv 2>/dev/null
 REMOTE
 }
 
@@ -272,7 +278,7 @@ echo "rootlogin=$(printf '%s\n' "$st" | awk 'tolower($1)=="permitrootlogin"{prin
 echo "egress=$(curl -sS -m 10 https://ifconfig.me 2>/dev/null || true)"
 echo "dns_stub=$(awk '/^nameserver/{print $2}' /etc/resolv.conf 2>/dev/null | paste -sd, -)"
 echo "dns_up=$(resolvectl dns 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u | paste -sd, -)"
-echo "v6=$(ip -6 addr show scope global 2>/dev/null | grep -c inet6 || true)"
+echo "v6=$(ip -6 -o addr show scope global 2>/dev/null | grep -cE "inet6 ?(2|3)[0-9a-f][0-9a-f]:" || true)"
 echo "clock=$(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo unknown)"
 echo "oops=$(sudo -n dmesg 2>/dev/null | grep -ciE 'Oops|BUG: unable|general protection fault' || true)"
 if [ -f /var/lib/cloud/instance/boot-finished ] || cloud-init status 2>/dev/null | grep -q done; then
@@ -292,6 +298,8 @@ echo "meta=$(timeout 3 bash -c 'echo > /dev/tcp/169.254.169.254/80' 2>/dev/null 
 if [ -n "$PEER_IP" ] && [ -n "$PEER_PORT" ]; then
     echo "peer=$(timeout 3 bash -c "echo > /dev/tcp/$PEER_IP/$PEER_PORT" 2>/dev/null && echo open || echo blocked)"
 fi
+echo "fips_svc=$(systemctl is-active fips fips-dns 2>/dev/null | paste -sd, -)"
+echo "fips_addr=$(ip -o -6 addr show fips0 2>/dev/null | awk "{print \$4; exit}")"
 REMOTE
 }
 
@@ -338,6 +346,26 @@ postflight() {
     if [ -n "$RAM_GB" ]; then
         got=$(kv "$HV" mem_kib); [ -n "$got" ] && got=$((got / 1048576))
         expect post.host.ram "guest has ${RAM_GB} GB RAM" "$RAM_GB" "${got:-?}"
+    fi
+
+    # --- identity: the registry row IS the port -> npub map
+    reg_u=$(kv "$HV" reg_uuid); reg_p=$(kv "$HV" reg_port); reg_n=$(kv "$HV" reg_npub)
+    if [ -n "$reg_u" ] && [ "$reg_u" != "-" ]; then
+        expect post.id.uuid "registry uuid matches the domain" "$(kv "$HV" dom_uuid)" "$reg_u"
+        expect post.id.port "registry port matches the published port" "$PORT" "$reg_p"
+        if [ -n "$reg_n" ] && [ "$reg_n" != "-" ]; then
+            if [ "$(kv "$HV" npub)" = "$reg_n" ]; then
+                pass post.id.npub "registry npub matches the deploy state"
+            else
+                fail post.id.npub "registry npub ($reg_n) != deploy NPUB ($(kv "$HV" npub))"
+            fi
+        else
+            skip post.id.npub "no npub yet (FIPS identity not derived on this host)"
+        fi
+    else
+        skip post.id.uuid "no registry row (run: tools/vm-registry.sh sync)"
+        skip post.id.port "no registry row"
+        skip post.id.npub "no registry row"
     fi
 
     # --- hub-side publication
@@ -391,6 +419,26 @@ postflight() {
         skip post.ssh.keys "no --expect-key given"
     fi
 
+    # --- fips posture: opt-in must be provable in BOTH directions
+    case "$(kv "$HV" fips)" in
+        on)
+            case "$(kv "$G" fips_svc)" in
+                active*active*) pass post.fips.services "fips + fips-dns active in the guest" ;;
+                *) fail post.fips.services "guest fips services ('$(kv "$G" fips_svc)')" ;;
+            esac
+            case "$(kv "$G" fips_addr)" in
+                fd*) pass post.fips.mesh_addr "mesh address on fips0 ($(kv "$G" fips_addr))" ;;
+                *)   fail post.fips.mesh_addr "no fd00:: mesh address on fips0 ('$(kv "$G" fips_addr)')" ;;
+            esac
+            ;;
+        *)
+            case "$(kv "$G" fips_svc)" in
+                active*) fail post.fips.off "fips runs in the guest but the deploy state says it is off" ;;
+                *)       pass post.fips.off "no fips daemon in the guest (opt-in respected)" ;;
+            esac
+            ;;
+    esac
+
     expect post.egress.ip "egress leaves via the concentrator" "$HUB_PUB" "$(kv "$G" egress)"
     # /etc/resolv.conf points at the systemd-resolved stub; the UPSTREAM is
     # what matters (a stub in front of the site's DHCP resolver still leaks).
@@ -401,7 +449,9 @@ postflight() {
         ''|*192.168.*|*127.0.0.53*) fail post.egress.dns "resolver not pinned ('${dns_eff:-empty}') — queries can leak to the site resolver" ;;
         *) warn post.egress.dns "resolver is '$dns_eff' (not the pinned 9.9.9.9)" ;;
     esac
-    expect post.egress.ipv6 "no global IPv6 (no leak path)" 0 "$(kv "$G" v6)"
+    # "no leak path" means no PUBLIC (2000::/3) IPv6: an fd00::/8 ULA on fips0
+    # is the guest's mesh address, a deliberate channel with its own checks
+    expect post.egress.ipv6 "no public IPv6 (ULA mesh addrs excluded)" 0 "$(kv "$G" v6)"
     expect post.clock "guest clock synchronized" yes "$(kv "$G" clock)"
     expect post.kernel.clean "no kernel oops since boot" 0 "$(kv "$G" oops)"
     expect post.cloudinit "cloud-init finished" "done" "$(kv "$G" cloudinit)"

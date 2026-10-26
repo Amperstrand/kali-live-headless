@@ -81,11 +81,12 @@ REMOTE
 }
 
 write_registry() { # rows on stdin -> TSV on the store, atomically
-    ssh "${SSH_OPTS[@]}" "$STICK" 'sudo -n sh -s' <<'REMOTE'
-printf 'alias\tuuid\tnpub\text_port\tguest_ip\twg_tunnel_ip\tfips\tcreated\tstate\n' > /mnt/klh-vmstore/registry.tsv.tmp
-cat >> /mnt/klh-vmstore/registry.tsv.tmp
-mv /mnt/klh-vmstore/registry.tsv.tmp /mnt/klh-vmstore/registry.tsv
-REMOTE
+    # NB: the rows travel on ssh's STDIN, so the remote script must come as a
+    # command argument — a heredoc here would occupy stdin and swallow them
+    { printf 'alias\tuuid\tnpub\text_port\tguest_ip\twg_tunnel_ip\tfips\tcreated\tstate\n'
+      cat
+    } | ssh "${SSH_OPTS[@]}" "$STICK" \
+        "sudo -n sh -c 'cat > $REG.tmp && mv $REG.tmp $REG'"
 }
 
 read_registry() {

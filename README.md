@@ -649,6 +649,10 @@ be re-run on its own:
 tools/vm-check.sh --postflight --name vps1 --expect-key ~/.ssh/id_ed25519.pub
 ```
 
+Optional per-guest FIPS mesh identities (`--fips`: salt+uuid derived npub,
+~70 MiB + 0 % CPU per guest) and the alias ↔ uuid ↔ npub ↔ port registry
+(`tools/vm-registry.sh`) are documented in `docs/vm-deploy.md`.
+
 ### VM store on the internal NTFS disk (opt-in, M1)
 
 `WITH_KVM=true` builds also ship an **opt-in** disk-backed VM store: VM

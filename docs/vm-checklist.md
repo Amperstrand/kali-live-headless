@@ -102,7 +102,7 @@ Two design rules worth keeping:
 |---|---|
 | `post.egress.ip` | `https://ifconfig.me` returns the concentrator's address |
 | `post.egress.dns` | the resolver **upstream** is pinned (9.9.9.9 / 149.112.112.112); the systemd-resolved stub on `127.0.0.53` is fine, a stub in front of the site's DHCP resolver is not |
-| `post.egress.ipv6` | no global IPv6 (no leak path) |
+| `post.egress.ipv6` | no **public** (2000::/3) IPv6 — a `fd00::/8` ULA on `fips0` is the guest's mesh address, not a leak path |
 | `post.clock` | guest clock synchronized |
 | `post.kernel.clean` | no kernel oops since boot |
 | `post.cloudinit` | cloud-init finished |
@@ -118,6 +118,16 @@ Two design rules worth keeping:
 | `post.iso.lan_10` / `lan_172` / `lan_192` | the guest cannot reach any RFC1918 network |
 | `post.iso.metadata` | the guest cannot reach `169.254.169.254` — NAT'd through the concentrator that is the **concentrator's** cloud metadata service, not a harmless dead address |
 | `post.iso.peer` | the guest cannot reach another guest (`--peer`) |
+
+### Identity + FIPS posture
+
+| id | property |
+|---|---|
+| `post.id.uuid` / `post.id.port` | the registry row (alias ↔ uuid ↔ npub ↔ port) matches the live domain and published port |
+| `post.id.npub` | registry npub matches the deploy state (skip when no salt on the host: toram) |
+| `post.fips.services` | with FIPS on: `fips` + `fips-dns` active in the guest |
+| `post.fips.mesh_addr` | with FIPS on: a ULA mesh address exists on `fips0` |
+| `post.fips.off` | with FIPS off: no fips daemon in the guest — opt-in must be provable in **both** directions |
 
 ## Checks that earned their place
 
@@ -139,4 +149,5 @@ Two design rules worth keeping:
 * Concurrent-guest resource fairness (CPU steal, disk I/O) as a measured check.
 * `--json` consumer that writes the verdict line into `BUILDS.md`-style
   ledgers automatically.
-* Checks for FIPS-reachable guests once guests get mesh identities.
+* ~~Checks for FIPS-reachable guests~~ — landed: `post.id.*`, `post.fips.*`
+  (measured cost documented in `docs/vm-deploy.md`).

@@ -112,7 +112,12 @@ ensure_deb() { # prints the path of a fips .deb, downloading once
     mkdir -p "$DEB_DIR" || die "cannot create $DEB_DIR"
     log "no cached deb — downloading FIPS once into $DEB_DIR"
     ( cd "$DEB_DIR" && apt-get download fips >/dev/null 2>&1 ) \
-        || die "apt-get download fips failed (host online? repo reachable?)"
+        || die "apt-get download fips failed (the VM host is often offline —
+  the bench LAN has no internet; guests egress via the tunnel, the host does
+  not). Pre-seed the cache once from anywhere online:
+    curl -LO https://github.com/jmcorgan/fips/releases/download/<ver>/fips_<ver>_amd64.deb
+    scp fips_<ver>_amd64.deb $STORE_DIR/fips-deb/
+  (the store is persistent: this survives reboots) or pass --deb <path>."
     ls "$DEB_DIR"/fips_*.deb 2>/dev/null | head -1 || die "download produced no fips_*.deb"
 }
 
