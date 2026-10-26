@@ -54,7 +54,12 @@ forward_rules_ok() {
     # hub - was affected).
     out=$(iptables -S FORWARD 2>/dev/null) || return 1
     lv=$(printf '%s\n' "$out" | grep -n -- '-j LIBVIRT_' | head -1 | cut -d: -f1)
-    for cidr in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
+    # 169.254.0.0/16 is the cloud metadata / link-local surface: a guest
+    # NAT'd through the concentrator reaches the CONCENTRATOR's own
+    # 169.254.169.254 (found live 2026-10-26: a guest read the Hetzner
+    # metadata endpoint through the tunnel — instance metadata, which can
+    # carry user-data/secrets). Link-local never belongs on a guest's egress.
+    for cidr in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16; do
         # NB: iptables -S NORMALIZES flag order (canonical dump is
         # "-d CIDR -i virbr0 -j DROP" regardless of insert order) - match
         # both orders or the check never fires and the daemon rebuilds
@@ -85,9 +90,11 @@ install_forward() {
     iptables -D FORWARD -i virbr0 -d 192.168.0.0/16 -j DROP >/dev/null 2>&1
     iptables -D FORWARD -i virbr0 -d 172.16.0.0/12 -j DROP >/dev/null 2>&1
     iptables -D FORWARD -i virbr0 -d 10.0.0.0/8      -j DROP >/dev/null 2>&1
+    iptables -D FORWARD -i virbr0 -d 169.254.0.0/16  -j DROP >/dev/null 2>&1
     iptables -I FORWARD -i virbr0 -d 192.168.0.0/16 -j DROP
     iptables -I FORWARD -i virbr0 -d 172.16.0.0/12 -j DROP
     iptables -I FORWARD -i virbr0 -d 10.0.0.0/8      -j DROP
+    iptables -I FORWARD -i virbr0 -d 169.254.0.0/16  -j DROP
 }
 
 installed_once=0
