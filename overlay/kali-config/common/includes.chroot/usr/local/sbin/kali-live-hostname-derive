@@ -192,10 +192,15 @@ resolve_name() { # $1=name -> addresses on stdout, rc!=0 when nothing found
 
 own_addrs() {
     if [ -n "${KLH_OWN_ADDRS:-}" ]; then
-        printf '%s\n' "$KLH_OWN_ADDRS"
+        printf '%s\n' "$KLH_OWN_ADDRS" | sed 's/%.*//'
         return 0
     fi
-    ip -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1
+    # ALL scopes, not just `scope global`: avahi also publishes link-local
+    # (fe80::) and deprecated site-local (fec0:: — QEMU user-net's IPv6
+    # subnet) addresses for our own name. A scope filter omitted those, so
+    # the first self-answer looked like a duplicate and EVERY boot gained
+    # '-2' (found live on hotpatch #32). Loopback is still excluded.
+    ip -o addr show 2>/dev/null | awk '$2 != "lo" {print $4}' | cut -d/ -f1 | sed 's/%.*//'
 }
 
 conflict() { # $1=name -> rc 0 when someone ELSE answers for it
@@ -203,6 +208,7 @@ conflict() { # $1=name -> rc 0 when someone ELSE answers for it
     [ -n "$_addrs" ] || return 1
     _own=$(own_addrs | tr '\n' ' ')
     for _a in $_addrs; do
+        _a=${_a%%\%*}   # strip an IPv6 zone id (fe80::1%eth0)
         case " $_own " in
             *" $_a "*) continue ;;
             *) return 0 ;;
