@@ -164,6 +164,25 @@ else
         && record pass "$mode: booted distro is $KLH_DISTRO_NAME (os-release ID)" \
         || record fail "$mode: booted distro is $KLH_DISTRO_NAME" "got ID='$v' (suite ran BASE=$KLH_BASE)"
 
+      # clock source (2026-10-26 v31 sqv lesson): a live stick with no
+      # synced clock hard-fails apt (sqv "not live until <future>") and
+      # TLS. timesyncd must be active; sync must have happened (QEMU's
+      # NAT reaches the pools). Give it a bounded extra window — sync can
+      # land seconds after settle on a slow boot.
+      v=$(guest 'systemctl is-active systemd-timesyncd.service 2>/dev/null')
+      [ "$v" = "active" ] \
+        && record pass "$mode: timesyncd active" \
+        || record fail "$mode: timesyncd active" "got '$v' — wrong-clock sticks break apt/TLS (the sqv class)"
+      local _synch=no _n=0
+      while [ "$_synch" != yes ] && [ "$_n" -lt 10 ]; do
+        _synch=$(guest 'timedatectl show -p NTPSynchronized --value 2>/dev/null' || echo no)
+        [ "$_synch" = yes ] && break
+        _n=$((_n + 1)); sleep 3
+      done
+      [ "$_synch" = yes ] \
+        && record pass "$mode: clock synchronized (NTP)" \
+        || record fail "$mode: clock synchronized (NTP)" "not synced after settle+30s — apt/TLS at risk"
+
       v=$(guest hostname)
       [ "$v" = "$HOSTNAME_EXPECTED" ] && record pass "$mode: hostname=$HOSTNAME_EXPECTED" || record fail "$mode: hostname (want $HOSTNAME_EXPECTED, got '$v')"
 

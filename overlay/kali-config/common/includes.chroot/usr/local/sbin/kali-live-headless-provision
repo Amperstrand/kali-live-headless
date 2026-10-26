@@ -75,7 +75,7 @@ valid_regdom() {
 }
 
 # ------------------------------------------------ boot-medium config override
-O_HOST=""; O_SSID=""; O_PSK=""; O_KEYMGMT=""; O_HIDDEN=""; O_REGDOM=""
+O_HOST=""; O_SSID=""; O_PSK=""; O_KEYMGMT=""; O_HIDDEN=""; O_REGDOM=""; O_NTP=""
 O_DEV=$(klh_cfgpart)
 if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
    && mkdir -p "$OVERRIDE_MNT" 2>/dev/null \
@@ -87,6 +87,7 @@ if [ -n "$O_DEV" ] && [ -b "$O_DEV" ] \
         O_KEYMGMT=$(conf_value "$OVERRIDE_MNT/headless-wifi.conf" WIFI_KEYMGMT)
         O_HIDDEN=$(conf_value "$OVERRIDE_MNT/headless-wifi.conf" WIFI_HIDDEN)
         O_REGDOM=$(conf_value "$OVERRIDE_MNT/headless-wifi.conf" WIFI_REGDOM)
+        O_NTP=$(conf_value "$OVERRIDE_MNT/headless-wifi.conf" NTP_SERVERS)
         [ -n "$O_KEYMGMT" ] || O_KEYMGMT=wpa-psk
         [ -n "$O_HIDDEN" ] || O_HIDDEN=false
         # Rescue channel opt-in (v20): RAM-only flag; the unit's
@@ -456,6 +457,35 @@ if command -v systemctl > /dev/null 2>&1; then
         # activation, which waits for this script to exit. At boot avahi
         # is not up yet, so only manual/idempotent reruns hit it.
         systemctl try-restart --no-block avahi-daemon 2>/dev/null || true
+    fi
+fi
+
+# ---- clock sync (the v31 sqv lesson) ---------------------------------
+# apt's sqv verifier and TLS both hard-fail on a wrong clock ("Not live
+# until <future>", cert not-yet-valid). Wait BOUNDED for timesyncd once
+# the network is up — never block boot on it (a lab with NTP blocked must
+# still settle); the suite asserts the service is active and, in QEMU
+# (NAT'd pool reachable), that sync actually happened.
+if command -v timedatectl >/dev/null 2>&1; then
+    if [ -n "$O_NTP" ]; then
+        # Operator override (KLHCONFIG headless-wifi.conf: NTP_SERVERS=a,b)
+        # — highest-priority drop-in; comma list to space list.
+        mkdir -p /etc/systemd/timesyncd.conf.d 2>/dev/null
+        printf '# written by kali-live-headless-provision (KLHCONFIG NTP_SERVERS)\n[Time]\nNTP=%s\n' \
+            "$(printf '%s' "$O_NTP" | tr ',' ' ')" \
+            > /etc/systemd/timesyncd.conf.d/10-klh-override.conf 2>/dev/null \
+            && log "NTP override applied: $O_NTP"
+        systemctl try-restart systemd-timesyncd.service 2>/dev/null || true
+    fi
+    _w=0
+    while [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" != yes ]; do
+        _w=$((_w + 1)); [ "$_w" -ge 15 ] && break
+        sleep 2
+    done
+    if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = yes ]; then
+        log "clock synchronized (timesyncd)"
+    else
+        log "WARNING: clock NOT synchronized after 30s — apt/TLS may fail until it is (check NTP reachability or set NTP_SERVERS in KLHCONFIG)"
     fi
 fi
 
