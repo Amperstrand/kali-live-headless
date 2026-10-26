@@ -7,21 +7,21 @@
 #
 # Everything a *build* needs but a *booted image* must not carry.
 #
-# var/cache/klh-pool
+# var/cache/klh-pool: filled by zzz-klh-deb-pool.hook.chroot (~900MB of the
+# build's own .deb files) so the host can harvest them into the
+# content-addressed pool after the build. Shipping it would nearly double the
+# ISO; it exists only between the chroot hook and build.sh's harvest step.
+var/cache/klh-pool
 
-# live-build installs squashfs-tools INSIDE the chroot when it builds the
-# squashfs, i.e. AFTER every chroot hook — so apt rebuilds its binary caches
-# and the command-not-found apt hook rebuilds its DB, no matter what
-# zzz-klh-nondeterminism.hook.chroot deletes. Those four files then carry
-# build-time state into an otherwise reproducible image (measured: they were
-# the only genuinely non-deterministic content left in builds #36/#37).
+# Recreated by live-build itself: it installs squashfs-tools INSIDE the chroot
+# when it builds the squashfs, i.e. AFTER every chroot hook — so apt rebuilds
+# its binary caches and the command-not-found apt hook rebuilds its DB, no
+# matter what zzz-klh-nondeterminism.hook.chroot deletes. Those four files then
+# carry build-time state into an otherwise reproducible image (measured: they
+# were the only genuinely non-deterministic content left in builds #36/#37).
 # Excluding them here is the same thing as deleting them, but it cannot be
 # undone by a later stage. All four are pure caches and regenerate on use.
 var/cache/apt/pkgcache.bin
 var/cache/apt/srcpkgcache.bin
 var/lib/command-not-found/commands.db
-var/lib/command-not-found/commands.db.metadata is filled by zzz-klh-deb-pool.hook.chroot (~900MB of the
-# build's own .deb files) so the host can harvest them into the
-# content-addressed pool after the build. Shipping it would nearly double the
-# ISO; it exists only between the chroot hook and build.sh's harvest step.
-var/cache/klh-pool
+var/lib/command-not-found/commands.db.metadata
