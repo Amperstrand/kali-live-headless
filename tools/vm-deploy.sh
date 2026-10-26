@@ -34,6 +34,10 @@
 #                 RAM-only seed onto the store, record state, publish it.
 #   --verify-only skip provisioning; re-run the checks against a running guest
 #                 (uses --name/--port or the state file on the VM host).
+#   --no-check    skip the end-of-deploy checklist (tools/vm-check.sh --postflight);
+#                 the checklist proves the properties the six deploy checks do
+#                 not (persistence artifacts, cross-VM isolation, DNS pinning,
+#                 authorized keys, port ownership).
 #
 # Exit codes: 0 all steps + verification passed, 1 any step or check failed.
 set -euo pipefail
@@ -44,6 +48,7 @@ REPO=$(cd -- "$HERE/.." && pwd)
 NAME="" CORES="" RAM_GB="" DISK_GB="" GUEST_USER=debian PORT=""
 STICK="kali@kali-live.local" HUB="root@inr2.cashu.exchange"
 NO_HUB=false NO_EGRESS=false RESTORE=false ADOPT=false VERIFY_ONLY=false WAIT=300 STATE=""
+NO_CHECK=false
 KEYS=()
 
 pass() { PASSED=$((PASSED + 1)); printf '  PASS  %s\n' "$1"; }
@@ -66,6 +71,7 @@ while [ $# -gt 0 ]; do
         --hub)        HUB=${2:?}; shift 2 ;;
         --no-hub)     NO_HUB=true; shift ;;
         --no-egress)  NO_EGRESS=true; shift ;;
+        --no-check)   NO_CHECK=true; shift ;;
         --restore)    RESTORE=true; shift ;;
         --adopt)      ADOPT=true; shift ;;
         --verify-only) VERIFY_ONLY=true; shift ;;
@@ -224,7 +230,28 @@ else
     [ "$t" = "yes" ] && pass "clock synchronized" || fail "clock not synchronized (${t:-unknown})"
 fi
 
-# ---- 5. hand-off ------------------------------------------------------------
+# ---- 5. checklist -----------------------------------------------------------
+# The six checks above gate the deploy; the checklist is the full
+# desired-behaviour list (persistence artifacts, cross-VM isolation, resolver
+# pinning, authorized keys, port ownership, domain XML lessons). Run it here so
+# a deploy ends with a verdict instead of a list of things to go and look at.
+if $NO_CHECK; then
+    printf '\n== checklist: skipped (--no-check)\n'
+else
+    step "checklist: tools/vm-check.sh --postflight"
+    check_args=(--postflight --name "$NAME" --port "$EXT_PORT"
+                --stick "$STICK" --hub "$HUB" --guest-user "$GUEST_USER")
+    [ -n "$CORES" ] && check_args+=(--cores "$CORES")
+    [ -n "$RAM_GB" ] && check_args+=(--ram-gb "$RAM_GB")
+    for k in ${KEYS+"${KEYS[@]}"}; do check_args+=(--expect-key "$k"); done
+    if "$HERE/vm-check.sh" "${check_args[@]}"; then
+        pass "checklist (vm-check --postflight)"
+    else
+        fail "checklist (vm-check --postflight) — run it directly to see which property broke"
+    fi
+fi
+
+# ---- 6. hand-off ------------------------------------------------------------
 printf '\n'
 if $NO_HUB; then
     printf 'guest ready (LAN only):  ssh %s@%s\n' "$GUEST_USER" "$GUEST_IP"

@@ -626,7 +626,26 @@ concentrator, then verifies egress, isolation, sshd posture and clock from
 your workstation. `--verify-only` re-runs the checks, `--restore` brings a
 guest back after the live session reboots (disk, seed, domain XML and state
 all live on the NTFS store), and `--adopt` takes over a hand-built guest.
-Full guide and the hard-won failure modes: `docs/vm-deploy.md`.
+### Pre-commit gate
+
+```sh
+git config core.hooksPath .githooks   # once per clone
+.githooks/pre-commit --all            # whole tree, e.g. before a release
+```
+
+Syntax, shellcheck, a public-repo leak scan (public IPs, MACs, private keys,
+tokens, any literal value from `./config`), artifact guard, exec bits on
+shipped scripts, and formatting. Rules and escape hatches are listed in
+`AGENTS.md` under "Pre-commit gate".
+
+Full guide and the hard-won failure modes: `docs/vm-deploy.md`. The
+desired-behaviour checklist (`tools/vm-check.sh`, ids and fixes in
+`docs/vm-checklist.md`) runs automatically at the end of every deploy and can
+be re-run on its own:
+
+```sh
+tools/vm-check.sh --postflight --name vps1 --expect-key ~/.ssh/id_ed25519.pub
+```
 
 ### VM store on the internal NTFS disk (opt-in, M1)
 
