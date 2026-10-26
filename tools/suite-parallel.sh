@@ -54,17 +54,27 @@ fi
 # every stage crawls past every budget and both sides read it as unexplained
 # contention (happened twice on 2026-10-26 — a user-launched gate overlapped
 # an agent-launched one). One gate at a time per host.
-# pid-LIVENESS validated: two gates died on launch because a PHANTOM runner
-# pid (dead but matched by pgrep at the wrong moment) held the refusal
-# (2026-10-26, gate-31 and gate-31b both refused on pids that were gone by
-# the next check — the count-zero verdict class applied to a lock)
+# One gate per host — but the PHANTOM is (usually) OURSELVES: a tmux/ssh
+# launcher's own cmdline contains 'tools/suite-parallel.sh', so pgrep
+# matches the parent shell for exactly the seconds the runner is starting,
+# and the guard refuses its own launcher (gate-31, -31b, -31c — three
+# self-inflicted refusals before the mechanism was understood). Exclude the
+# full ANCESTRY of $$, then validate liveness.
+_anc=" $$"
+_a=$$
+while [ "$_a" -gt 1 ]; do
+  _a=$(ps -o ppid= -p "$_a" 2>/dev/null | tr -d ' ')
+  [ -z "$_a" ] && break
+  _anc="$_anc $_a"
+done
 for OTHER in $(pgrep -f "tools/suite-parallel\.sh" 2>/dev/null); do
-  [ "$OTHER" = "$$" ] && continue
+  case "$_anc" in *" $OTHER "*) continue ;; esac
   if kill -0 "$OTHER" 2>/dev/null; then
     echo "REFUSED: another gate is already running (pid $OTHER) — one gate per host at a time." >&2
     exit 3
   fi
 done
+unset _anc _a
 
 CORES=$(nproc 2>/dev/null || echo 4)
 if [ "$CORES" -lt 8 ]; then
