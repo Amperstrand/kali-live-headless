@@ -27,6 +27,10 @@
 #                       store). Implies the build root lives on that image.
 #   --scratch-size S    size of --scratch-image                        [default: 40G]
 #   --scratch-mnt D     mountpoint for the scratch image    [default: ~/klh-scratch]
+#   --pool              freeze the build's .deb set into a content-addressed
+#                       pool on the target (build.sh --pool); the pool path is
+#                       $KLH_DEB_POOL from this environment, forwarded to the
+#                       build, or ~/.local/share/kali-live-headless/deb-pool
 #   --min-free G        refuse if the target has less free space        [default: 30]
 #   --sync-only         sync + start nothing (inspect the tree first)
 #   --wait              stay attached and stream until the build exits
@@ -46,6 +50,7 @@ ok() { printf '\033[32mremote-build: %s\033[0m\n' "$*"; }
 HOST="" NAME="" BASE=kali VARIANT="" NUMBER="" ARCHIVE=true
 ENGINE=auto DOCKER_DATA_ROOT=""
 SCRATCH_IMAGE="" RAMDISK="" SCRATCH_SIZE=40G SCRATCH_MNT=""  # empty = $HOME/klh-scratch on the target
+POOL=false
 MIN_FREE=30 SYNC_ONLY=false WAIT=false FETCH_DIR=""
 BUILD_ENV=()   # extra env vars for the remote build.sh (space-joined)
 
@@ -64,6 +69,7 @@ while [ $# -gt 0 ]; do
     --ramdisk)       RAMDISK=${2:?}; shift 2 ;;
     --scratch-size)  SCRATCH_SIZE=${2:?}; shift 2 ;;
     --scratch-mnt)   SCRATCH_MNT=${2:?}; shift 2 ;;
+    --pool)          POOL=true; shift ;;
     --min-free)      MIN_FREE=${2:?}; shift 2 ;;
     --sync-only)     SYNC_ONLY=true; shift ;;
     --wait)          WAIT=true; shift ;;
@@ -248,6 +254,12 @@ if [ "$SYNC_ONLY" = true ]; then
 fi
 
 ARGS=(--variant "$VARIANT")  # no -o: build.sh archives into <repo>/output
+if [ "$POOL" = true ]; then
+  ARGS+=(--pool)
+  # the pool path is meaningful on the TARGET (a live box has no home storage),
+  # so it must survive sudo -E; forward it explicitly when the caller set it.
+  [ -n "${KLH_DEB_POOL:-}" ] && BUILD_ENV+=("KLH_DEB_POOL=$KLH_DEB_POOL")
+fi
 [ "$ARCHIVE" = true ] && [ -n "$NUMBER" ] && ARGS+=(--number "$NUMBER")
 [ "$ARCHIVE" = false ] && ARGS+=(--no-archive)
 
