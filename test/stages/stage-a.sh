@@ -51,6 +51,19 @@ else
   record skip "rootfs/excludes present" "no excludes file in the overlay"
 fi
 
+# An exclude line that is not a plain path (a space, a stray comment tail) is
+# silently inert — mksquashfs just matches nothing. That is how a mangled edit
+# shipped commands.db.metadata into builds #38/#39 while its sibling was
+# excluded correctly.
+if [ -f "$_excl" ]; then
+  _bad=$(grep -vE '^[[:space:]]*(#|$)' "$_excl" | grep -cE '[[:space:]]' || true)
+  if [ "${_bad:-0}" -eq 0 ]; then
+    record pass "rootfs/excludes entries are bare paths"
+  else
+    record fail "rootfs/excludes entries are bare paths" "$_bad line(s) with whitespace — mksquashfs would silently ignore them"
+  fi
+fi
+
 # A hook live-build cannot execute is silently skipped, so the image ships
 # without the step and nothing complains (AGENTS #16: derive_identity.py was
 # 100644 for ten builds and never ran). Every hook in the overlay must be +x;
