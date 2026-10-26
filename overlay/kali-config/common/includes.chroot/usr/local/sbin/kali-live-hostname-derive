@@ -8,9 +8,11 @@
 #          non-alphanumerics collapsed to '-', capped at 20 chars so the
 #          full name stays inside the 63-char hostname limit.
 #   cores  online CPUs (nproc; an 8-thread machine reports 8c)
-#   ram    MemTotal rounded to GiB
-#   disk   largest internal disk (non-removable, not the live boot medium),
-#          decimal GB. Omitted when there is none (e.g. a diskless guest).
+#   ram    MemTotal rounded UP to DIMM granularity (a 16 GiB box reports
+#          ~15.5 GiB -> 16r; 32 GiB -> 32r)
+#   disk   NVMe if present (largest), else the largest internal disk —
+#          non-removable, never the live boot medium — in decimal GB.
+#          Omitted when there is none (e.g. a diskless guest).
 #
 # Prints the chosen name on stdout. Exit 1 when not even a model can be
 # determined (the caller should keep its static hostname).

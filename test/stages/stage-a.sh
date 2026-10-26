@@ -754,12 +754,12 @@ if [ -x "$HWD" ]; then
   cat > "$SCRATCH/probe-dupe.sh" <<'PROBE'
 #!/bin/sh
 case "$1" in
-  latitude-7490-4c16r128d|latitude-7490-4c16r128d-2) echo 192.168.13.50 ;;
+  latitude-7490-4c16r128d|latitude-7490-4c16r128d-2) echo 192.0.2.50 ;;
   *) exit 1 ;;
 esac
 PROBE
   chmod +x "$SCRATCH/probe-dupe.sh"
-  out=$(KLH_PROBE_CMD="$SCRATCH/probe-dupe.sh" KLH_OWN_ADDRS=192.168.13.217 \
+  out=$(KLH_PROBE_CMD="$SCRATCH/probe-dupe.sh" KLH_OWN_ADDRS=192.0.2.217 \
         KLH_DMI_DIR="$HW2/dmi" KLH_SYSBLOCK="$HW2/sys/block" KLH_MEMINFO="$HW/meminfo" \
         KLH_NPROC=4 "$HWD" 2>/dev/null)
   [ "$out" = "latitude-7490-4c16r128d-3" ] \
@@ -770,10 +770,10 @@ PROBE
   # machine's addresses, or every boot would rename itself to -2).
   cat > "$SCRATCH/probe-self.sh" <<'PROBE'
 #!/bin/sh
-echo 192.168.13.217
+echo 192.0.2.217
 PROBE
   chmod +x "$SCRATCH/probe-self.sh"
-  out=$(KLH_PROBE_CMD="$SCRATCH/probe-self.sh" KLH_OWN_ADDRS=192.168.13.217 \
+  out=$(KLH_PROBE_CMD="$SCRATCH/probe-self.sh" KLH_OWN_ADDRS=192.0.2.217 \
         KLH_DMI_DIR="$HW2/dmi" KLH_SYSBLOCK="$HW2/sys/block" KLH_MEMINFO="$HW/meminfo" \
         KLH_NPROC=4 "$HWD" 2>/dev/null)
   [ "$out" = "latitude-7490-4c16r128d" ] \
