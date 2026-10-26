@@ -72,7 +72,9 @@ tenant_add() { # all args
   tenant_ports "$_user" "$_vms" > "$_dir/ports"
 
   echo "tenant '$_user':"
-  echo "  key: ${_key:0:30}..."
+  # POSIX sh: no substring expansion (${_key:0:30}) — dash aborts with
+  # "Bad substitution" at runtime (the build #11 class; caught by static)
+  echo "  key: $(printf '%.30s' "$_key")..."
   echo "  VMs: $_vms"
   echo "  ports: $(cat "$_dir/ports" | tr '\n' ' ')"
   echo ""
