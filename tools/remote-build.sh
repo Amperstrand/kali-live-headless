@@ -236,7 +236,7 @@ if [ -f "$REPO_DIR/.git" ]; then
     || die "remote clone failed"
 else
   rsync -a --delete --info=stats1 \
-    --exclude 'output/' --exclude 'build/' --exclude '.git/index.lock' \
+    --exclude 'output/' --exclude 'build/' --exclude '.git/index.lock' --exclude 'test/scratch/' --exclude 'test/bitlocker/mocks/' --exclude '__pycache__/' --exclude '*.img' \
     -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" "$REPO_DIR/" "$HOST:$ROOT/src/" \
     || die "rsync failed"
 fi
