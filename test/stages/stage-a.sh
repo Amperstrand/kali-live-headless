@@ -434,7 +434,13 @@ if [ -x "$VMSTORE" ] && [ -d "$FIX" ]; then
   vm_assert 1 baddriver.conf lsblk-normal cmdline-live "unknown driver refused"
   vm_assert 1 baddir.conf    lsblk-normal cmdline-live "non-Windows-legal dir refused"
   vm_assert 1 badreserved.conf lsblk-normal cmdline-live "non-numeric reserved_free_mb refused"
-  vm_assert 1 ok.conf      lsblk-bitlocker-only cmdline-live "BitLocker-only system with no tool present refused"
+  # (removed 2026-10-26) "BitLocker-only system with no tool present refused"
+  # asserted the PRE-opportunistic design. Current policy (see the comment
+  # below and kali-live-vmstore-mount:343): auto always plans try-mount and
+  # only BitLocker volumes are ever unlocked; the missing-tool refusal applies
+  # to an EXPLICIT target, which is asserted two blocks down with
+  # KLH_BLKM=/nonexistent. Keeping both expectations made the gate red on every
+  # host for a design that no longer exists.
   vm_assert 1 ok.conf      lsblk-none cmdline-live "no NTFS candidate refused"
   # the REAL gaming-PC layout (2026-10-23 hardware dry-run): BitLocker C: +
   # a plaintext 1.1G WinRE decoy. auto now goes OPPORTUNISTIC (owner
