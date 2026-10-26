@@ -25,6 +25,17 @@
 # Serial source: udev ID_SERIAL_SHORT, fallback lsblk SERIAL.
 # Tests/callers may pass --serial-raw to avoid needing hardware.
 set -u
+# canonical helpers, sourced ONCE at top level: the previous lazy sourcing
+# lived inside cfg_partition_of, which adopt calls in a COMMAND SUBSTITUTION
+# — subshells discard function definitions, so klh_salt_of was "not found"
+# on the first livebox flash (2026-10-26: adoption silently degraded to
+# fresh-stick and ROTATED the identities; salt was restored from the
+# operator registry by hand). Existence-test pattern (POSIX special-builtin
+# safety) per the in-image convention.
+if [ -f "$(dirname "$0")/../overlay/kali-config/common/includes.chroot/usr/local/lib/kali-live-headless/klh-lib.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$(dirname "$0")/../overlay/kali-config/common/includes.chroot/usr/local/lib/kali-live-headless/klh-lib.sh"
+fi
 
 REGISTRY="${KLH_STICK_REGISTRY:-$HOME/.local/share/kali-live-headless/stick-registry.tsv}"
 REGDIR=$(dirname "$REGISTRY")
@@ -106,15 +117,11 @@ cfg_partition_of() { # $1=disk -> partition dev with label KLHCONFIG
     # canonical helper (same file that ships in the image — dedup 2026-10-25;
     # the existence-test sourcing pattern matters: a failing `.` special
     # builtin is FATAL to POSIX-mode shells, so never use `try || fallback`)
-    _klh_repo=$(cd "$(dirname "$0")/.." && pwd)
-    if [ -f "$_klh_repo/overlay/kali-config/common/includes.chroot/usr/local/lib/kali-live-headless/klh-lib.sh" ]; then
-        # shellcheck disable=SC1090
-        . "$_klh_repo/overlay/kali-config/common/includes.chroot/usr/local/lib/kali-live-headless/klh-lib.sh"
+    if command -v klh_cfgpart >/dev/null 2>&1; then
         klh_cfgpart "$1"
     else
         lsblk -rno NAME,LABEL "$1" 2>/dev/null | awk '$2=="KLHCONFIG"{print "/dev/"$1; exit}'
     fi
-    unset _klh_repo
 }
 
 cmd_apply() {

@@ -1,0 +1,235 @@
+#!/bin/sh
+# kali-live-vm-fips — per-VM FIPS mesh identities (OPTIONAL, modular).
+#
+# Each guest can get its own mesh identity, derived from the stick's master
+# salt and the guest's uuid — NOT from anything inside the guest image:
+#
+#     nsec/npub = HKDF(master salt, "klh-headless/v1/fips-vm/vm-<uuid>")
+#
+# so one salt derives a unique, rebuild-stable npub per VM: `vm-rm` +
+# recreate with the same uuid yields the same mesh address, a different uuid
+# yields a different one. The nsec is written straight into the guest (0600,
+# root) and never printed; the npub is public (it is an address) and goes
+# into the deploy state + registry next to the external port.
+#
+# Identity vs wire — same split as the host (docs/fips-optionality-and-
+# rescue-channel.md): `derive` needs only the salt; `install` additionally
+# puts the FIPS daemon in the guest. Without peers the guest holds an
+# identity and no wire, which is a valid, deliberate state.
+#
+#   kali-live-vm-fips derive  --id vps1
+#   kali-live-vm-fips install --id vps1 [--peer npub1...@192.168.122.1:port]
+#   kali-live-vm-fips status  --id vps1
+#   kali-live-vm-fips remove  --id vps1
+#
+# Deb source: the guests are Debian and FIPS ships from the Kali archive, so
+# the deb is fetched ONCE on the host into <store>/fips-deb/ and copied in —
+# the guest never gains a Kali repo entry.
+#
+# Security posture: the guest's mesh exposure is governed by the guest's own
+# firewall (fips.nft ships DISABLED — decide deliberately before opening
+# services to the mesh). Host-side invariants are untouched: guest->host and
+# guest->RFC1918/link-local stay dropped; a guest peering with the HOST's
+# fips additionally needs a sanctioned UDP flow, which does not exist yet
+# (kali-live-vm-forward owns inbound; this tool does not widen it).
+#
+# Exit: 0 ok, 1 failure, 2 usage, 3 no master salt (toram boot).
+set -u
+
+VIRSH="virsh -c qemu:///system"
+LIB=/usr/local/lib/kali-live-headless
+STORE_DIR=${KLH_VMSTORE_DIR:-/mnt/klh-vmstore}
+VMS_DIR="$STORE_DIR/vms"
+DEB_DIR="$STORE_DIR/fips-deb"
+HOST_KEY=/var/lib/kali-live-headless/vmhost-ed25519
+SALT_FILE=/var/lib/kali-live-headless/master.salt
+
+log()  { printf 'kali-live-vm-fips: %s\n' "$*" >&2; }
+die()  { log "$*"; exit 1; }
+usage(){ sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+
+CMD="" ID="" UUID="" DEB="" EPHEMERAL=false
+PEERS=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        derive|install|remove|status) CMD=$1; shift ;;
+        --id)    ID=${2:?}; shift 2 ;;
+        --uuid)  UUID=${2:?}; shift 2 ;;
+        --deb)   DEB=${2:?}; shift 2 ;;
+        --peer)  PEERS="$PEERS $2"; shift 2 ;;
+        --ephemeral) EPHEMERAL=true; shift ;;
+        -h|--help) usage ;;
+        *) usage ;;
+    esac
+done
+[ -n "$CMD" ] && [ -n "$ID" ] || usage
+
+# ---------------------------------------------------------------- helpers
+vm_uuid() { # $1 = id; --uuid wins, then the domain, then the deploy state
+    [ -n "$UUID" ] && { printf '%s\n' "$UUID"; return 0; }
+    u=$($VIRSH dominfo "$1" 2>/dev/null | sed -n 's/^UUID: *//p' | head -1)
+    [ -n "$u" ] || u=$(sed -n 's/^\(VM_\)\?UUID=//p' "$VMS_DIR/$1.deploy" "$VMS_DIR/$1.meta" 2>/dev/null | head -1)
+    [ -n "$u" ] || die "no uuid for '$1' (is it deployed?)"
+    printf '%s\n' "$u"
+}
+
+load_salt() {
+    [ -s "$SALT_FILE" ] || return 3
+    head -1 "$SALT_FILE" | tr -d ' \t\r\n'
+}
+
+derive_npub() { # $1 = salt, $2 = uuid -> "npub<TAB>nsec"
+    python3 "$LIB/derive_identity.py" "$1" --fingerprint "vm-$2" --purpose fips-vm 2>/dev/null
+}
+
+deploy_var() { sed -n "s/^$1=//p" "$VMS_DIR/$ID.deploy" 2>/dev/null | head -1; }
+set_deploy_var() { # $1 = VAR, $2 = value (idempotent upsert)
+    f="$VMS_DIR/$ID.deploy"
+    [ -f "$f" ] || return 0
+    grep -q "^$1=" "$f" 2>/dev/null \
+        && sed -i "s|^$1=.*|$1=$2|" "$f" \
+        || printf '%s=%s\n' "$1" "$2" >> "$f"
+}
+
+guest_ip() {
+    ip=$(deploy_var GUEST_IP)
+    [ -n "$ip" ] || ip=$($VIRSH domifaddr "$ID" --source lease 2>/dev/null \
+        | awk '/ipv4/{sub(/\/.*/,"",$4); print $4}' | head -1)
+    [ -n "$ip" ] || die "no IP for guest '$ID'"
+    printf '%s\n' "$ip"
+}
+
+gssh() { # $1 = guest ip, rest = command
+    ssh -i "$HOST_KEY" -o BatchMode=yes -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 "debian@$1" "$2"
+}
+
+ensure_deb() { # prints the path of a fips .deb, downloading once
+    [ -n "$DEB" ] && { [ -f "$DEB" ] || die "--deb $DEB not found"; printf '%s\n' "$DEB"; return 0; }
+    have=$(ls "$DEB_DIR"/fips_*.deb 2>/dev/null | head -1)
+    [ -n "$have" ] && { printf '%s\n' "$have"; return 0; }
+    command -v apt-get >/dev/null 2>&1 || die "no cached fips deb and no apt-get"
+    mkdir -p "$DEB_DIR" || die "cannot create $DEB_DIR"
+    log "no cached deb — downloading FIPS once into $DEB_DIR"
+    ( cd "$DEB_DIR" && apt-get download fips >/dev/null 2>&1 ) \
+        || die "apt-get download fips failed (host online? repo reachable?)"
+    ls "$DEB_DIR"/fips_*.deb 2>/dev/null | head -1 || die "download produced no fips_*.deb"
+}
+
+yaml_peers() { # renders the static peers block from --peer npub@addr:port
+    [ -n "$PEERS" ] || { printf 'peers: []\n'; return 0; }
+    printf 'peers:\n'
+    for p in $PEERS; do
+        np=${p%%@*}; ad=${p#*@}
+        printf '  - npub: %s\n    addresses:\n      - transport: udp\n        addr: "%s"\n' "$np" "$ad"
+    done
+}
+
+guest_yaml() { # $1 = alias
+    cat <<EOF
+# managed by kali-live-vm-fips ($ID) — regenerated on every install
+node:
+  name: $1
+  identity:
+    persistent: true
+tun:
+  enabled: true
+  name: fips0
+  mtu: 1380
+dns:
+  enabled: true
+transports:
+  udp:
+    bind_addr: "0.0.0.0:0"
+$(yaml_peers)
+EOF
+}
+
+# ---------------------------------------------------------------- commands
+case "$CMD" in
+derive)
+    SALT=$(load_salt) || die "no master salt on this host (toram boot?) —
+  identity derivation needs the persistent salt; re-provision or boot with
+  the KLHCONFIG partition. Nothing was changed."
+    U=$(vm_uuid "$ID") || exit 1
+    out=$(derive_npub "$SALT" "$U") || die "derivation failed"
+    npub=$(printf '%s\n' "$out" | cut -f1)
+    printf 'uuid=%s\nnpub=%s\n' "$U" "$npub"
+    ;;
+
+install)
+    IP=$(guest_ip) || exit 1
+    SALT=$(load_salt)
+    if [ "$SALT" ]; then
+        U=$(vm_uuid "$ID") || exit 1
+        out=$(derive_npub "$SALT" "$U") || die "derivation failed"
+        NSEC=$(printf '%s\n' "$out" | cut -f2)
+        NPUB=$(printf '%s\n' "$out" | cut -f1)
+        IDENTITY_SOURCE="derived (salt + vm-$U): rebuild-stable"
+    elif $EPHEMERAL; then
+        NSEC="" NPUB=""
+        IDENTITY_SOURCE="ephemeral (guest-generated): NOT rebuild-stable"
+        log "WARNING: no master salt; installing with a guest-generated key."
+        log "         The npub changes if this guest is ever rebuilt."
+    else
+        die "no master salt on this host (toram boot?) — install with
+  --ephemeral for a guest-generated identity, or boot with the KLHCONFIG
+  partition for a derived, rebuild-stable one."
+    fi
+
+    DEB_PATH=$(ensure_deb) || exit 1
+    log "installing FIPS into $ID ($IP) from $(basename "$DEB_PATH")"
+    gssh "$IP" "command -v systemctl >/dev/null" || die "guest not reachable via ssh ($IP)"
+
+    scp -q -i "$HOST_KEY" -o BatchMode=yes -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null "$DEB_PATH" "debian@$IP:/tmp/" \
+        || die "could not copy the deb into the guest"
+    base=$(basename "$DEB_PATH")
+    gssh "$IP" "sudo -n apt-get install -y -q /tmp/$base >/dev/null 2>&1 \
+        || sudo -n apt-get install -y -q --reinstall /tmp/$base >/dev/null 2>&1" \
+        || die "apt install of $base failed in the guest (unsatisfied deps?)"
+
+    if [ -n "$NSEC" ]; then
+        printf '%s\n' "$NSEC" | gssh "$IP" "sudo -n sh -c 'cat > /etc/fips/fips.key && chmod 0600 /etc/fips/fips.key'" \
+            || die "could not write /etc/fips/fips.key in the guest"
+    fi
+    guest_yaml "$ID" | gssh "$IP" "sudo -n sh -c 'cat > /etc/fips/fips.yaml'" \
+        || die "could not write /etc/fips/fips.yaml in the guest"
+
+    gssh "$IP" "sudo -n systemctl enable --now fips fips-dns >/dev/null 2>&1" \
+        || die "could not enable fips/fips-dns in the guest"
+
+    set_deploy_var FIPS on
+    [ -n "$NPUB" ] && set_deploy_var NPUB "$NPUB"
+    set_deploy_var FIPS_IDENTITY "$IDENTITY_SOURCE"
+    log "FIPS enabled in $ID (${NPUB:-ephemeral key})"
+    [ -n "$NPUB" ] && printf 'npub=%s\n' "$NPUB"
+    ;;
+
+status)
+    IP=$(guest_ip) || exit 1
+    SALT=$(load_salt)
+    if [ "$SALT" ]; then
+        U=$(vm_uuid "$ID") || exit 1
+        out=$(derive_npub "$SALT" "$U") || die "derivation failed"
+        printf 'uuid=%s\nnpub=%s\n' "$U" "$(printf '%s\n' "$out" | cut -f1)"
+    else
+        printf 'uuid=%s\nnpub=(no salt on host — ephemeral or none)\n' "$(vm_uuid "$ID" || echo '?')"
+    fi
+    printf 'fips=%s\n' "$(deploy_var FIPS)"
+    printf 'recorded_npub=%s\n' "$(deploy_var NPUB)"
+    printf 'services=%s\n' "$(gssh "$IP" 'systemctl is-active fips fips-dns 2>/dev/null | paste -sd, -' 2>/dev/null || echo unreachable)"
+    printf 'mesh_addr=%s\n' "$(gssh "$IP" "ip -o -6 addr show fips0 2>/dev/null | awk '{print \$4}' | head -1" 2>/dev/null || true)"
+    ;;
+
+remove)
+    IP=$(guest_ip) || exit 1
+    log "removing FIPS from $ID"
+    gssh "$IP" "sudo -n systemctl disable --now fips fips-dns >/dev/null 2>&1; \
+                 sudo -n apt-get purge -y -q fips >/dev/null 2>&1; \
+                 sudo -n rm -f /etc/fips/fips.key /etc/fips/fips.yaml" \
+        || die "cleanup in the guest failed"
+    set_deploy_var FIPS off
+    log "FIPS removed (derived identity is retained: same uuid -> same npub)"
+    ;;
+esac
