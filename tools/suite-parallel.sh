@@ -54,10 +54,17 @@ fi
 # every stage crawls past every budget and both sides read it as unexplained
 # contention (happened twice on 2026-10-26 — a user-launched gate overlapped
 # an agent-launched one). One gate at a time per host.
-if pgrep -f "tools/suite-parallel\.sh" | grep -v "^$$\$" >/dev/null 2>&1; then
-  OTHER=$(pgrep -f "tools/suite-parallel\.sh" | grep -vw "$$" | head -1)
-  [ -n "$OTHER" ] && { echo "REFUSED: another gate is already running (pid $OTHER) — one gate per host at a time." >&2; exit 3; }
-fi
+# pid-LIVENESS validated: two gates died on launch because a PHANTOM runner
+# pid (dead but matched by pgrep at the wrong moment) held the refusal
+# (2026-10-26, gate-31 and gate-31b both refused on pids that were gone by
+# the next check — the count-zero verdict class applied to a lock)
+for OTHER in $(pgrep -f "tools/suite-parallel\.sh" 2>/dev/null); do
+  [ "$OTHER" = "$$" ] && continue
+  if kill -0 "$OTHER" 2>/dev/null; then
+    echo "REFUSED: another gate is already running (pid $OTHER) — one gate per host at a time." >&2
+    exit 3
+  fi
+done
 
 CORES=$(nproc 2>/dev/null || echo 4)
 if [ "$CORES" -lt 8 ]; then

@@ -8,7 +8,19 @@
 # should be chmod 600. Do not commit it anywhere.
 
 # --- Identity ---------------------------------------------------------
-# Hostname of the live system (also the mDNS name: <hostname>.local)
+# Hostname policy:
+#   hardware (default) = derive a self-describing name at every boot from the
+#            machine's DMI model, CPU cores, RAM and largest internal disk,
+#            e.g. x280-8c16r256d. Two identical machines get -2, -3 appended
+#            once the LAN is up (mDNS probe). The name describes the machine,
+#            not the stick, so the same stick on another laptop gets that
+#            laptop's name.
+#   static   = use HOSTNAME below verbatim (mDNS: <hostname>.local)
+# A KLHCONFIG HOSTNAME= override always wins over the scheme.
+HOSTNAME_SCHEME=hardware
+
+# Static hostname (used when HOSTNAME_SCHEME=static, and as the fallback if
+# hardware identity cannot be derived). Also the mDNS name in that mode.
 HOSTNAME=kali-live
 
 # --- Wi-Fi ------------------------------------------------------------

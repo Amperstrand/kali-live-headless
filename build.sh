@@ -242,27 +242,9 @@ klh_distro_prepare_upstream
 KLH_COMMON="$UPSTREAM_DIR/kali-config/common"
 mkdir -p "$KLH_COMMON"
 
-# ------------------------------------------------- apt cache (warm builds)
-# Upstream's build.sh ENDS with `cleanup_fs` (its line 629: rm -rf cache/
-# chroot/ config/ ... after EVERY successful build) — live-build's own
-# cache/packages.chroot persistence never survives to the next build, and
-# two post-flight harvest designs missed the window (v26: harvested a dir
-# lb had cleaned; v27: 884 debs wiped at build end). The fix is a symlink:
-# lb populates cache/packages.chroot THROUGH the link into the dotdir,
-# cleanup_fs rm -rf's the symlink, and the dotdir persists — next build lb
-# re-reads the same content natively (no restore hook needed).
-# REMOVED 2026-10-26: the .klh-apt-cache symlink + harvest was inert.
-# It depended on hooks/build/klh-apt-cache.hook.build, and live-build
-# 20250814+kali3 executes no *.hook.build hooks at all (it only scans
-# config/hooks/{normal,live}/*.chroot — verified: no "hook.build" string
-# in /usr/lib/live or /usr/bin/lb, and build #33 produced neither the
-# hook's echo nor a single cached .deb). Warm package caching now belongs
-# to an HTTP cache in front of the mirror (upstream auto-detects
-# squid-deb-proxy on :8000 and apt-cacher-ng on :3142), which survives
-# upstream's cleanup_fs because it lives outside the build tree entirely.
-# See docs/reproducible-builds.md. Do not re-add a cache that assumes
-# live-build will populate cache/packages.chroot: with no hook it is
-# wiped by cleanup_fs at the end of every build.
+# (the dead staging-time apt-cache symlink block was removed in main; the
+#  reason is recorded in docs/reproducible-builds.md — do not re-add a cache
+#  that expects live-build to populate cache/packages.chroot)
 
 klh_info "overlaying repo customizations into kali-config/common/"
 cp -a "$OVERLAY_DIR/." "$KLH_COMMON/"
@@ -469,6 +451,9 @@ install -m 0644 "$REPO_DIR/templates/headless-wifi.nmconnection.in" \
 cat > "$KLH_COMMON/includes.chroot/etc/default/kali-live-headless" <<EOF
 # Runtime defaults for kali-live-headless (no secrets here).
 WIFI_REGDOM="$WIFI_REGDOM"
+# hardware = derive <model>-<cores>c<ram>r<disk>d at boot (mDNS duplicate
+# probe adds -2/-3 once the LAN is up); static = use HOSTNAME from ./config
+HOSTNAME_SCHEME="$HOSTNAME_SCHEME"
 # random = console password randomized every boot (SSH is key-only,
 #         sudo passwordless); kali = standard Kali live "kali/kali"
 LIVE_PASSWORD_MODE="$LIVE_PASSWORD_MODE"
@@ -512,7 +497,7 @@ MANIFEST="$OUT_DIR/build-manifest-$(date -u '+%Y%m%dT%H%M%SZ').txt"
   echo "base            : $KLH_BASE ($KLH_DISTRO_NAME $BRANCH)"
   echo "variant/arch    : $VARIANT / $ARCH"
   echo "branch          : $BRANCH"
-  echo "hostname        : $HOSTNAME"
+  echo "hostname        : $HOSTNAME (scheme: $HOSTNAME_SCHEME)"
   echo "wifi ssid       : $WIFI_SSID"
   echo "wifi keymgmt    : $WIFI_KEYMGMT hidden=$WIFI_HIDDEN regdom=${WIFI_REGDOM:-<none>}"
   echo "boot default    : $BOOT_DEFAULT (auto-boot 5s)"

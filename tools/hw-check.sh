@@ -13,6 +13,7 @@
 #   tools/hw-check.sh --host 192.0.2.50 # when mDNS is not working
 #   tools/hw-check.sh --mode uefi         # tag the log (bios|uefi|forensic)
 #   tools/hw-check.sh --expect-npub npub1...  # identity survived a reboot
+#   tools/hw-check.sh --expect-hostname NAME  # assert a specific hostname
 #   tools/hw-check.sh --no-mesh           # stick deliberately has no
 #                                         # KLHCONFIG partition (dd-flashed)
 #   tools/hw-check.sh --vm-image ~/noble-server-cloudimg-amd64.img \
@@ -30,7 +31,7 @@ source "$REPO_DIR/lib/common.sh"
 
 klh_load_config "$REPO_DIR/config"
 
-HOST_ARG="" MODE="hw" TIMEOUT=300 EXPECT_NPUB="" NO_MESH=false EXPECT_WG="" NO_WG=false TEST_VMFORWARD=false
+HOST_ARG="" MODE="hw" TIMEOUT=300 EXPECT_NPUB="" EXPECT_HOSTNAME="" NO_MESH=false EXPECT_WG="" NO_WG=false TEST_VMFORWARD=false
 VM_IMAGE="" VM_USER="ubuntu"
 usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
@@ -40,6 +41,7 @@ usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
     --mode)        MODE=${2:?}; shift 2 ;;
     --timeout)     TIMEOUT=${2:?}; shift 2 ;;
     --expect-npub) EXPECT_NPUB=${2:?}; shift 2 ;;
+    --expect-hostname) EXPECT_HOSTNAME=${2:?}; shift 2 ;;
     --no-mesh)     NO_MESH=true; shift ;;
     --expect-wg)   EXPECT_WG=${2:?}; shift 2 ;;
     --no-wg)       NO_WG=true; shift ;;
@@ -51,7 +53,16 @@ usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
   esac
 done
 
-HOST="${HOST_ARG:-$HOSTNAME.local}"
+if [ -n "$HOST_ARG" ]; then
+  HOST=$HOST_ARG
+elif [ "${HOSTNAME_SCHEME:-static}" = hardware ]; then
+  # hardware-derived names are per machine (and may carry a -2 duplicate
+  # suffix) — there is no name in ./config to guess from. The console banner
+  # prints the exact one; mDNS browsing finds it too.
+  klh_die "HOSTNAME_SCHEME=hardware: pass --host <name>.local or <ip> (the stick console banner shows the derived name; avahi-browse -rt _ssh._tcp lists it)"
+else
+  HOST="$HOSTNAME.local"
+fi
 SSH_PUB=$(klh_expand_tilde "$SSH_PUBKEY_PATH")
 [ -f "$SSH_PUB" ] || klh_die "SSH public key not found: $SSH_PUB (re-run ./configure.sh)"
 SSH_KEY=${SSH_PUB%.pub}
@@ -106,7 +117,25 @@ record pass "reached $HOST over SSH"
 
 section "identity"
 v=$(guest 'id -un');                       [ "$v" = "kali" ] && record pass "SSH key login as kali" || record fail "SSH key login as kali ($v)"
-v=$(guest 'hostname');                    [ "$v" = "$HOSTNAME" ] && record pass "hostname=$HOSTNAME" || record fail "hostname (want $HOSTNAME, got '$v')"
+v=$(guest 'hostname')
+if [ "${HOSTNAME_SCHEME:-static}" = hardware ]; then
+  # The guest helper is the source of truth; a duplicate may have suffixed
+  # the name once the LAN came up (kali-live-hostname-settle).
+  hw_name=$(guest '/usr/local/sbin/kali-live-hostname-derive --no-probe 2>/dev/null')
+  if [ -z "$hw_name" ]; then
+    record fail "hostname derive available in guest (got '$v')"
+  else
+    case "$v" in
+      "$hw_name"|"$hw_name"-[0-9]|"$hw_name"-[0-9][0-9])
+        record pass "hostname=$v (hardware-derived)" ;;
+      *) record fail "hostname (want '$hw_name' or -N, got '$v')" ;;
+    esac
+  fi
+elif [ -n "${EXPECT_HOSTNAME:-}" ]; then
+  [ "$v" = "$EXPECT_HOSTNAME" ] && record pass "hostname=$EXPECT_HOSTNAME" || record fail "hostname (want $EXPECT_HOSTNAME, got '$v')"
+else
+  [ "$v" = "$HOSTNAME" ] && record pass "hostname=$HOSTNAME" || record fail "hostname (want $HOSTNAME, got '$v')"
+fi
 v=$(guest 'uname -r');                    record info "kernel $v"
 v=$(guest '[ -d /sys/firmware/efi ] && echo uefi || echo bios'); record info "boot mode: $v (tagged $MODE)"
 v=$(guest 'uptime -p 2>/dev/null || cut -d. -f1 /proc/uptime');  record info "up: $v"

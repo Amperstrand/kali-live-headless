@@ -74,14 +74,16 @@ if [ "$FROM_NM" = true ]; then
   SSID=$("$REPO_DIR/scripts/psk-from-nm.sh" --ssid)
   PSK=$("$REPO_DIR/scripts/psk-from-nm.sh")
 else
-  CFG="$REPO_DIR/config"
+  CFG="${CONFIG_PATH:-$REPO_DIR/config}"
   if [ ! -r "$CFG" ]; then
     echo "stick-conf.sh: no ./config — emitting a template (fill in WIFI_SSID/WIFI_PSK on the stick)" >&2
     cat <<'EOF'
 # headless-wifi.conf — kali-live-headless runtime Wi-Fi override.
 # PLAIN KEY=value lines (no quotes/escaping; no leading/trailing spaces).
 # Present + valid => overrides the credentials baked into the ISO.
-HOSTNAME=kali-live
+# Leave HOSTNAME commented out to keep the hardware-derived name
+# (HOSTNAME_SCHEME=hardware); uncomment + set one to pin this stick.
+#HOSTNAME=kali-live
 WIFI_SSID=
 WIFI_PSK=
 WIFI_KEYMGMT=wpa-psk
@@ -97,7 +99,15 @@ EOF
   PSK=$WIFI_PSK
   KEYMGMT=$WIFI_KEYMGMT
   HIDDEN=$WIFI_HIDDEN
-  HOSTNAME_V=${HOSTNAME:-kali-live}
+  # A HOSTNAME= line here is an EXPLICIT per-stick override, so it must not
+  # be emitted for the default hardware scheme — doing so would pin every
+  # flashed stick to the build host's ./config name and silently defeat
+  # HOSTNAME_SCHEME=hardware.
+  if [ "${HOSTNAME_SCHEME:-hardware}" = hardware ]; then
+    HOSTNAME_V=""
+  else
+    HOSTNAME_V=${HOSTNAME:-kali-live}
+  fi
   REGDOM=${WIFI_REGDOM:-}
 fi
 
@@ -108,7 +118,9 @@ cat <<EOF
 # at boot. NO rebuild, NO reflash needed.
 # PLAIN KEY=value lines (no quotes/escaping; no leading/trailing spaces).
 # Invalid or incomplete values => the baked credentials are used instead.
-HOSTNAME=$HOSTNAME_V
+# HOSTNAME is present only for HOSTNAME_SCHEME=static (or a manual pin);
+# absent = the machine names itself from its hardware (x280-8c16r256d).
+${HOSTNAME_V:+HOSTNAME=$HOSTNAME_V}
 WIFI_SSID=$SSID
 WIFI_PSK=$PSK
 WIFI_KEYMGMT=$KEYMGMT
