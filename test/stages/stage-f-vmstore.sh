@@ -10,7 +10,11 @@
     # assert mount + pool + full image lifecycle, then verify host-side that
     # nothing outside \vms changed. Boot 2 (forensic cmdline, same disks):
     # the noautomount gate must keep the store unmounted.
-    if [ "$RUN_VMSTORE" = true ] && [ "$KERN_OK" = true ] && [ "${WITH_KVM_EXPECTED}" = true ]; then
+    # NB: the KERN_OK/SSH guards use :- defaults — this file is sourced at
+    # top level AFTER stage-cde, where KERN_OK is only set inside the qemu
+    # branch; a content-level run (no VM) would die on the unbound var
+    # under test.sh's set -u otherwise.
+    if [ "${RUN_VMSTORE:-false}" = true ] && [ "${KERN_OK:-false}" = true ] && [ "${WITH_KVM_EXPECTED}" = true ]; then
       # fixture needs: mkfs.ntfs (host binary, or a cached container image)
       # and a kernel ntfs3 mount to place/verify marker files.
       NTFS_MKFS=""
