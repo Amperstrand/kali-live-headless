@@ -47,3 +47,29 @@ A read-back of a *flashed* stick will not hash-match the ISO file, ever — the
 config-partition append rewrites the MBR inside the ISO's system area
 (AGENTS #34, `tools/medium-verify.sh`). Verify media with the region-aware
 tool, not with `sha512sum /dev/sdX`.
+
+## Build storage on this machine (the BitLocker situation)
+
+The X280's only big volume (237G NTFS = the owner's Windows) is
+BitLocker-encrypted **with a clear key** — i.e. BitLocker is suspended, so
+`kali-live-bitlocker-mount detect` shows `clearkey=yes` and the image's own
+tool unlocks it with no recovery password. Measured through the dislocker
+layer: **473 MB/s** reads — an ext4 build image on that volume would be
+disk-comfortable.
+
+Two facts shape what is possible:
+
+1. **The image's BitLocker path is read-only by construction**
+   (`dislocker-fuse … -r` is unconditional; `--rw` only reaches the ntfs-3g
+   layer). That policy is right for unattended unlocks. A writable build
+   store needs a manual, owner-consented unlock (same machinery, drop `-r`).
+2. **The volume is currently hibernated / fast-startup dirty.** ntfs-3g
+   refuses rw outright ("Metadata kept in Windows cache") — correctly, since
+   writing would corrupt the owner's filesystem. One-time fix from Windows:
+   a **full shutdown** (admin prompt: `shutdown /s /full`, or hold Shift
+   while clicking Shut down; `powercfg /h off` removes hiberfil.sys for
+   good). After that, rw mounts are safe and the 138G free are usable.
+
+Until then this machine is a **gate + flash host** (fully proven: static
+227/0, self boot-gate, USB3 port at ~60 MB/s reads) — builds need the clean
+shutdown or a USB3 disk.
