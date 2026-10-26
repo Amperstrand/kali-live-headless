@@ -130,11 +130,12 @@ klh_load_distro "$BASE"
 [ -n "$OPT_BRANCH" ]  && BRANCH="$OPT_BRANCH"
 [ -n "$OPT_REF" ]     && KALI_LIVE_REF="$OPT_REF"
 
-# BRANCH: klh_load_config defaulted it to kali-rolling before the adapter
-# existed. For a non-kali base with no EXPLICIT branch (no -b, no BRANCH=
-# in ./config), substitute the adapter's default suite; an explicit value
-# goes through the adapter's validator below either way.
-if [ "$KLH_BASE" != kali ] && [ -z "$OPT_BRANCH" ] \
+# BRANCH: klh_load_config defaulted it to its historical value before the
+# adapter existed. If the ADAPTER declares it pins unset branches and the
+# operator gave no explicit branch (no -b, no BRANCH= in ./config),
+# substitute the adapter's default suite; explicit values go through the
+# adapter's validator below either way.
+if [ "${KLH_DISTRO_PIN_BRANCH_WHEN_UNSET:-false}" = true ] && [ -z "$OPT_BRANCH" ] \
    && [ "$BRANCH" = "kali-rolling" ] \
    && ! grep -qE '^[[:space:]]*BRANCH=' "$CONFIG_FILE" 2>/dev/null; then
   BRANCH="$KLH_DISTRO_DEFAULT_BRANCH"
@@ -142,12 +143,12 @@ if [ "$KLH_BASE" != kali ] && [ -z "$OPT_BRANCH" ] \
 fi
 klh_distro_validate_branch "$BRANCH"
 
-# BUILD_MIRROR: for BASE=kali an empty mirror stays empty (upstream's own
-# default applies — the exact pre-spike behavior). Every other base MUST
-# pass -m: upstream's hardcoded default is http.kali.org, wrong for any
-# non-kali suite, and auto/config's own flags would silently win.
-if [ -n "${KLH_DISTRO_DEFAULT_MIRROR:-}" ] && [ "$KLH_BASE" != kali ] && [ -z "${BUILD_MIRROR:-}" ]; then
-  BUILD_MIRROR="$KLH_DISTRO_DEFAULT_MIRROR"
+# BUILD_MIRROR: if the ADAPTER declares it needs an explicit mirror and
+# none is configured, inject the adapter's default (upstream's hardcoded
+# default is a kali URL — wrong for every other base). Adapters that don't
+# declare it keep the exact historical no--m flow.
+if [ "${KLH_DISTRO_NEEDS_EXPLICIT_MIRROR:-false}" = true ] && [ -z "${BUILD_MIRROR:-}" ]; then
+  BUILD_MIRROR="${KLH_DISTRO_DEFAULT_MIRROR:?adapter property error}"
   klh_info "BASE=$KLH_BASE: build mirror defaulted to $BUILD_MIRROR"
 fi
 

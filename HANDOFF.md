@@ -206,6 +206,30 @@ Brief: SPIKE-BRIEF.md. Research: docs/vmhost-base-os-research.md.
   identities ROTATE every boot + the two remediation paths.
 - Static: 167/0 both bases (flash.sh + provision changes lint-clean).
 
+## M9 — post-merge refactor pass (branch refactor/post-merge-distro, 2026-10-26)
+
+Audited the merged adapter surface for leftover base-conditionals
+outside lib/distro/ and moved every one behind adapter-owned properties:
+build.sh's branch/mirror defaulting now keys on
+KLH_DISTRO_PIN_BRANCH_WHEN_UNSET / KLH_DISTRO_NEEDS_EXPLICIT_MIRROR
+(kali=false/false = the byte-identical historical flow, verified by
+dry-run: kali prints NO defaulting lines, debian prints both);
+stage-b's franken-build guard, keyring assert (now runs for BOTH bases —
+kali-archive-keyring verified installed in #31's squashfs first) and
+variant baseline/meta asserts read
+KLH_DISTRO_FORBIDDEN_PKG_PREFIX/KEYRING_PACKAGE/BASELINE_PKG/
+META_PKG_MINIMAL_ABSENT with identical pass/fail outcomes per base;
+klh_load_distro DISCOVERS adapters from lib/distro/*.sh (adding a base =
+dropping a file); flash.sh validates manifest base ids against adapter
+files; stage-a's foreign-branch assert is a generic pairwise loop;
+iso-archive --build N resolves ISOs by glob (the hardcoded kali name
+broke --build for every debian archive — proven fixed on iso-build1).
+Also verified the owner's timesync commit fits both adapters:
+systemd-timesyncd present in kali-rolling (Packages) and trixie (cached
+index), lists/hook/drop-in base-agnostic. Static 170/0 both bases
+(+3 adapter-contract asserts, all pre-existing asserts intact); no
+behavior changes by design.
+
 
 
 
