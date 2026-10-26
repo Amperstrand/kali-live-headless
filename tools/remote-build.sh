@@ -143,7 +143,11 @@ elif [ -n "$SCRATCH_IMAGE" ]; then
     fi" \
     || die "scratch filesystem setup failed on $HOST"
 else
-  ROOT="\$HOME/klh-remote/$NAME"
+  # resolve the TARGET's home once and use a real path: the previous
+  # shell-literal \$HOME reached mkdir inside single quotes and never
+  # expanded — 'cannot create $HOME/klh-remote/...' on ai-legion (2026-10-26)
+  THOME=$("${SSH[@]}" 'printf %s "$HOME"')
+  ROOT="$THOME/klh-remote/$NAME"
 fi
 
 # ---------------------------------------------------- 2b. engine selection
