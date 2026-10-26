@@ -55,6 +55,7 @@ KEEP_SECRETS=false
 FORCE_RECLONE=false
 DRY_RUN=false
 KEEP_ARTIFACTS=false
+POOL_DIR=""
 ARCHIVE=true
 SQUASHFS_COMP="zstd"
 OPT_OUT="" OPT_VARIANT="" OPT_ARCH="" OPT_BRANCH="" OPT_REF="" OPT_NUMBER=""
@@ -71,6 +72,11 @@ Options:
   -R, --ref REF        Pin upstream kali-live git ref (commit or branch)
       --keep-artifacts Keep the chroot/binary tree after the build (upstream
                        -k) — for debugging a failed run, not for speed
+      --pool           Freeze this build's .deb set into the content-addressed
+                       pool (tools/deb-pool.sh) so a later build can be
+                       reproduced offline. Implies --keep-artifacts. Pool
+                       location: $KLH_DEB_POOL or
+                       ~/.local/share/kali-live-headless/deb-pool
       --number N       Archive this build as output/iso-buildN/
                        (default: next free number)
       --no-archive     Leave the ISO in the output dir, do not archive it
@@ -101,6 +107,8 @@ EOF
     -b|--branch)       OPT_BRANCH=${2:?}; shift 2 ;;
     -R|--ref)          OPT_REF=${2:?}; shift 2 ;;
     --keep-artifacts)  KEEP_ARTIFACTS=true; shift ;;
+    --pool)            POOL_DIR="${KLH_DEB_POOL:-$HOME/.local/share/kali-live-headless/deb-pool}"
+                       KEEP_ARTIFACTS=true; shift ;;
     --zstd)            SQUASHFS_COMP=zstd; shift ;;
     --xz)              SQUASHFS_COMP=xz; shift ;;
     --number)          OPT_NUMBER=${2:?}; shift 2 ;;
@@ -252,6 +260,13 @@ mkdir -p "$KLH_COMMON"
 
 klh_info "overlaying repo customizations into kali-config/common/"
 cp -a "$OVERLAY_DIR/." "$KLH_COMMON/"
+
+# The deb-pool hook copies ~900MB of .deb files inside the chroot, so it is
+# staged only for pooled builds. The rootfs/excludes entry that keeps that copy
+# out of the squashfs is always staged (a no-op path when pooling is off).
+if [ -z "$POOL_DIR" ]; then
+  rm -f "$KLH_COMMON/hooks/live/zzz-klh-deb-pool.hook.chroot"
+fi
 
 # PROVENANCE GUARD — no mystery files. Everything just staged must be a
 # git-tracked overlay file. Build #18 shipped a libvirtd drop-in from an
@@ -608,6 +623,26 @@ fi
 SELF_HASH_NOW=$(sha256sum "$0" | cut -d' ' -f1)
 if [ "$SELF_HASH_NOW" != "$SELF_HASH_START" ]; then
   klh_die "build.sh was EDITED while this build ran (hash changed). The build SUCCEEDED; the ISO is safe in $STAGE_OUT — re-run the post-build steps by hand: tools/iso-archive.sh --iso $STAGE_OUT/*.iso --build $BUILD_NUM, then ./test.sh --iso <the archived iso>"
+fi
+
+# ------------------------------------------------------------ deb pool
+# Freeze this build's exact package inputs before the chroot is cleaned up
+# (--pool implies --keep-artifacts). The hook staged the .deb set plus a dpkg
+# manifest in /var/cache/klh-pool; here it becomes content-addressed objects
+# and a per-build apt mirror: docs/reproducible-builds.md.
+if [ -n "$POOL_DIR" ]; then
+  _pool_src="$UPSTREAM_DIR/chroot/var/cache/klh-pool"
+  if [ -d "$_pool_src" ]; then
+    klh_info "harvesting this build's .deb set into $POOL_DIR"
+    KLH_DEB_POOL="$POOL_DIR" "$REPO_DIR/tools/deb-pool.sh" add \
+      --label "b$BUILD_NUM" "$_pool_src" \
+      || klh_warn "pool harvest failed — the ISO is unaffected"
+    KLH_DEB_POOL="$POOL_DIR" "$REPO_DIR/tools/deb-pool.sh" index \
+      --label "b$BUILD_NUM" --suite "${BRANCH:-kali-rolling}" \
+      || klh_warn "pool index failed — the ISO is unaffected"
+  else
+    klh_warn "pool: $_pool_src is missing (the pool hook did not run this build)"
+  fi
 fi
 
 # ------------------------------------------------------------- archive

@@ -1,0 +1,10 @@
+# mksquashfs -ef excludes (wildcards enabled by live-build).
+#
+# Everything a *build* needs but a *booted image* must not carry.
+#
+# /var/cache/klh-pool is filled by zzz-klh-deb-pool.hook.chroot (~900MB of the
+# build's own .deb files) so the host can harvest them into the
+# content-addressed pool after the build. Shipping it would nearly double the
+# ISO; it exists only between the chroot hook and build.sh's harvest step.
+/var/cache/klh-pool
+/var/cache/klh-pool/*
