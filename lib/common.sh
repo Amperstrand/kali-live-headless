@@ -157,6 +157,7 @@ klh_load_config() {
   : "${VMSTORE_DIR:=vms}"
   : "${VMSTORE_RESERVED_MB:=20480}"
   : "${TORAM_ENTRY:=true}"
+  : "${TORAM_DEFAULT:=true}"   # FR-6: default entry copies the squashfs to RAM when memory allows (toram=auto semantics via our patched 9990-toram-todisk.sh: refuses below 4G headroom and boots from the medium)
   : "${SSHD_WG_ONLY:=false}"
   # FIPS_ENABLED=false ships the mesh dormant (no wg0, no enrollment, no
   # daemon peering) — overridable per stick via KLHCONFIG:/fips.conf.

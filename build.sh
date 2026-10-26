@@ -376,6 +376,20 @@ else
     klh_info "SQUASHFS: zstd (default; boot-gated #40)"
 fi
 
+# FR-6 (2026-10-26): toram by DEFAULT, conditionally. The default entry
+# gains `toram=filesystem.squashfs` (squashfs-only copy, ~2.2G); our patched
+# 9990-toram-todisk.sh refuses the copy below 4G headroom (KVM guests) and
+# the boot falls through to the medium — archiso's copytoram=auto pattern.
+# Explicit entries survive for both directions; toram-force skips headroom.
+if [ "$TORAM_DEFAULT" = true ] && [ -f "$LIVE_CFG" ]; then
+    if ! grep -q "toram=filesystem" "$LIVE_CFG"; then
+        # the FIRST entry (label live-@FLAVOUR@) is the default: append the
+        # toram module to its append line only
+        sed -i '0,/^label live-@FLAVOUR@$/,/append/ s|^        append @APPEND_LIVE@|        append @APPEND_LIVE@ toram=filesystem.squashfs|' "$LIVE_CFG"
+        klh_info "boot menu: default entry now toram=filesystem.squashfs (auto; falls back to medium below 4G headroom)"
+    fi
+fi
+
 # Optional "Live (load to RAM)" entry: live-boot's toram copies the whole
 # squashfs into RAM up front (sequential read, fast) and then runs purely
 # from memory — vs the default overlay where every first read page-faults
@@ -388,7 +402,7 @@ label live-toram-@FLAVOUR@\
         menu label Live system (@FLAVOUR@ - load to ^RAM)\
         linux @LINUX@\
         initrd @INITRD@\
-        append @APPEND_LIVE@ toram\
+        append @APPEND_LIVE@ toram=filesystem.squashfs toram-force\
 ' "$LIVE_CFG"
     fi
     # grub's MENU lives in grub.cfg (config.cfg only holds settings)
@@ -396,7 +410,7 @@ label live-toram-@FLAVOUR@\
     if [ -f "$GRUB_MENU" ] && ! grep -q "load to RAM" "$GRUB_MENU"; then
         sed -i '/forensic mode)"/i\
 menuentry "Live system (@FLAVOUR_LIVE@ - load to RAM)" {\
-        linux @KERNEL_LIVE@ @APPEND_LIVE@ toram\
+        linux @KERNEL_LIVE@ @APPEND_LIVE@ toram=filesystem.squashfs toram-force\
         initrd @INITRD_LIVE@\
 }\
 ' "$GRUB_MENU"

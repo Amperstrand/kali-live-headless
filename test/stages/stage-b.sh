@@ -151,6 +151,25 @@ else
       sudo test -x "$SQ_MNT/usr/local/sbin/$s" && record pass "script executable: $s" || record fail "script executable: $s"
     done
 
+    # ---- FR-6: conditional toram by default
+    # the generated live.cfg's FIRST entry (the menu default) must carry
+    # toram=filesystem.squashfs, and the patched 9990 script must ship in
+    # the initrd's source location (chroot) — a menu without it silently
+    # loses RAM-residency on every capable machine
+    sudo mount -o ro,loop "$ISO" "$ISO_MNT" 2>/dev/null || true
+    if sudo test -f "$ISO_MNT/boot/isolinux/live.cfg" 2>/dev/null || sudo test -f "$ISO_MNT/isolinux/live.cfg" 2>/dev/null; then
+      CFG=$(sudo find "$ISO_MNT" -name live.cfg 2>/dev/null | head -1)
+      FIRST_APPEND=$(sudo awk '/^label live-/{l=1} l&&/^append/{print; exit}' "$CFG" 2>/dev/null)
+      echo "$FIRST_APPEND" | grep -q "toram=filesystem.squashfs" \
+        && record pass "toram default: first entry copies squashfs conditionally" \
+        || record fail "toram default: first entry carries toram=filesystem.squashfs" "got: ${FIRST_APPEND:-none}"
+    fi
+    sudo umount "$ISO_MNT" 2>/dev/null || true
+    sudo test -f "$SQ_MNT/usr/lib/live/boot/9990-toram-todisk.sh" \
+      && sudo grep -q "headroom" "$SQ_MNT/usr/lib/live/boot/9990-toram-todisk.sh" \
+      && record pass "toram auto: patched 9990 ships (headroom check)" \
+      || record fail "toram auto: patched 9990-toram-todisk.sh in chroot"
+
     # ---- executable bits the runtime actually gates on: wg-init refuses to
     # derive unless derive_identity.py is -x — and it was committed 100644
     # from day one, so the WireGuard salt-derivation NEVER RAN in any built
