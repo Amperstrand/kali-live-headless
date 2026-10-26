@@ -153,6 +153,12 @@ else
       return 1
     }
 
+    toram_refusal_check() { # the CD stages boot the MENU default with 4G:
+      # headroom (4G) cannot fit, the patched script must refuse and boot
+      # from the medium instead — the auto-fallback leg of FR-6
+      local m; m=$(guest 'findmnt -n -o FSTYPE /run/live/medium 2>/dev/null')
+      [ "$m" = "iso9660" ] && record pass "toram auto-refused on 4G (medium boot, by design)" || record fail "toram auto-refusal on 4G" "medium is ${m:-none}, expected iso9660"
+    }
     common_guest_checks() { # mode
       local mode=$1
       local v
@@ -380,7 +386,7 @@ else
           pidfile="$SCRATCH/qemu-override.pid"; rm -f "$pidfile"
           "$QEMU_BIN" -machine accel=$ACCEL -m 4096 -smp 4 "${CPU[@]}" "${KLH_SMBIOS[@]}" \
             -kernel "$SCRATCH/vmlinuz" -initrd "$SCRATCH/initrd" \
-            -append "boot=live username=kali hostname=kali console=ttyS0,115200" \
+            -append "boot=live username=kali hostname=kali console=ttyS0,115200 toram=filesystem.squashfs" \
             -drive file="$ISO",format=raw,if=virtio,media=disk,readonly=on \
             -device virtio-net-pci,netdev=net0 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$PORT-:22 \
             -drive file="$SCRATCH/cfg.img",format=raw,if=virtio \
@@ -426,6 +432,10 @@ else
                 record fail "override: wg0 up" "no wg0; wg0.conf Address: ${w:-none} — staged WG_TUNNET stale?"
               fi
             fi
+            # ---- FR-6: this stage boots WITH toram and enough RAM — the
+            # medium must be tmpfs (the copy happened, squashfs-only)
+            v=$(guest 'findmnt -n -o FSTYPE /run/live/medium 2>/dev/null')
+            [ "$v" = "tmpfs" ] && record pass "toram: medium is tmpfs (copy happened)" || record fail "toram: medium tmpfs" "got ${v:-none} — auto refused or copy skipped?"
             # ---- identity unification end-to-end (2026-10-24/25): with a
             # valid fixture salt aboard, EVERY identity must be derived from
             # it — npub == derive_identity(salt, machine) computed INSIDE the
@@ -519,6 +529,7 @@ else
         -drive if=pflash,format=raw,file="$SCRATCH/ovmf-vars.fd")
       if [ -n "$QPID" ] && wait_ssh $CD_BOOT_TIMEOUT; then
         record pass "uefi: booted to SSH"
+            toram_refusal_check
         common_guest_checks uefi
         timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu uefi
         for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
