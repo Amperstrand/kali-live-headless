@@ -68,7 +68,7 @@ else
     KLH_LINE=" ⚠ NO KLHCONFIG — WireGuard/FIPS identities NOT persisting, console password changes every boot, Wi-Fi override OFF"
 fi
 
-MESH_LINE=" mesh id (npub): ${NPUB:-not provisioned — boot from a stick with a KLHCONFIG partition}"
+MESH_LINE=" mesh id (npub): ${NPUB:-NOT persisted (no KLHCONFIG partition) — a fresh identity is drawn EVERY boot; re-flash with flash.sh or plug the stick back in before boot for the auto-create}"
 
 # wireguard tunnel identity (public key only) if provisioned this boot
 WGPUB=""

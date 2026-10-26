@@ -178,6 +178,35 @@ Brief: SPIKE-BRIEF.md. Research: docs/vmhost-base-os-research.md.
   iso-build2 vs HEAD suite = vm-tenant age-mismatch (expected; any
   post-merge build resolves it).
 
+## M8 — live-stick evidence + flash/provision polish (2026-10-26, ~01:00)
+
+- Owner flashed main's iso-build31 (kali minimal) over USB2 (5.9 MB/s),
+  verify FAILED, flash died pre-KLHCONFIG; the stick was booted TORAM on
+  the new 20-core/31G machine. Live evidence gathered over ssh (mux):
+  * provision green, BUT no KLHCONFIG and NO auto-create log line — with
+    toram /run/live/medium is a TMPFS, so ensure_klhconfig_partition's
+    findmnt→PKNAME path resolved nothing and silently no-oped while the
+    14.4G stick sat in the slot with 12G free. FIXED: toram fallback —
+    resolve the boot device by UNIQUE usb+iso9660 disk signature, refuse
+    on ambiguity (resolver unit-checked: 1→pick, 2→refuse, nvme→refuse).
+  * Stick integrity: RAM squashfs md5 == iso-build31's EXACTLY — the
+    USB2 verify failure did NOT corrupt the payload in use.
+  * New machine: 20 cores, 31G RAM, 953.9G NVMe, Windows C: plaintext
+    NTFS (BitLocker probe: OEM "NTFS" at offset 3). WRITE ACCESS
+    confirmed: ntfs-3g rw mount, marker round-trip (volume unmounted
+    after; marker left as klh-write-test.txt). KVM + nested virt live.
+  * The stick was physically unplugged at t+304s (toram by design, or
+    the same marginal port) — live remediation moot; fixes are in-repo.
+- flash.sh polish (owner rules): NEVER auto-unmount (mounted-at-write
+  re-check dies loudly with the exact umount commands); >64G removable
+  devices refused as probably-SSD/HDD (--allow-large to override); verify
+  failure now retries after blockdev --flushbufs (stale-read class) and
+  on real mismatch reports WHICH 64M chunks differ + what that means.
+- Banner: "not provisioned — boot from a stick with KLHCONFIG" → says
+  identities ROTATE every boot + the two remediation paths.
+- Static: 167/0 both bases (flash.sh + provision changes lint-clean).
+
+
 
 
 
