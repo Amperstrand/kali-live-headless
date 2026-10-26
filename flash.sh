@@ -323,6 +323,23 @@ then re-run. flash.sh never unmounts on its own."
   fi
   blockdev --rereadpt "$DEVPATH" 2>/dev/null || true
 
+  # LIVE-SELF-FLASH GUARD: flashing the boot medium of the RUNNING system
+  # is legal under toram, but the blackbox service keeps KLHCONFIG mounted
+  # rw and its 15 s heartbeats land on the REFRESHED partition through the
+  # stale mount, corrupting whatever this flash just wrote (2026-10-26
+  # livebox: the seeded salt was destroyed within minutes, twice, while the
+  # digest changed between reads). Stop the writer and drop the stale mount
+  # BEFORE touching the device.
+  if [ -e /run/live/medium ]; then
+    MEDIUM_DEV=$(findmnt -n -o SOURCE /run/live/medium 2>/dev/null | sed 's|/dev/||; s|[0-9]*$||')
+    case "$DEVPATH" in *"$MEDIUM_DEV"*)
+      klh_info "target is THIS system's boot medium (toram) — stopping the blackbox + releasing its stale config mount"
+      systemctl stop kali-live-blackbox 2>/dev/null || true
+      umount /run/klh-blackbox 2>/dev/null || true
+      ;;
+    esac
+  fi
+
   klh_info "writing ISO to $DEVPATH (this can take several minutes)"
   DD_START=$(date +%s)
   if ! dd if="$ISO" of="$DEVPATH" bs=4M iflag=fullblock conv=fsync status=progress; then
