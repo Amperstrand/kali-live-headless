@@ -65,8 +65,15 @@ if [ -n "$ISO_ARG" ]; then
   [ -n "$SRC" ] && [ -f "$SRC" ] || klh_die "ISO not found: $ISO_ARG"
   BUILD=${BUILD_ARG:-$(next_build)}
 elif [ -n "$BUILD_ARG" ]; then
-  SRC="$OUT_DIR/iso-build$BUILD_ARG/$ISO_NAME"
-  [ -f "$SRC" ] || klh_die "build $BUILD_ARG has no archive at $SRC (available: $(archived_builds | tr '\n' ' '))"
+  # any ISO name the BASE/variant produced — the fixed kali name broke
+  # --build for every debian archive (spike lesson, 2026-10-26)
+  set -- "$OUT_DIR/iso-build$BUILD_ARG"/*.iso
+  if [ ! -e "$1" ]; then
+    klh_die "build $BUILD_ARG has no ISO archived (available: $(archived_builds | tr '\n' ' '))"
+  elif [ $# -gt 1 ]; then
+    klh_die "build $BUILD_ARG archives MULTIPLE ISOs — pass --iso to pick one"
+  fi
+  SRC=$1
   BUILD=$BUILD_ARG
 else
   # bare run: only trust the marker build.sh writes when a build really finished
@@ -151,6 +158,11 @@ if [ -n "$MANIFEST" ] && [ ! -e "$DEST_DIR/BUILD-MANIFEST.txt" ]; then
 fi
 
 REPO_HEAD=$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
+# Identity is (commit, sde) — the build number is only the archive's key.
+# build.sh computes both and exports them; fall back to local derivations when
+# this is run by hand.
+BUILD_REF=${KLH_BUILD_REF:-$(git -C "$REPO_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)}
+BUILD_SDE=${KLH_BUILD_SDE:-?}
 PIN=$(grep -m1 '^upstream ref' "$DEST_DIR/BUILD-MANIFEST.txt" 2>/dev/null | awk '{print $NF}' || true)
 SHA512=$(cut -d' ' -f1 "$DEST_DIR/$ISO_NAME.sha512sum")
 SIZE=$(numfmt --to=iec "$(stat -c '%s' "$DEST")")
@@ -160,6 +172,7 @@ if [ ! -e "$DEST_DIR/INDEX.md" ] || [ "$FORCE" = true ]; then
 # iso-build$BUILD
 
 - **Archived:** $(date '+%F %T %Z')
+- **Identity:** \`$BUILD_REF\` @ sde=\`$BUILD_SDE\` (commit + build clock)
 - **Repo commit:** \`$REPO_HEAD\`
 - **Upstream pin:** \`${PIN:-unknown}\`
 - **Size:** $SIZE
@@ -189,6 +202,26 @@ if [ "$SLOT_LINK" = true ]; then
   rm -f "$SLOT.sha512sum"
   ln -sfn "iso-build$BUILD/$ISO_NAME" "$SLOT"
   klh_ok "slot $SLOT -> iso-build$BUILD (symlink; no sidecar link by design)"
+fi
+
+# -------------------------------------------------- identity index + ledger
+# output/by-ref/<commit>-sde<SDE> -> iso-build<N>: address a build by what it
+# is, not by when it happened to be made. The archive directory keeps its
+# number (flash.sh --build N, BUILDS.md and the retention policy all key on it).
+mkdir -p "$OUT_DIR/by-ref"
+ln -sfn "../iso-build$BUILD" "$OUT_DIR/by-ref/$BUILD_REF-sde$BUILD_SDE"
+klh_info "identity link: output/by-ref/$BUILD_REF-sde$BUILD_SDE -> iso-build$BUILD"
+
+# Mechanical ledger: one row per archived build, appended, never hand-edited.
+# build.sh reads it back to answer "is this a reproduction of an earlier build?"
+LEDGER="$OUT_DIR/ledger.tsv"
+if [ ! -f "$LEDGER" ]; then
+  printf 'build\tref\tsde\tiso\tbytes\tsha512\tarchived_at\tupstream_ref\n' > "$LEDGER"
+fi
+if ! awk -F'\t' -v b="$BUILD" 'NR>1 && $1==b {found=1} END{exit !found}' "$LEDGER"; then
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$BUILD" "$BUILD_REF" "$BUILD_SDE" "$ISO_NAME" "$(stat -c '%s' "$DEST")" \
+    "$SHA512" "$(date -u '+%FT%TZ')" "${PIN:-unknown}" >> "$LEDGER"
 fi
 
 rm -f "$MARKER"
