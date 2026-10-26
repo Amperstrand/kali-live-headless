@@ -49,6 +49,10 @@ log() {
 }
 
 blk_table() {
+    # init under set -u: an undeclared var refs as "not set" — this bit the
+    # stick at boot (BLK_TABLE: parameter not set) when the helper cluster
+    # moved above its first call site.
+    : "${BLK_TABLE:=}"
     if [ -z "$BLK_TABLE" ]; then
         if [ -n "${KLH_LSBLK_FILE:-}" ]; then
             BLK_TABLE=$(cat "$KLH_LSBLK_FILE" 2>/dev/null)
@@ -98,7 +102,6 @@ CMDLINE=/proc/cmdline
 
 # Block-device table: lsblk -P pairs (key="value") — the raw (-r) format
 # COLLAPSES EMPTY COLUMNS, which shifts positional fields on any disk
-# whose partition has no label (the real gaming PC's C: has none — the
 # PARTUUID selector silently never matched until this was found on
 # hardware 2026-10-23). Pairs never collapse; SIZE comes in bytes (-b),
 # which also kills the unit-suffix sorting bug class.
