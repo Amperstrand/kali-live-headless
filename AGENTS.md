@@ -349,6 +349,26 @@ drift is absorbed by bumping the pin, nothing else.
    a LAN that never answers mDNS can still leave both on the base name).
    Test hooks `KLH_DMI_DIR`/`KLH_SYSBLOCK`/`KLH_MEMINFO`/`KLH_NPROC`/
    `KLH_PROBE_CMD`/`KLH_OWN_ADDRS` exist for fixture-based unit tests.
+32. **Per-VM FIPS identities are salt+uuid derived, never generated**
+    (`kali-live-vm-fips`, 2026-10-26): `HKDF(salt,
+    "klh-headless/v1/fips-vm/vm-<uuid>")` — same uuid → same npub across
+    rebuilds, different uuid → different npub, host purpose (`fips`) and VM
+    purpose (`fips-vm`) domain-separated. Identity and wire stay separable
+    (no peers = identity without wire), the nsec never appears in logs, and a
+    `toram` boot has no salt: refuse rather than fake stability
+    (`--ephemeral` is the labeled degraded mode). Measured cost per guest:
+    ~70 MiB RSS + ~3 MiB dns, 0.00 % idle CPU, zero boot impact. Note the
+    interplay found on day one: a ULA mesh address on `fips0` is scope
+    "global", so `post.egress.ipv6` asserts PUBLIC (2000::/3) space only —
+    write down why when a feature changes what a check means.
+33. **`/mnt/klh-vmstore/registry.tsv` is the alias ↔ uuid ↔ npub ↔ port map**
+    (`tools/vm-registry.sh sync|list|show`; refreshed at the end of every
+    deploy). The port is the public address, the npub the identity address —
+    neither implies the other, and before this file the mapping lived in
+    three places. A `-` in a column is an honest gap (e.g. no salt on a
+    toram boot), never a guess. Removal must remove: `vm-rm --id` now also
+    drops `.deploy`/`.xml`/seed so a dead guest leaves no resurrection
+    debris.
 
 ## Public-repo hygiene
 

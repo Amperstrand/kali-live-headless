@@ -132,6 +132,82 @@ sees the stick's virbr0 address. If a port stops answering, check in this
 order: `kali-live-vm-forward list` on the stick, `hub-vm-forward.sh list` on
 the concentrator, `wg show` on both ends.
 
+## Per-VM FIPS identity (`--fips`, optional)
+
+Each guest can carry its **own** mesh identity, derived — not generated:
+
+```
+nsec/npub = HKDF(master salt, "klh-headless/v1/fips-vm/vm-<uuid>")
+```
+
+`--fips` in `tools/vm-deploy.sh` (or `kali-live-vm-fips` on the VM host)
+installs the FIPS daemon + `fips-dns` into the guest with that key. The nsec
+is written straight into the guest (0600, root) and never printed; the npub is
+public — it is an address — and lands in the deploy state and the registry.
+
+Design properties worth keeping:
+
+* **Identity vs wire** (same split as the host's mesh): with no `--fips-peer`
+  the guest holds an identity and no wire — a valid, deliberate state.
+* **Rebuild-stable**: same uuid → same npub, forever; different uuid →
+  different npub. `remove` keeps nothing in the guest but the derivation
+  remembers, so a re-created guest with the same uuid is the same mesh node.
+* **No Kali repo in the guest**: guests are Debian; the deb is fetched once
+  into `<store>/fips-deb/` and copied in. On an offline VM host, pre-seed that
+  directory (see the error message `kali-live-vm-fips` prints).
+* **Toram caveat**: without the persistent master salt (a `toram` boot), the
+  tool refuses by default; `--ephemeral` installs a guest-generated key whose
+  npub is NOT rebuild-stable. The honest fix is booting with KLHCONFIG, not
+  pretending.
+
+Measured cost per guest (0.5.3, 2 vCPU/2 GB bench VM, idle, no peers):
+
+| | |
+|---|---|
+| `fips` daemon RSS | **~70 MiB** |
+| `fips-dns` RSS | **~3 MiB** |
+| CPU, 30 s idle window | **0.00 %** (one tick of startup, then silent) |
+| disk (Installed-Size) | ~28 MiB (+8 MiB deb, cached once on the store) |
+| boot time | none — installed post-boot, nothing in the image |
+| share of a 2 GB guest | **~3.6 %** |
+
+The mesh address is a ULA (`fd00::/8`) on `fips0` (MTU 1380), so the checklist's
+"no IPv6 leak" check asserts **public** (2000::/3) addresses only — the ULA is
+the deliberate mesh channel, covered by its own checks (`post.fips.*`).
+
+## Registry: the alias ↔ uuid ↔ npub ↔ port map
+
+```sh
+tools/vm-registry.sh sync      # rebuild from live state -> /mnt/klh-vmstore/registry.tsv
+tools/vm-registry.sh list      # ALIAS PORT FIPS NPUB GUEST CREATED
+tools/vm-registry.sh show --name vps1
+```
+
+The port is a guest's *public* address (hub DNAT) and the npub its *identity*
+address; neither implies the other. One TSV row per guest holds both next to
+the uuid, guest IP, tunnel IP and FIPS state. `sync` derives npubs from the
+salt + uuid (nothing enters a guest), reads the deploy state and the forward
+rules, and rewrites the file atomically. A `-` in the npub column means the
+host has no persistent salt (toram) — an honest gap, not a guess. Every deploy
+ends with a sync, so the file is never stale after tooling runs.
+
+## WireGuard: one session, host level — not per VM
+
+Guests do **not** get their own WireGuard sessions and should not: the stick is
+the only WG peer (one handshake, one key, one hub-side peer entry), and guest
+traffic reaches it through policy routing (`from 192.168.122.0/24 lookup 100`)
+plus two DNAT hops — hub `<ext-port> → stick tunnel IP:<ext-port>`, then the
+stick's `kali-live-vm-forward` `<ext-port> → guest:22`. Per-VM WireGuard would
+put tunnel keys inside less-trusted guests, multiply hub peers, and add
+nothing: separation between guests is already enforced by the host firewall.
+The layers are deliberately different jobs:
+
+| layer | scope | provides |
+|---|---|---|
+| WireGuard | host ↔ hub (one session) | transport + egress identity |
+| DNAT port | per guest | public reachability without a client |
+| FIPS npub | per guest (optional) | stable identity address, e2e-encrypted, no port needed — but only for peers that run FIPS |
+
 ## Security model
 
 * **Egress**: the guest subnet is policy-routed into `wg0` (table 100), with a
@@ -246,6 +322,8 @@ defined or provisioned guests.
 | --- | --- |
 | `tools/vm-deploy.sh` | operator entry point: provision, publish, verify |
 | `tools/vm-check.sh` | preflight/postflight checklist (named checks, `--json`) |
+| `tools/vm-registry.sh` | alias/uuid/npub/port map on the store (`sync`, `list`, `show`) |
+| `overlay/.../usr/local/sbin/kali-live-vm-fips` | per-VM FIPS identities (derive/install/status/remove) |
 | `docs/vm-checklist.md` | every check id, the property it proves, how to fix it |
 | `tools/hub-vm-forward.sh` | concentrator-side DNAT unit manager |
 | `tools/hub-enroll-stick.sh` | concentrator-side WireGuard peer enrollment |

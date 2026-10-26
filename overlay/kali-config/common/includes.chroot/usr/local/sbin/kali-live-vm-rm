@@ -81,6 +81,12 @@ remove_one() { # $1 = vm id (<id>; the volume file is <id>.image); 0 = removed
     done
     if $VIRSH vol-delete "$volid" --pool "$POOL" >/dev/null 2>&1; then
         [ -n "$STORE_DIR" ] && rm -f "$STORE_DIR/$vmid.meta" 2>/dev/null || true
+        # removal means removal: the deploy state, saved XML and seed are the
+        # guest's identity/port record — leaving them behind makes a later
+        # same-name guest look like a resurrection (found live 2026-10-26:
+        # bench1's .deploy/.xml/seed outlived the volume)
+        [ -n "$STORE_DIR" ] && rm -f "$STORE_DIR/$vmid.deploy" \
+            "$STORE_DIR/$vmid.xml" "$STORE_DIR/$vmid-seed.iso" 2>/dev/null || true
         log "volume '$volid' deleted from pool $POOL"
         return 0
     fi
