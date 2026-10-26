@@ -226,6 +226,31 @@ fi
 
 rm -f "$MARKER"
 
+# ------------------------------------------------- tmpfs persistence guard
+# A RAM build root puts output/ on tmpfs: the archive, the ledger and the
+# by-ref links then die with the machine's RAM. The 2026-10-26 rig outage
+# lost the #41/#42 archive dirs and ledgers exactly this way; only a manual
+# copy under the persistent scratch image survived. Copy each archived build
+# to $KLH_ARCHIVE_PERSIST when set (hash-verified), and say it loudly when not.
+_out_fs=$(findmnt -no FSTYPE -T "$OUT_DIR" 2>/dev/null || true)
+if [ "$_out_fs" = tmpfs ]; then
+  if [ -n "${KLH_ARCHIVE_PERSIST:-}" ]; then
+    _persist_ok=false
+    if mkdir -p "$KLH_ARCHIVE_PERSIST" 2>/dev/null \
+       && cp -a "$DEST_DIR" "$KLH_ARCHIVE_PERSIST/" 2>/dev/null; then
+      _cp_iso="$KLH_ARCHIVE_PERSIST/iso-build$BUILD/$ISO_NAME"
+      if [ "$(sha512sum "$_cp_iso" 2>/dev/null | cut -d' ' -f1)" = "$SHA512" ]; then
+        _persist_ok=true
+        klh_ok "persistent copy: $KLH_ARCHIVE_PERSIST/iso-build$BUILD (hash-verified)"
+      fi
+    fi
+    [ "$_persist_ok" = true ] \
+      || klh_warn "KLH_ARCHIVE_PERSIST copy FAILED — this archive lives on TMPFS and dies with the machine's RAM"
+  else
+    klh_warn "output is on tmpfs and KLH_ARCHIVE_PERSIST is unset: the archive, ledger row and by-ref link die with this machine's RAM (2026-10-26: an outage lost builds #41/#42 this way). Copy iso-build$BUILD somewhere persistent or set KLH_ARCHIVE_PERSIST."
+  fi
+fi
+
 # Mechanical verdict capture: if a suite log exists for this build number,
 # its VERDICT line becomes the INDEX verdict — no hand-typed rows (the
 # hand-typed ones lied twice; see AGENTS watch-list).

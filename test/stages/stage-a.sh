@@ -94,6 +94,32 @@ else
   record skip "medium-verify unit" "sfdisk or the tool not available on this host"
 fi
 
+# A tmpfs output dir must not be the only home of an archived build: the
+# 2026-10-26 rig outage lost #41/#42's archives and ledgers because they lived
+# in RAM. iso-archive.sh copies to $KLH_ARCHIVE_PERSIST when the output is on
+# tmpfs — prove the copy + hash on a real tmpfs (/dev/shm), tiny fake ISO.
+if [ -d /dev/shm ] && [ -w /dev/shm ] && [ -x "$REPO_DIR/tools/iso-archive.sh" ]; then
+  # OUT_DIR must be on a REAL tmpfs for the guard to fire — $SCRATCH is on
+  # the repo's disk, where the guard (correctly) stays silent. /dev/shm is
+  # tmpfs everywhere and world-writable.
+  _aa=/dev/shm/klh-archive-test-$$; mkdir -p "$_aa/out" "$_aa/persist"
+  dd if=/dev/urandom of="$_aa/tiny.iso" bs=1024 count=64 status=none
+  # hash BEFORE archiving: iso-archive MOVES the image, so the source is gone
+  # afterwards (an earlier cut of this test hashed a missing file and "failed"
+  # while the feature worked)
+  _aa_hash=$(sha512sum "$_aa/tiny.iso" | cut -d' ' -f1)
+  ( cd "$REPO_DIR" && OUT_DIR="$_aa/out" KLH_ARCHIVE_PERSIST="$_aa/persist" \
+      ./tools/iso-archive.sh --iso "$_aa/tiny.iso" --build 41001 >/dev/null 2>&1 )
+  if [ "$(sha512sum "$_aa/persist/iso-build41001/tiny.iso" 2>/dev/null | cut -d' ' -f1)" = "$_aa_hash" ]; then
+    record pass "iso-archive: tmpfs output copied to KLH_ARCHIVE_PERSIST (hash-verified)"
+  else
+    record fail "iso-archive: tmpfs output copied to KLH_ARCHIVE_PERSIST" "the archive would die with the machine's RAM"
+  fi
+  rm -rf "$_aa"
+else
+  record skip "iso-archive tmpfs persistence" "no writable /dev/shm on this host"
+fi
+
 # A hook live-build cannot execute is silently skipped, so the image ships
 # without the step and nothing complains (AGENTS #16: derive_identity.py was
 # 100644 for ten builds and never ran). Every hook in the overlay must be +x;
