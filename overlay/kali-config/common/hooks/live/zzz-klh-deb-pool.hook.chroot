@@ -1,0 +1,35 @@
+#!/bin/sh
+# zzz-klh-deb-pool.hook.chroot — stage this build's exact .deb set for the
+# content-addressed pool (tools/deb-pool.sh), so a later build can reproduce
+# this image offline.
+#
+# build.sh stages this hook ONLY when building with --pool: it copies ~900MB
+# inside the chroot, which is pointless otherwise. /var/cache/klh-pool is kept
+# out of the squashfs by config/rootfs/excludes, and after the build (chroot/
+# is still on disk thanks to --pool implying --keep-artifacts) build.sh
+# harvests it into the pool and drops the tree.
+#
+# Runs before zzz-klh-nondeterminism (alphabetical) so the copies do not
+# depend on anything that hook removes.
+set -u
+
+D=/var/cache/klh-pool
+mkdir -p "$D"
+
+# The manifest is the reproducibility record: name, version, arch per package.
+# tools/deb-pool.sh turns it into a pinned index; to rebuild offline, point the
+# build at the pool (--mirror-chroot file://$POOL/repo/<label>).
+dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > "$D/packages.tsv" 2>/dev/null || true
+_rows=$(wc -l < "$D/packages.tsv" 2>/dev/null || echo 0)
+
+_n=0
+for _f in /var/cache/apt/archives/*.deb; do
+    [ -e "$_f" ] || continue
+    if cp -p "$_f" "$D/" 2>/dev/null; then
+        _n=$((_n + 1))
+    fi
+done
+
+printf 'I: zzz-klh-deb-pool: staged %s debs + %s manifest rows in %s\n' \
+    "$_n" "$_rows" "$D"
+exit 0

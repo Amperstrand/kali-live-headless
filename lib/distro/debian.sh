@@ -44,6 +44,30 @@ KLH_DISTRO_KEYRING=/usr/share/keyrings/debian-archive-keyring.gpg
 # shellcheck disable=SC2034
 KLH_DISTRO_KEYRING_PACKAGE=debian-archive-keyring
 
+# ---- ownership properties ---------------------------------------------------
+# build.sh and the suite read these instead of comparing KLH_BASE anywhere
+# outside lib/distro/ — the adapter owns every base delta.
+# Pin BRANCH to trixie when the operator gave none? yes: klh_load_config's
+# historical default (kali-rolling) is meaningless for this base.
+# shellcheck disable=SC2034
+KLH_DISTRO_PIN_BRANCH_WHEN_UNSET=true
+# build.sh must inject -m deb.debian.org when no mirror is configured:
+# upstream's own default is http.kali.org and auto/config's in-file flags
+# would silently win.
+# shellcheck disable=SC2034
+KLH_DISTRO_NEEDS_EXPLICIT_MIRROR=true
+# Baseline metapackage: the Debian minimal baseline IS debootstrap +
+# live-build's priority-standard list — no metapackage to assert.
+# shellcheck disable=SC2034
+KLH_DISTRO_BASELINE_PKG=""
+# No Debian metapackage that a misconfigured VARIANT would pull instead.
+# shellcheck disable=SC2034
+KLH_DISTRO_META_PKG_MINIMAL_ABSENT=""
+# THE port-proof guard: a Debian image with any kali-* package installed
+# is a franken-build (stale adapter, stale apt cache).
+# shellcheck disable=SC2034
+KLH_DISTRO_FORBIDDEN_PKG_PREFIX="kali-"
+
 klh_distro_validate_branch() { # $1 = BRANCH value
   case " $KLH_DISTRO_BRANCHES " in
     *" $1 "*) ;;

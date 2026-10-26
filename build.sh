@@ -55,9 +55,10 @@ KEEP_SECRETS=false
 FORCE_RECLONE=false
 DRY_RUN=false
 KEEP_ARTIFACTS=false
+POOL_DIR=""
 ARCHIVE=true
 SQUASHFS_COMP="zstd"
-OPT_OUT="" OPT_VARIANT="" OPT_ARCH="" OPT_BRANCH="" OPT_REF="" OPT_NUMBER=""
+OPT_OUT="" OPT_VARIANT="" OPT_ARCH="" OPT_BRANCH="" OPT_REF="" OPT_NUMBER="" OPT_SDE=""
 
 usage() {
   cat <<EOF
@@ -69,8 +70,18 @@ Options:
   -a, --arch A         Architecture (default: amd64)
   -b, --branch B       Kali branch (default: kali-rolling)
   -R, --ref REF        Pin upstream kali-live git ref (commit or branch)
+      --sde EPOCH      Pin SOURCE_DATE_EPOCH explicitly. A build is identified
+                       by (commit, sde): re-running the same pair is a
+                       *reproduction check*, not a new artifact — build.sh
+                       compares the sha512 against the archived one and says
+                       REPRODUCED or MISMATCH. Default: HEAD's commit time
       --keep-artifacts Keep the chroot/binary tree after the build (upstream
                        -k) — for debugging a failed run, not for speed
+      --pool           Freeze this build's .deb set into the content-addressed
+                       pool (tools/deb-pool.sh) so a later build can be
+                       reproduced offline. Implies --keep-artifacts. Pool
+                       location: $KLH_DEB_POOL or
+                       ~/.local/share/kali-live-headless/deb-pool
       --number N       Archive this build as output/iso-buildN/
                        (default: next free number)
       --no-archive     Leave the ISO in the output dir, do not archive it
@@ -101,8 +112,11 @@ EOF
     -b|--branch)       OPT_BRANCH=${2:?}; shift 2 ;;
     -R|--ref)          OPT_REF=${2:?}; shift 2 ;;
     --keep-artifacts)  KEEP_ARTIFACTS=true; shift ;;
+    --pool)            POOL_DIR="${KLH_DEB_POOL:-$HOME/.local/share/kali-live-headless/deb-pool}"
+                       KEEP_ARTIFACTS=true; shift ;;
     --zstd)            SQUASHFS_COMP=zstd; shift ;;
     --xz)              SQUASHFS_COMP=xz; shift ;;
+    --sde)             OPT_SDE=${2:?}; shift 2 ;;
     --number)          OPT_NUMBER=${2:?}; shift 2 ;;
     --no-archive)      ARCHIVE=false; shift ;;
     --keep-secrets)    KEEP_SECRETS=true; shift ;;
@@ -130,11 +144,12 @@ klh_load_distro "$BASE"
 [ -n "$OPT_BRANCH" ]  && BRANCH="$OPT_BRANCH"
 [ -n "$OPT_REF" ]     && KALI_LIVE_REF="$OPT_REF"
 
-# BRANCH: klh_load_config defaulted it to kali-rolling before the adapter
-# existed. For a non-kali base with no EXPLICIT branch (no -b, no BRANCH=
-# in ./config), substitute the adapter's default suite; an explicit value
-# goes through the adapter's validator below either way.
-if [ "$KLH_BASE" != kali ] && [ -z "$OPT_BRANCH" ] \
+# BRANCH: klh_load_config defaulted it to its historical value before the
+# adapter existed. If the ADAPTER declares it pins unset branches and the
+# operator gave no explicit branch (no -b, no BRANCH= in ./config),
+# substitute the adapter's default suite; explicit values go through the
+# adapter's validator below either way.
+if [ "${KLH_DISTRO_PIN_BRANCH_WHEN_UNSET:-false}" = true ] && [ -z "$OPT_BRANCH" ] \
    && [ "$BRANCH" = "kali-rolling" ] \
    && ! grep -qE '^[[:space:]]*BRANCH=' "$CONFIG_FILE" 2>/dev/null; then
   BRANCH="$KLH_DISTRO_DEFAULT_BRANCH"
@@ -142,12 +157,12 @@ if [ "$KLH_BASE" != kali ] && [ -z "$OPT_BRANCH" ] \
 fi
 klh_distro_validate_branch "$BRANCH"
 
-# BUILD_MIRROR: for BASE=kali an empty mirror stays empty (upstream's own
-# default applies — the exact pre-spike behavior). Every other base MUST
-# pass -m: upstream's hardcoded default is http.kali.org, wrong for any
-# non-kali suite, and auto/config's own flags would silently win.
-if [ -n "${KLH_DISTRO_DEFAULT_MIRROR:-}" ] && [ "$KLH_BASE" != kali ] && [ -z "${BUILD_MIRROR:-}" ]; then
-  BUILD_MIRROR="$KLH_DISTRO_DEFAULT_MIRROR"
+# BUILD_MIRROR: if the ADAPTER declares it needs an explicit mirror and
+# none is configured, inject the adapter's default (upstream's hardcoded
+# default is a kali URL — wrong for every other base). Adapters that don't
+# declare it keep the exact historical no--m flow.
+if [ "${KLH_DISTRO_NEEDS_EXPLICIT_MIRROR:-false}" = true ] && [ -z "${BUILD_MIRROR:-}" ]; then
+  BUILD_MIRROR="${KLH_DISTRO_DEFAULT_MIRROR:?adapter property error}"
   klh_info "BASE=$KLH_BASE: build mirror defaulted to $BUILD_MIRROR"
 fi
 
@@ -183,7 +198,12 @@ SSH_PUBKEY_PATH=$(klh_expand_tilde "$SSH_PUBKEY_PATH")
 klh_require_cmd git
 free_space_gb() { df -BG --output=avail "$1" | tail -1 | tr -dc '0-9'; }
 AVAIL=$(free_space_gb "$REPO_DIR")
-[ "$AVAIL" -ge 30 ] || klh_die "only ${AVAIL}G free under $REPO_DIR — a Kali live build needs ~30G+ (chroot + ISO + caches)"
+# 30G is the release-build rule (the archive keeps ISO + tree side by side).
+# A RAM build runs in a tmpfs sized for exactly one tree and the ISO, so it
+# sets KLH_MIN_FREE_G lower — otherwise the guard rejects a 14G ramdisk that
+# is, by construction, big enough.
+MIN_FREE_G="${KLH_MIN_FREE_G:-30}"
+[ "$AVAIL" -ge "$MIN_FREE_G" ] || klh_die "only ${AVAIL}G free under $REPO_DIR — a Kali live build needs ~${MIN_FREE_G}G (chroot + ISO + caches; KLH_MIN_FREE_G overrides)"
 
 # distro adapter owns the mirror probe (kali: http.kali.org as always;
 # debian: deb.debian.org) — see lib/distro/.
@@ -222,8 +242,19 @@ klh_distro_prepare_upstream
 KLH_COMMON="$UPSTREAM_DIR/kali-config/common"
 mkdir -p "$KLH_COMMON"
 
+# (the dead staging-time apt-cache symlink block was removed in main; the
+#  reason is recorded in docs/reproducible-builds.md — do not re-add a cache
+#  that expects live-build to populate cache/packages.chroot)
+
 klh_info "overlaying repo customizations into kali-config/common/"
 cp -a "$OVERLAY_DIR/." "$KLH_COMMON/"
+
+# The deb-pool hook copies ~900MB of .deb files inside the chroot, so it is
+# staged only for pooled builds. The rootfs/excludes entry that keeps that copy
+# out of the squashfs is always staged (a no-op path when pooling is off).
+if [ -z "$POOL_DIR" ]; then
+  rm -f "$KLH_COMMON/hooks/live/zzz-klh-deb-pool.hook.chroot"
+fi
 
 # PROVENANCE GUARD — no mystery files. Everything just staged must be a
 # git-tracked overlay file. Build #18 shipped a libvirtd drop-in from an
@@ -484,6 +515,41 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 # ------------------------------------------------------------------ build
+# Reproducible clock. live-build 20250814+kali3 threads SOURCE_DATE_EPOCH
+# through every stage that stamps time into the image (bootstrap BUILD_ID,
+# binary file mtimes, xorriso --modification-date, squashfs mkfs time) but
+# defaults it to `date +%s` when unset — which is exactly why two builds of
+# the same commit can differ while sharing a byte size (2026-10-26: #32
+# 2454269952 B sha512 30c25031…, #33 2454269952 B sha512 8fc5b712…).
+# Pin it to HEAD's commit time: same source ⇒ same clock, by construction.
+# Override with KLH_SOURCE_DATE_EPOCH=<epoch> when re-running an old build.
+if [ -n "$OPT_SDE" ]; then
+  # Identity is (commit, sde). Pinning the clock from the command line is what
+  # makes two runs of the same commit comparable even when other commits landed
+  # in between — without it, "same source" is not the same clock (2026-10-26:
+  # #36 and #37 differed only because a docs commit moved HEAD by 9 minutes).
+  case "$OPT_SDE" in (''*[!0-9]*) klh_die "--sde wants a unix epoch, got: $OPT_SDE" ;; esac
+  export SOURCE_DATE_EPOCH="$OPT_SDE"
+  klh_info "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH (pinned with --sde)"
+elif [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+  if _sde=$(git -C "$REPO_DIR" log -1 --format=%ct 2>/dev/null) && [ -n "$_sde" ]; then
+    export SOURCE_DATE_EPOCH="$_sde"
+    klh_info "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH (HEAD commit time)"
+  fi
+else
+  klh_info "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH (inherited from the environment)"
+fi
+
+# Build identity for the archive + ledger: what was built, not when.
+# Untracked files are ignored on purpose — the build stages trees under
+# build/ and output/ that are never part of the source identity.
+KLH_BUILD_REF=$(git -C "$REPO_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+if ! git -C "$REPO_DIR" diff --quiet --untracked-files=no 2>/dev/null; then
+  KLH_BUILD_REF="$KLH_BUILD_REF-dirty"
+fi
+KLH_BUILD_SDE=${SOURCE_DATE_EPOCH:-unknown}
+export KLH_BUILD_REF KLH_BUILD_SDE
+klh_info "build identity: $KLH_BUILD_REF sde=$KLH_BUILD_SDE"
 SELF_HASH_START=$(sha256sum "$0" | cut -d' ' -f1)
 # The ISO is written to a staging dir, never straight into the output dir:
 # archiving then moves it into output/iso-buildN/, so a failed or concurrent
@@ -569,9 +635,53 @@ if [ "$SELF_HASH_NOW" != "$SELF_HASH_START" ]; then
   klh_die "build.sh was EDITED while this build ran (hash changed). The build SUCCEEDED; the ISO is safe in $STAGE_OUT — re-run the post-build steps by hand: tools/iso-archive.sh --iso $STAGE_OUT/*.iso --build $BUILD_NUM, then ./test.sh --iso <the archived iso>"
 fi
 
+# ------------------------------------------------------------ deb pool
+# Freeze this build's exact package inputs before the chroot is cleaned up
+# (--pool implies --keep-artifacts). The hook staged the .deb set plus a dpkg
+# manifest in /var/cache/klh-pool; here it becomes content-addressed objects
+# and a per-build apt mirror: docs/reproducible-builds.md.
+if [ -n "$POOL_DIR" ]; then
+  _pool_src="$UPSTREAM_DIR/chroot/var/cache/klh-pool"
+  if [ -d "$_pool_src" ]; then
+    klh_info "harvesting this build's .deb set into $POOL_DIR"
+    KLH_DEB_POOL="$POOL_DIR" "$REPO_DIR/tools/deb-pool.sh" add \
+      --label "b$BUILD_NUM" "$_pool_src" \
+      || klh_warn "pool harvest failed — the ISO is unaffected"
+    KLH_DEB_POOL="$POOL_DIR" "$REPO_DIR/tools/deb-pool.sh" index \
+      --label "b$BUILD_NUM" --suite "${BRANCH:-kali-rolling}" \
+      || klh_warn "pool index failed — the ISO is unaffected"
+  else
+    klh_warn "pool: $_pool_src is missing (the pool hook did not run this build)"
+  fi
+fi
+
 # ------------------------------------------------------------- archive
 STAGE_ISO=$(find "$STAGE_OUT" -maxdepth 1 -name '*.iso' -print -quit 2>/dev/null || true)
 [ -n "$STAGE_ISO" ] || klh_die "build reported success (rc=0) but no ISO in $STAGE_OUT"
+
+# ------------------------------------------------- reproducibility verdict
+# Identity is (commit, sde), not the build number. If the ledger already holds
+# an archived build for this pair, this run is a *reproduction check*: compare
+# the bytes and say so, rather than quietly adding a second artifact for the
+# same source. The ledger row itself is written by tools/iso-archive.sh.
+LEDGER="$OUT_DIR/ledger.tsv"
+if [ -f "$LEDGER" ] && [ "$KLH_BUILD_REF" != unknown ] && [ "$KLH_BUILD_SDE" != unknown ]; then
+  _prev=$(awk -F'\t' -v r="$KLH_BUILD_REF" -v s="$KLH_BUILD_SDE" \
+            'NR>1 && $2==r && $3==s {print $1"\t"$6; exit}' "$LEDGER" 2>/dev/null || true)
+  if [ -n "$_prev" ]; then
+    _prev_build=${_prev%%$'\t'*}
+    _prev_sha=${_prev#*$'\t'}
+    _now_sha=$(sha512sum "$STAGE_ISO" | cut -d' ' -f1)
+    if [ "$_prev_sha" = "$_now_sha" ]; then
+      klh_ok "REPRODUCED: byte-identical to build #$_prev_build ($KLH_BUILD_REF sde=$KLH_BUILD_SDE)"
+    else
+      klh_warn "MISMATCH: build #$_prev_build has the same commit+clock but different bytes"
+      klh_info "  archived: ${_prev_sha:0:32}…"
+      klh_info "  this run: ${_now_sha:0:32}…"
+      klh_info "  classify: tools/iso-content-diff.sh \"$OUT_DIR/iso-build$_prev_build/${STAGE_ISO##*/}\" \"$STAGE_ISO\""
+    fi
+  fi
+fi
 
 if [ "$ARCHIVE" = true ]; then
   # Marker lets a manual `tools/iso-archive.sh` (no args) archive this build.

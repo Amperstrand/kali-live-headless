@@ -128,17 +128,15 @@ flash_detect_base() {
   m="$(dirname "$ISO")/BUILD-MANIFEST.txt"
   if [ -r "$m" ]; then
     line=$(sed -n 's/^base[[:space:]]*: *//p' "$m" | head -1)
-    id=$(printf '%s' "$line" | sed -n 's/^\([a-z]*\).*/\1/p')
-    case "$id" in
-      kali|debian)
-        FLASH_BASE=$id
-        FLASH_BASE_DESC=$(printf '%s' "$line" | sed -n 's/^[a-z]* *(\(.*\))$/\1/p')
-        [ -n "$FLASH_BASE_DESC" ] || FLASH_BASE_DESC=$id
-        ;;
-      *)
-        [ -n "$line" ] && klh_warn "unrecognized base '$line' in $m — assuming kali"
-        ;;
-    esac
+    id=$(printf '%s' "$line" | sed -n 's/^\([a-z0-9-]*\).*/\1/p')
+    # any id that HAS an adapter is valid — future bases need no edit here
+    if [ -n "$id" ] && [ -f "$REPO_DIR/lib/distro/$id.sh" ]; then
+      FLASH_BASE=$id
+      FLASH_BASE_DESC=$(printf '%s' "$line" | sed -n 's/^[a-z0-9-]* *(\(.*\))$/\1/p')
+      [ -n "$FLASH_BASE_DESC" ] || FLASH_BASE_DESC=$id
+    elif [ -n "$line" ]; then
+      klh_warn "manifest names base '$line' but lib/distro/$id.sh does not exist — assuming kali"
+    fi
   fi
 }
 flash_detect_base

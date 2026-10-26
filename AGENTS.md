@@ -179,11 +179,19 @@ drift is absorbed by bumping the pin, nothing else.
 - **Build-time budget & cache layers (where the ~2h20m minimal build goes)**:
   xz squashfs ~55m · debootstrap+chroot install ~45-70m (cold every time —
   upstream stage [1/4] wipes chroot/, cache/, config/) · package download
-  ~5-15m · initrd/xorriso/verify ~15m. Landed 2026-10-25: **warm apt cache**
-  (`hooks/build/klh-apt-cache.hook.build` + build.sh post-build harvest into
-  `build/kali-live/.klh-apt-cache/` — upstream's clean list spares dotdirs),
-  which kills the download chunk after the first build. Still open, in order:
-  1. **zstd squashfs** (see below) — the single biggest cut.
+  ~5-15m · initrd/xorriso/verify ~15m. **Correction 2026-10-26: the warm apt
+  cache claimed here never worked.** `hooks/build/klh-apt-cache.hook.build`
+  used a `*.hook.build` suffix that live-build does not execute at all (it
+  scans only `config/hooks/{normal,live}/*.chroot`); build #33 logged no hook
+  output and left `.klh-apt-cache` empty, and the symlink is wiped by
+  upstream's stage-1 `cleanup_fs` regardless. Hook + build.sh block removed
+  rather than left looking functional (AGENTS #16 class). Walked back —
+  warm caching now belongs to a URL-keyed HTTP cache outside the tree
+  (`squid-deb-proxy` :8000, auto-detected upstream; apt-cacher-ng stays banned
+  by the 2026-10-22 wrong-bytes postmortem). See docs/reproducible-builds.md.
+  On a 20-core box downloads are ~half of a 10-minute build, so this is now
+  the top speed lever, ahead of zstd. Still open, in order:
+  1. **HTTP cache on :8000** (replaces the dead lb-cache attempt above).
   2. **hot-chroot lane** — preserve chroot/ across builds (skip debootstrap
      for iteration builds; upstream's unconditional wipe means this needs
      either an upstream flag or our own `lb build` invocation on a preserved
