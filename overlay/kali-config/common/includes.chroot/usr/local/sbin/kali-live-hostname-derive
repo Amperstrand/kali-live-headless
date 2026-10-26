@@ -136,9 +136,16 @@ fi
 medium_src=""
 if [ -n "${KLH_MEDIUM_SRC:-}" ]; then
     medium_src=$KLH_MEDIUM_SRC
-else
+elif [ -z "${KLH_SYSBLOCK:-}" ]; then
     medium_src=$(awk '$2 == "/run/live/medium" {print $1; exit}' /proc/mounts 2>/dev/null)
 fi
+# KLH_SYSBLOCK set = fixture mode: the block devices under test come from the
+# fixture, so the HOST's real boot medium must not leak into the answer. The
+# four duplicate-probe unit asserts set no KLH_MEDIUM_SRC, and on a
+# live-booted machine (/run/live/medium = sda) the host's own medium excluded
+# the fixture's sda — the disk component vanished and every suffixed name was
+# "unexpected". The suite could not self-host on the very image it ships
+# (found 2026-10-26 running the static gate ON the stick, x280).
 medium_disk=""
 case "$medium_src" in
     /dev/*)
