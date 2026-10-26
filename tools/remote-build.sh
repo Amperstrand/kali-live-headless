@@ -47,6 +47,7 @@ HOST="" NAME="" BASE=kali VARIANT="" NUMBER="" ARCHIVE=true
 ENGINE=auto DOCKER_DATA_ROOT=""
 SCRATCH_IMAGE="" RAMDISK="" SCRATCH_SIZE=40G SCRATCH_MNT=""  # empty = $HOME/klh-scratch on the target
 MIN_FREE=30 SYNC_ONLY=false WAIT=false FETCH_DIR=""
+BUILD_ENV=()   # extra env vars for the remote build.sh (space-joined)
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -104,6 +105,9 @@ if [ -n "$RAMDISK" ]; then
   mnt=${SCRATCH_MNT:-/mnt/klh-ram}
   ROOT="$mnt/klh-$NAME"
   info "RAM build: tmpfs ($RAMDISK) at $mnt — fastest, but watch the RAM budget"
+  # build.sh defaults to a 30G release-build guard; a tmpfs made for one tree
+  # is smaller than that on purpose, so pass its real budget through.
+  BUILD_ENV+=("KLH_MIN_FREE_G=$(( ${RAMDISK%[Gg]} - 2 ))")
   "${SSH[@]}" "set -e
     sudo mkdir -p '$mnt'
     mountpoint -q '$mnt' || sudo mount -t tmpfs -o size=$RAMDISK,mode=0755 tmpfs '$mnt'
@@ -251,7 +255,7 @@ SESSION="klh-$NAME"
 LOG="$ROOT/build-out/build-console.log"
 info "starting tmux session '$SESSION' on $HOST"
 "${SSH[@]}" "cd '$ROOT/src' && tmux kill-session -t '$SESSION' 2>/dev/null || true
-  tmux new-session -d -s '$SESSION' \"cd '$ROOT/src' && $BUILD_PREFIX BASE=$BASE ./build.sh ${ARGS[*]} > '$LOG' 2>&1; rc=\\\$?; sudo -n chown -R \\\$(id -u):\\\$(id -g) '$ROOT' 2>/dev/null; echo \\\"BUILD-EXIT rc=\\\$rc\\\" >> '$LOG'\"" \
+  tmux new-session -d -s '$SESSION' \"cd '$ROOT/src' && $BUILD_PREFIX ${BUILD_ENV[*]:-} BASE=$BASE ./build.sh ${ARGS[*]} > '$LOG' 2>&1; rc=\\\$?; sudo -n chown -R \\\$(id -u):\\\$(id -g) '$ROOT' 2>/dev/null; echo \\\"BUILD-EXIT rc=\\\$rc\\\" >> '$LOG'\"" \
   || die "could not start the remote build"
 sleep 5
 "${SSH[@]}" "grep -q 'BUILD-EXIT' '$LOG' 2>/dev/null && { echo 'build EXITED immediately:'; tail -20 '$LOG'; exit 1; } || true" \

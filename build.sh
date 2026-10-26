@@ -184,7 +184,12 @@ SSH_PUBKEY_PATH=$(klh_expand_tilde "$SSH_PUBKEY_PATH")
 klh_require_cmd git
 free_space_gb() { df -BG --output=avail "$1" | tail -1 | tr -dc '0-9'; }
 AVAIL=$(free_space_gb "$REPO_DIR")
-[ "$AVAIL" -ge 30 ] || klh_die "only ${AVAIL}G free under $REPO_DIR — a Kali live build needs ~30G+ (chroot + ISO + caches)"
+# 30G is the release-build rule (the archive keeps ISO + tree side by side).
+# A RAM build runs in a tmpfs sized for exactly one tree and the ISO, so it
+# sets KLH_MIN_FREE_G lower — otherwise the guard rejects a 14G ramdisk that
+# is, by construction, big enough.
+MIN_FREE_G="${KLH_MIN_FREE_G:-30}"
+[ "$AVAIL" -ge "$MIN_FREE_G" ] || klh_die "only ${AVAIL}G free under $REPO_DIR — a Kali live build needs ~${MIN_FREE_G}G (chroot + ISO + caches; KLH_MIN_FREE_G overrides)"
 
 # distro adapter owns the mirror probe (kali: http.kali.org as always;
 # debian: deb.debian.org) — see lib/distro/.
