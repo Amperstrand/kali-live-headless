@@ -168,26 +168,90 @@ cmd_show() {
     fi
 }
 
+
+# ---------------------------------------------------------------- adopt
+cmd_adopt() { # harvest the EXISTING salt off a stick before a destructive
+    # flash, so a stick that carried entropy from BEFORE the registry keeps
+    # its identities across flashes instead of being silently re-keyed.
+    # Rotation policy: same-serial registry entry wins over the on-stick
+    # salt (the registry is the operator's record; a differing on-stick
+    # salt means someone re-keyed the stick by hand — warn loudly). Use
+    # --adopt-on-stick to import the on-stick salt over the registry
+    # (deliberate re-adoption after a manual re-key).
+    [ -n "${OPT_DEVICE:-}" ] || die "adopt: need --device"
+    _ser=$(read_serial)
+    [ -n "$_ser" ] || die "no readable serial on $OPT_DEVICE"
+    _hash=$(serial_hash "$_ser")
+    _part=$(cfg_partition_of "$OPT_DEVICE")
+    _onsalt=""
+    if [ -n "$_part" ]; then
+        _mnt=$(mktemp -d)
+        if mount -t vfat -o ro "$_part" "$_mnt" 2>/dev/null; then
+            _onsalt=$(klh_salt_of "$_mnt/master.salt")
+            klh_salt_valid "$_onsalt" || _onsalt=""
+            umount "$_mnt" 2>/dev/null
+        fi
+        rmdir "$_mnt" 2>/dev/null || true
+    fi
+    _entry=$(find_entry "$_hash")
+    if [ -z "$_onsalt" ]; then
+        if [ -n "$_entry" ]; then
+            echo "adopt: no on-stick salt; registry entry exists ($(field "$_entry" 3)) — flash will re-seed it"
+            return 0
+        fi
+        echo "adopt: no on-stick salt and no registry entry — flash generates one (fresh stick)"
+        return 0
+    fi
+    if [ -z "$_entry" ]; then
+        mkdir -p "$REGDIR" 2>/dev/null || true
+        chmod 700 "$REGDIR" 2>/dev/null || true
+        [ -f "$REGISTRY" ] || : > "$REGISTRY"
+        chmod 600 "$REGISTRY" 2>/dev/null || true
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$_hash" "$_onsalt" "${OPT_NAME:-adopted-$(printf '%s' "$_hash" | cut -c1-8)}" \
+            "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${OPT_BUILD:-}" "adopted" >> "$REGISTRY"
+        echo "adopt: ADOPTED the existing on-stick salt ($(printf '%s' "$_onsalt" | sha256sum | cut -c1-16)) — identities survive this flash"
+        return 0
+    fi
+    _regsalt=$(field "$_entry" 2)
+    if [ "$_regsalt" = "$_onsalt" ]; then
+        echo "adopt: on-stick salt == registry salt — no rotation, flash safely"
+        return 0
+    fi
+    if [ "${OPT_ADOPT_ON_STICK:-}" = 1 ]; then
+        _tmp="$REGISTRY.tmp"
+        awk -F'\t' -v h="$_hash" -v s="$_onsalt" 'BEGIN{OFS="\t"} $1==h{$2=s; $6="re-adopted"} {print}' "$REGISTRY" > "$_tmp" 2>/dev/null \
+            && mv "$_tmp" "$REGISTRY" || warn "re-adoption write failed"
+        chmod 600 "$REGISTRY" 2>/dev/null || true
+        echo "adopt: --adopt-on-stick — registry now holds the on-stick salt ($(printf '%s' "$_onsalt" | sha256sum | cut -c1-16))"
+        return 0
+    fi
+    warn "on-stick salt differs from the registry (someone re-keyed this stick?): registry wins — pass --adopt-on-stick to import the on-stick salt instead"
+    echo "adopt: registry salt retained ($(printf '%s' "$_regsalt" | sha256sum | cut -c1-16))"
+}
+
 # ---------------------------------------------------------------- args
-CMD=""; OPT_DEVICE=""; OPT_NAME=""; OPT_BUILD=""; OPT_SERIAL_RAW=""; OPT_REVEAL=""
+CMD=""; OPT_DEVICE=""; OPT_NAME=""; OPT_BUILD=""; OPT_SERIAL_RAW=""; OPT_REVEAL=""; OPT_ADOPT_ON_STICK=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        list|register|apply|show) CMD="$1" ;;
+        list|register|apply|show|adopt) CMD="$1" ;;
         --device)  OPT_DEVICE="${2:?}"; shift ;;
         --name)    OPT_NAME="${2:?}"; shift ;;
         --build)   OPT_BUILD="${2:?}"; shift ;;
         --serial-raw) OPT_SERIAL_RAW="${2:?}"; shift ;;
         --reveal)  OPT_REVEAL=1 ;;
+        --adopt-on-stick) OPT_ADOPT_ON_STICK=1 ;;
         -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
         *) die "unknown arg: $1" ;;
     esac
     shift
 done
-[ -n "$CMD" ] || die "need a command: list | register | apply | show"
+[ -n "$CMD" ] || die "need a command: list | register | apply | show | adopt"
 
 case "$CMD" in
     list)     cmd_list "${OPT_REVEAL:+--reveal}" ;;
     register) cmd_register ;;
     apply)    cmd_apply ;;
     show)     cmd_show ;;
+    adopt)    cmd_adopt ;;
 esac
