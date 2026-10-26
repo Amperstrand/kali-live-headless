@@ -48,31 +48,6 @@ log() {
     [ "$DRY_RUN" = true ] && printf '[%s] %s\n' "$TAG" "$*" >&2
 }
 
-# ------------------------------------------------------------- config input
-# KLHCONFIG partition (same discovery as kali-live-headless-provision)CONF_SOURCE=""
-if [ -n "${KLH_VMSTORE_CONF:-}" ]; then
-    CONF_SOURCE=$KLH_VMSTORE_CONF          # unit tests: config from a file
-elif [ -b /dev/disk/by-label/KLHCONFIG ]; then
-    CONF_SOURCE=/dev/disk/by-label/KLHCONFIG
-else
-    for _d in $(blk_parts); do
-        if [ "$(blk_field "$_d" LABEL)" = "KLHCONFIG" ]; then
-            CONF_SOURCE=/dev/$_d
-            break
-        fi
-    done
-fi
-
-CMDLINE=/proc/cmdline
-[ -n "${KLH_PROC_CMDLINE:-}" ] && CMDLINE=$KLH_PROC_CMDLINE
-
-# Block-device table: lsblk -P pairs (key="value") — the raw (-r) format
-# COLLAPSES EMPTY COLUMNS, which shifts positional fields on any disk
-# whose partition has no label (the real gaming PC's C: has none — the
-# PARTUUID selector silently never matched until this was found on
-# hardware 2026-10-23). Pairs never collapse; SIZE comes in bytes (-b),
-# which also kills the unit-suffix sorting bug class.
-BLK_TABLE=""
 blk_table() {
     if [ -z "$BLK_TABLE" ]; then
         if [ -n "${KLH_LSBLK_FILE:-}" ]; then
@@ -101,6 +76,33 @@ blk_parts() { # partition NAMEs (no /dev/ prefix), one per line
         { split($0, w, " "); if (w[1] ~ /^NAME=/) { n = w[1]; sub(/^NAME="/, "", n); sub(/"$/, "", n)
           t = $0; if (match(t, /TYPE="part"/)) print n } }'
 }
+
+# ------------------------------------------------------------- config input
+# KLHCONFIG partition (same discovery as kali-live-headless-provision)
+CONF_SOURCE=""
+if [ -n "${KLH_VMSTORE_CONF:-}" ]; then
+    CONF_SOURCE=$KLH_VMSTORE_CONF          # unit tests: config from a file
+elif [ -b /dev/disk/by-label/KLHCONFIG ]; then
+    CONF_SOURCE=/dev/disk/by-label/KLHCONFIG
+else
+    for _d in $(blk_parts); do
+        if [ "$(blk_field "$_d" LABEL)" = "KLHCONFIG" ]; then
+            CONF_SOURCE=/dev/$_d
+            break
+        fi
+    done
+fi
+
+CMDLINE=/proc/cmdline
+[ -n "${KLH_PROC_CMDLINE:-}" ] && CMDLINE=$KLH_PROC_CMDLINE
+
+# Block-device table: lsblk -P pairs (key="value") — the raw (-r) format
+# COLLAPSES EMPTY COLUMNS, which shifts positional fields on any disk
+# whose partition has no label (the real gaming PC's C: has none — the
+# PARTUUID selector silently never matched until this was found on
+# hardware 2026-10-23). Pairs never collapse; SIZE comes in bytes (-b),
+# which also kills the unit-suffix sorting bug class.
+BLK_TABLE=""
 
 conf_value() { # $1=file $2=KEY -> first plain KEY=value value
     [ -r "$1" ] || return 1
