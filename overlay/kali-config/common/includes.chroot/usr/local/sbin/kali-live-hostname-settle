@@ -17,10 +17,15 @@
 # stays usable; the name is merely not disambiguated).
 #
 # RACE: two identical machines first-booting in the same instant can both
-# probe before either is registered and both keep the base name. avahi will
-# still publish one of them as <name>-2.local, but the kernel hostname is not
-# re-derived until the next boot. Bounded retry does not fix this without a
-# shared registry, which a live stick deliberately does not have.
+# probe before either has registered. avahi then resolves the collision at
+# the mDNS layer (one daemon renames to <name>-2.local) within seconds, so
+# the probe is retried twice before the base name is accepted as unique.
+# That still leaves a pathological window (no mDNS answer at all, e.g. a
+# resolver-less image) where both keep the base name; the next boot fixes
+# it. A shared registry would remove the window, but a live stick
+# deliberately has no writable shared state.
+#
+# Test hook (never set in the shipped image): KLH_SETTLE_RETRY_DELAYS.
 
 set -u
 
@@ -59,6 +64,22 @@ done
 
 NEW=$("$DERIVE" 2>/dev/null || true)
 valid_hostname "$NEW" || { log "derivation failed — keeping '$BASE'"; exit 0; }
+
+# If the first probe says "unique", give avahi's own conflict resolution a
+# moment and re-probe: the common simultaneous-first-boot race is resolved
+# at the mDNS layer seconds after both machines come up, but the kernel
+# hostname does not follow on its own. Skipped when nsswitch has no mDNS
+# module (the probe could only ever answer "unique").
+if [ "$NEW" = "$BASE" ] && grep -Eq '^hosts:.*mdns' /etc/nsswitch.conf 2>/dev/null; then
+    for _delay in ${KLH_SETTLE_RETRY_DELAYS-5 10}; do
+        [ "$NEW" = "$BASE" ] || break
+        sleep "$_delay"
+        AGAIN=$("$DERIVE" 2>/dev/null || true)
+        if valid_hostname "$AGAIN"; then
+            NEW=$AGAIN
+        fi
+    done
+fi
 
 CUR=$(hostname 2>/dev/null || true)
 if [ "$NEW" = "$CUR" ]; then
