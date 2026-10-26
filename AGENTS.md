@@ -258,6 +258,45 @@ drift is absorbed by bumping the pin, nothing else.
    KLHCONFIG `NTP_SERVERS=` override + a BOUNDED sync-wait in provision
    before the settled marker; suite asserts active+synced. Same root cause
    class as TLS not-yet-valid failures.
+22. **A q35 guest with no video device hangs in BIOS/option-ROM init**
+   (2026-10-26, `kali-live-vm-deploy`): `virt-install --graphics none` alone
+   omits `<video>`, and the guest then loops in SeaBIOS/option ROM — GRUB
+   prints `Booting 'Debian GNU/Linux'`, the machine resets, one core stays
+   busy, the serial console is silent, no DHCP lease appears, and the vCPU
+   sits in 32-bit code with `EDX=0xcf8` (PCI config port). `--video vga`
+   (no listener) fixes it. Corollary: an *identical* domain definition boots
+   or not depending on this, so "the disk boots under plain QEMU" does not
+   clear libvirt — compare `virsh domxml-to-native qemu-argv` (and the
+   `-cpu` line) between a working and a broken guest first.
+23. **`--cpu host` triple-faults on this hybrid-Intel host** (2026-10-26,
+   second confirmation): it resolves to `mode=custom match=exact check=full`
+   and the guest resets before the kernel prints. Use a named model with
+   `check='none'` (`Skylake-Client` is proven); `--cpu max` is accepted at
+   define time and refused at start (`Unknown CPU model max`). Note
+   `virt-install` may add `ibpb/md-clear/spec-ctrl/ssbd` features to a
+   `--cpu MODEL,check=none` request; the deploy strips them so the request
+   stays the bare model.
+24. **A WireGuard hub DNAT must target the *stick's* forwarded port**, not the
+   guest's service port: `22023 -> 10.66.x.y:22023`, and the stick's
+   `kali-live-vm-forward` then DNATs to the guest's 22. Targeting `:22` looks
+   right and times out. `tools/hub-vm-forward.sh` also owns the port it
+   publishes (it deletes any stale DNAT rule for that port first — the first
+   matching rule wins, and a re-publish after a tunnel re-address otherwise
+   silently keeps the old destination).
+25. **`kali-live-vm-rm --stale` must never sweep a provisioned guest**
+   (2026-10-26): the first cut removed every volume whose domain was not
+   RUNNING, so a deliberate `virsh destroy` — or a concurrent suite run
+   sweeping the host mid-debug — deleted a live test guest's disk. The sweep
+   now skips any volume with a defined domain or a `.deploy`/`.xml` sidecar;
+   those go only via explicit `--id NAME`.
+26. **`sudo`'s `secure_path` has no `/usr/local/sbin`**: shipped tools calling
+   each other must use absolute paths, and guest-side asserts needing root
+   (`sshd -T`) must use `sudo -n` — otherwise the check silently reads
+   nothing and reports a false FAIL.
+27. **Multi-line key lists word-split into garbage**: `for k in $KEYS` splits
+   `ssh-ed25519 AAAA... comment` into three "keys" and rejects all of them.
+   Read keys one per LINE (`IFS='\n'`), and remember a `.pub` path is not a
+   private key — probe with the stripped path.
 
 ## Public-repo hygiene
 

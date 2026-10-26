@@ -6,8 +6,10 @@
 #
 # Usage:
 #   kali-live-vm-rm --id NAME         remove one VM image (+ domain if any)
-#   kali-live-vm-rm --stale           remove ALL images whose domain is not
-#                                     running (the cleanup-job sweep)
+#   kali-live-vm-rm --stale           remove leftover TEST volumes only: no
+#                                     domain defined and no .deploy/.xml
+#                                     (provisioned guests are never swept —
+#                                     use --id NAME for those)
 #
 # POSIX sh only — dash parses this file; no bashisms (build #11 lesson).
 
@@ -70,19 +72,31 @@ remove_one() { # $1 = vm id (<id>; the volume file is <id>.image); 0 = removed
 }
 
 if [ "$STALE" = true ]; then
-    # sweep: every volume whose same-named domain is not RUNNING
-    removed=0
+    # sweep: TEST LEFTOVERS ONLY. The first cut removed every volume whose
+    # domain was not RUNNING, so a deliberate `virsh destroy` (maintenance,
+    # debugging, a reboot) silently deleted that guest's disk — it ate a live
+    # test guest on 2026-10-26 when a suite run swept the host mid-debug.
+    # A guest the platform provisioned is never swept: it carries a .deploy
+    # state file / saved .xml (for --restore), or a defined domain (stopped
+    # is a decision, not garbage). Removal of those is always explicit:
+    #   kali-live-vm-rm --id NAME
+    removed=0; kept=0
     for vol in $($VIRSH vol-list "$POOL" 2>/dev/null | awk 'NR>2 && NF>=2 {print $1}' | grep -Ev '^-+$' || true); do
         vmid=${vol%.image}
-        state=$($VIRSH domstate "$vmid" 2>/dev/null || echo "no-domain")
-        if [ "$state" = "running" ]; then
-            log "skip '$vol' (domain running)"
+        if [ -n "$STORE_DIR" ] && { [ -f "$STORE_DIR/$vmid.deploy" ] || [ -f "$STORE_DIR/$vmid.xml" ]; }; then
+            log "skip '$vol' (provisioned guest: .deploy/.xml present)"
+            kept=$((kept + 1))
+            continue
+        fi
+        if $VIRSH dominfo "$vmid" >/dev/null 2>&1; then
+            log "skip '$vol' (domain defined: removal is explicit, --id $vmid)"
+            kept=$((kept + 1))
             continue
         fi
         if remove_one "$vmid"; then removed=$((removed + 1)); fi
     done
     $VIRSH pool-refresh "$POOL" >/dev/null 2>&1 || true
-    echo "removed $removed stale volume(s) from pool $POOL"
+    echo "removed $removed stale volume(s) from pool $POOL, kept $kept defined/provisioned guest(s)"
     exit 0
 fi
 

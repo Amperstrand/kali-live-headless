@@ -568,6 +568,26 @@ The test suite asserts the stack: packages shipped, `libvirtd` enabled and
 reachable via `virsh` as the live user, host-shield service active
 (a guest VM with networking is not booted inside the QEMU test guest).
 
+### Internet-reachable guests (one command)
+
+With the VM store mounted and the WireGuard tunnel up, a single command turns
+the stick into a small VPS provider — a guest with the cores/RAM/disk you
+ask for, your SSH keys baked in, all egress leaving through the concentrator
+(`inr2.cashu.exchange`), and exactly one inbound port published:
+
+```sh
+tools/vm-deploy.sh --name vps1 --cores 16 --ram-gb 24 --disk-gb 50 \
+  --ssh-key ~/.ssh/id_ed25519.pub --ssh-key "ssh-ed25519 AAAA... fleet"
+# -> log in:  ssh -p 22023 debian@inr2.cashu.exchange
+```
+
+It provisions on the VM host, enrolls the peer and publishes the port on the
+concentrator, then verifies egress, isolation, sshd posture and clock from
+your workstation. `--verify-only` re-runs the checks, `--restore` brings a
+guest back after the live session reboots (disk, seed, domain XML and state
+all live on the NTFS store), and `--adopt` takes over a hand-built guest.
+Full guide and the hard-won failure modes: `docs/vm-deploy.md`.
+
 ### VM store on the internal NTFS disk (opt-in, M1)
 
 `WITH_KVM=true` builds also ship an **opt-in** disk-backed VM store: VM
