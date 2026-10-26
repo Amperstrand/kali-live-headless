@@ -34,7 +34,8 @@ else
   # KEYSOURCE=random despite a valid fixture salt; no assert could see it
   # until the unification checks). A fixed uuid/serial pair also makes the
   # fixture-salt identities STABLE and precomputable per guest.
-  KLH_SMBIOS=(-smbios type=1,uuid=4b4c482d-5145-4d55-4944-303130323334 -smbios type=1,serial=KLHQEMU1 -smbios type=2,serial=KLHQEMABRD1)
+  KLH_SMBIOS=(-smbios "type=1,uuid=4b4c482d-5145-4d55-4944-303130323334" \
+               -smbios "type=1,serial=KLHQEMU1" -smbios "type=2,serial=KLHQEMABRD1")
   # One QEMU hostfwd port per lane: concurrent suites in different worktrees
   # (this is a multi-agent repo now) must not fight over 2222 — and nobody
   # should ever need to kill another lane's QEMU to run their own gate.
@@ -546,7 +547,7 @@ else
             -display none -monitor none -serial "file:$SCRATCH/serial-forensic.log" \
             -daemonize -pidfile "$pidfile" >/dev/null 2>&1
           QPID=$(cat "$pidfile" 2>/dev/null || true)
-          
+
           if [ -z "$QPID" ]; then
             record fail "qemu launch" "pidfile empty — QEMU died at start (RAM? port?)"
           elif wait_ssh $BOOT_TIMEOUT; then

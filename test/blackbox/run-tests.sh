@@ -15,7 +15,7 @@ export BB_MOUNT_DIR="$TD"
 echo "== boot header (no config partition = RAM mode) =="
 OUT=$(sh "$BB" header 2>&1)
 BOOTF=$(ls -1 "$TD/logs"/boot-*.log 2>/dev/null | head -1)
-[ -n "$BOOTF" ] && ok "boot record file written" || bad "no boot record file"
+[ -n "$BOOTF" ] && ok "boot record file written" || bad "no boot record file (out: ${OUT:-empty})"
 H=$(cat "$BOOTF" 2>/dev/null)
 printf '%s' "$H" | grep -q "toram       : " && ok "header records toram flag" || bad "toram line missing"
 printf '%s' "$H" | grep -q "cmdline     : " && ok "header records kernel cmdline" || bad "cmdline missing"
