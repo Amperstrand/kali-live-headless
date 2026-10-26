@@ -231,16 +231,16 @@ else
     fi
     sudo test -f "$SQ_MNT/etc/kali-live-headless/headless-wifi.nmconnection.in" && record pass "wifi profile template shipped (runtime override support)" || record fail "wifi profile template shipped"
 
-    # host keys baked per-build
-    if sudo test -f "$SQ_MNT/etc/ssh/ssh_host_ed25519_key"; then
-      record pass "SSH host key baked into ISO"
-      [ "$(sq %a etc/ssh/ssh_host_ed25519_key)" = "600" ] && record pass "host key mode 0600" || record fail "host key mode 0600"
-      BAKED_FP=$(sudo ssh-keygen -lf "$SQ_MNT/etc/ssh/ssh_host_ed25519_key.pub" 2>/dev/null | awk '{print $2}')
-      [ -n "$BAKED_FP" ] && record pass "baked ed25519 fingerprint captured" || record fail "baked ed25519 fingerprint captured"
+    # Host keys must NOT be baked (policy change 2026-10-26): a shipped key
+    # gives every stick flashed from the image the same SSH identity, and it is
+    # one of the few genuinely non-deterministic files. provision runs
+    # `ssh-keygen -A` at first boot; the boot stages prove that it did.
+    if sudo test -e "$SQ_MNT/etc/ssh/ssh_host_ed25519_key"; then
+      record fail "no SSH host key baked into ISO" "found ssh_host_ed25519_key — zzz-klh-nondeterminism.hook.chroot must delete it"
     else
-      record fail "SSH host key baked into ISO"
-      BAKED_FP=""
+      record pass "no SSH host key baked into ISO (generated at first boot)"
     fi
+    BAKED_FP=""
 
     # packages
     while read -r pkg; do

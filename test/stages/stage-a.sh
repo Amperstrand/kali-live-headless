@@ -468,6 +468,17 @@ if [ -x "$VMSTORE" ] && [ -d "$FIX" ]; then
   else
     record pass "vm-create: refuses non-[a-z0-9-] id"
   fi
+  # These three assert the "no store mounted" refusal path — and their first
+  # cut ran against whatever store the HOST had: on the 20-core box that is the
+  # real /mnt/klh-vmstore, so `vm-create` wrote a volume into it and
+  # `vm-rm --stale` deleted one (2026-10-26, found by a content gate that should
+  # not have touched the host at all). A test may never mutate another lane's
+  # live store: assert only when none is mounted, and say so loudly when
+  # skipping instead of silently passing.
+  _store_mnt=${KLH_VMSTORE_MOUNT:-/mnt/klh-vmstore}
+  if mountpoint -q "$_store_mnt" 2>/dev/null; then
+    record skip "vm-create/vm-rm store guards" "live store mounted at $_store_mnt — refusing to write into or sweep it"
+  else
   out=$("$VMCREATE" --id goodvm --cores 1 --ram-gb 1 --disk-gb 1 2>&1)
   rc=$?
   [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'not mounted' \
@@ -483,6 +494,7 @@ if [ -x "$VMSTORE" ] && [ -d "$FIX" ]; then
   [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'not mounted' \
     && record pass "vm-rm: --stale refuses to run without the store" \
     || record fail "vm-rm: --stale refuses to run without the store" "rc=$rc out=$out"
+  fi
 else
   record skip "vmstore unit tests" "script/fixtures missing"
 fi
