@@ -273,6 +273,10 @@ if [ "$POOL" = true ]; then
   # the pool path is meaningful on the TARGET (a live box has no home storage),
   # so it must survive sudo -E; forward it explicitly when the caller set it.
   [ -n "${KLH_DEB_POOL:-}" ] && BUILD_ENV+=("KLH_DEB_POOL=$KLH_DEB_POOL")
+  # archives must outlive a tmpfs output dir (the 2026-10-26 outage lost
+  # #41/#42 this way); forward the persistent destination when the caller
+  # sets it — usually somewhere on the same scratch image
+  [ -n "${KLH_ARCHIVE_PERSIST:-}" ] && BUILD_ENV+=("KLH_ARCHIVE_PERSIST=$KLH_ARCHIVE_PERSIST")
 fi
 [ "$ARCHIVE" = true ] && [ -n "$NUMBER" ] && ARGS+=(--number "$NUMBER")
 [ "$ARCHIVE" = false ] && ARGS+=(--no-archive)
