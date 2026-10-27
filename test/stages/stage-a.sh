@@ -120,6 +120,27 @@ else
   record skip "iso-archive tmpfs persistence" "no writable /dev/shm on this host"
 fi
 
+# lane-audit.sh renders the human-reviewable bundle for a lane: the reviewer
+# reads the PRODUCT (58 packages / 48 overlay files for the minimal lane),
+# not the repo. Assert it renders, self-verifies, and — count-zero discipline
+# — that the minimal lane's lists are non-empty and its overlay has no setuid.
+if [ -x "$REPO_DIR/tools/lane-audit.sh" ]; then
+  _la=$SCRATCH/lane-audit; mkdir -p "$_la"
+  "$REPO_DIR/tools/lane-audit.sh" minimal "$_la/min" >/dev/null 2>&1
+  _la_pkgs=$(grep -cv '^#' "$_la/min/PACKAGES.txt" 2>/dev/null || echo 0)
+  _la_files=$(find "$_la/min/OVERLAY" -type f 2>/dev/null | wc -l)
+  if [ "$_la_pkgs" -gt 10 ] && [ "$_la_files" -gt 10 ] \
+     && (cd "$_la/min" && sha256sum -c --quiet SHA256SUMS 2>/dev/null) \
+     && [ "$(find "$_la/min/OVERLAY" -perm /6000 | wc -l)" = 0 ]; then
+    record pass "lane-audit: minimal bundle renders + self-verifies ($_la_pkgs pkgs, $_la_files overlay files, 0 setuid)"
+  else
+    record fail "lane-audit: minimal bundle renders + self-verifies" "pkgs=$_la_pkgs files=$_la_files — an empty or unverifiable bundle would vacuously pass review"
+  fi
+  rm -rf "$_la"
+else
+  record skip "lane-audit unit" "tool not present"
+fi
+
 # A hook live-build cannot execute is silently skipped, so the image ships
 # without the step and nothing complains (AGENTS #16: derive_identity.py was
 # 100644 for ten builds and never ran). Every hook in the overlay must be +x;
