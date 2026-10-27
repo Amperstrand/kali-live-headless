@@ -8,6 +8,14 @@
 #     lab network and guests have no business talking to it.
 #   - Guests must NOT reach host services (sshd, libvirt API, ...)
 #     through virbr0 — only DHCP + DNS from the built-in dnsmasq.
+#   - The SAME policy holds for IPv6, and for the same reasons: link-local
+#     is where cloud metadata lives (Hetzner serves it on 169.254.169.254
+#     AND fe80::a9fe:a9fe; AWS on fd00:ec2::254), and guest<->guest over
+#     v6 on the bridge is L2 traffic iptables' v4 FORWARD rules never see.
+#     There is no sanctioned IPv6 path on this bridge (no RA, no DHCPv6,
+#     no NAT66), so v6 virbr0 traffic is dropped outright — including ND,
+#     deliberately: a bridge with no v6 purpose gets no v6 neighbors.
+#     (2026-10-27: found by reading, proven in tools/firewall-lab.sh.)
 #
 # This is a DAEMON, not a oneshot: virbr0 may appear at any time
 # (libvirtd socket-activates, the default network is autostarted by
@@ -97,6 +105,27 @@ install_forward() {
     iptables -I FORWARD -i virbr0 -d 169.254.0.0/16  -j DROP
 }
 
+# IPv6: no DHCPv6/RA/NAT66 exists on this bridge, so there is no sanctioned
+# v6 traffic at all. One rule per base chain, no accepts: INPUT drops the
+# host's v6 surface (incl. link-local metadata-style paths and the host's
+# own fe80:: services), FORWARD drops everything from guests — which, with
+# br_netfilter loaded (libvirt loads it), also covers guest<->guest v6 that
+# is bridged, not forwarded.
+v6_rules_ok() {
+    command -v ip6tables >/dev/null 2>&1 || return 0   # no ip6tables: skip, don't die
+    ip6tables -C INPUT   -i virbr0 -j DROP >/dev/null 2>&1 || return 1
+    ip6tables -C FORWARD -i virbr0 -j DROP >/dev/null 2>&1 || return 1
+    return 0
+}
+
+install_v6() {
+    command -v ip6tables >/dev/null 2>&1 || return 0
+    ip6tables -D INPUT   -i virbr0 -j DROP >/dev/null 2>&1
+    ip6tables -D FORWARD -i virbr0 -j DROP >/dev/null 2>&1
+    ip6tables -I INPUT   -i virbr0 -j DROP
+    ip6tables -I FORWARD -i virbr0 -j DROP
+}
+
 installed_once=0
 # Deterministic default-network bring-up (moved from kvm-enable, whose
 # Before=libvirtd ordering deadlocked the boot transaction). Bounded virsh
@@ -148,6 +177,11 @@ while :; do
 
     if ! forward_rules_ok; then
         install_forward
+        changed=1
+    fi
+
+    if ! v6_rules_ok; then
+        install_v6
         changed=1
     fi
 

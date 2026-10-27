@@ -252,6 +252,7 @@ echo "fwd=$(/usr/local/sbin/kali-live-vm-forward list 2>/dev/null | awk -v n="$N
 echo "fw_active=$(systemctl is-active kali-live-kvm-firewall 2>/dev/null || true)"
 echo "fw_drop=$(iptables -S FORWARD 2>/dev/null | awk '/-i virbr0/ && /DROP/ && /192\.168/' | wc -l | tr -d ' ')"
 echo "fw_meta=$(iptables -S FORWARD 2>/dev/null | awk '/-i virbr0/ && /DROP/ && /169\.254/' | wc -l | tr -d ' ')"
+echo "fw_v6=$( { ip6tables -C INPUT -i virbr0 -j DROP >/dev/null 2>&1 && ip6tables -C FORWARD -i virbr0 -j DROP >/dev/null 2>&1; } && echo yes || echo no)"
 echo "store_free_gb=$(df -BG --output=avail /mnt/klh-vmstore 2>/dev/null | tail -1 | tr -dc 0-9)"
 echo "dom_uuid=$($v dominfo "$NAME" 2>/dev/null | sed -n "s/^UUID: *//p" | head -1)"
 echo "fips=$(sed -n "s/^FIPS=//p" /mnt/klh-vmstore/vms/$NAME.deploy 2>/dev/null | head -1)"
@@ -298,6 +299,9 @@ echo "meta=$(timeout 3 bash -c 'echo > /dev/tcp/169.254.169.254/80' 2>/dev/null 
 if [ -n "$PEER_IP" ] && [ -n "$PEER_PORT" ]; then
     echo "peer=$(timeout 3 bash -c "echo > /dev/tcp/$PEER_IP/$PEER_PORT" 2>/dev/null && echo open || echo blocked)"
 fi
+nic=$(ip -o -4 route show default 2>/dev/null | awk "{print \$5; exit}")
+r=$(ping -6 -c1 -W2 "ff02::1%${nic:-enp1s0}" 2>/dev/null | awk "/received/{print \$4; exit}")
+echo "v6ll=${r:-0}"
 echo "fips_svc=$(systemctl is-active fips fips-dns 2>/dev/null | paste -sd, -)"
 echo "fips_addr=$(ip -o -6 addr show fips0 2>/dev/null | awk "{print \$4; exit}")"
 REMOTE
@@ -337,6 +341,7 @@ postflight() {
     expect post.host.firewall "kvm-firewall daemon active" active "$(kv "$HV" fw_active)"
     at_least post.host.fw_rules "host firewall drops guest->RFC1918" 1 "$(kv "$HV" fw_drop)"
     at_least post.host.fw_metadata "host firewall drops guest->link-local (cloud metadata)" 1 "$(kv "$HV" fw_meta)"
+    expect post.host.fw_v6 "host firewall drops IPv6 from virbr0 (metadata+v6 guest<->guest)" yes "$(kv "$HV" fw_v6)"
     if printf '%s' "$(kv "$HV" fwd)" | grep -q "ext port $PORT"; then
         pass post.host.forward "forward rule publishes port $PORT"
     else
@@ -464,6 +469,10 @@ postflight() {
     expect post.iso.lan_172 "guest cannot reach 172.16/12" blocked "$(kv "$G" lan_172)"
     expect post.iso.lan_192 "guest cannot reach 192.168/16" blocked "$(kv "$G" lan_192)"
     expect post.iso.metadata "guest cannot reach cloud metadata" blocked "$(kv "$G" meta)"
+    # any responder here is either the HOST (fe80:: services — Hetzner-class
+    # metadata is served on fe80::a9fe:a9fe) or another GUEST (bridged v6 the
+    # v4 FORWARD drops cannot see). Zero answers is the property.
+    expect post.iso.v6_linklocal "nothing on the bridge answers IPv6 all-nodes" 0 "$(kv "$G" v6ll)"
     if [ -n "$PEER" ] && [ -n "$PEER_IP" ]; then
         expect post.iso.peer "guest cannot reach peer guest ($PEER @ $PEER_IP)" blocked "$(kv "$G" peer)"
     else
