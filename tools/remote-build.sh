@@ -203,6 +203,10 @@ if [ "$ENGINE" = docker ]; then
   info "docker data-root -> $DROOT"
   "${SSH[@]}" "set -e
     sudo mkdir -p '$DROOT'
+    # sudo-created dirs land root-owned and the NEXT lane's plain mkdir
+    # under them fails with permission denied (bit twice on ai-legion,
+    # 2026-10-26/27) — hand the tree back to the login user immediately
+    sudo chown -R \$(id -u):\$(id -g) '$ROOT' 2>/dev/null || true
     printf '{\"data-root\":\"%s\"}\n' '$DROOT' | sudo tee /etc/docker/daemon.json >/dev/null
     sudo systemctl start docker 2>/dev/null || true" || die "docker data-root setup failed"
   if ! "${SSH[@]}" "sudo docker info >/dev/null 2>&1"; then
