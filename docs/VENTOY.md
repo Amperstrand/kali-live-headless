@@ -76,8 +76,8 @@ make ventoy-verify USB=/dev/sdc
 `ventoy-all` runs, in order:
 
 1. preflight and plan
-2. Ventoy install (GPT, Secure Boot support)
-3. ISO download and checksum verification
+2. ISO download and checksum verification (before any write)
+3. Ventoy install (GPT, Secure Boot support)
 4. mount the exFAT partition, write `ventoy/ventoy.json`, copy ISOs, sync
 5. read every ISO back and verify its hash, validate the JSON
 
