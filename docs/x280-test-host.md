@@ -73,3 +73,33 @@ Two facts shape what is possible:
 Until then this machine is a **gate + flash host** (fully proven: static
 227/0, self boot-gate, USB3 port at ~60 MB/s reads) — builds need the clean
 shutdown or a USB3 disk.
+
+## NTFS "dirty" states and what Linux can safely fix
+
+Two different states get called "dirty", and only one of them is Linux-fixable:
+
+1. **Ordinary dirty flag** (crash, power loss): `ntfsfix` from ntfs-3g is the
+   tool — it repairs MFT-mirror mismatches, can clear the bad-sector list and
+   the dirty bit (`--clear-dirty`), and schedules a real `chkdsk` for the next
+   Windows boot. It is deliberately NOT a Linux chkdsk (`fsck.ntfs` is a stub
+   pointing at it); deep repair still means `chkdsk /f` from Windows.
+2. **Fast-startup/hibernation (what blocked this machine)**: the on-disk
+   filesystem is self-consistent; the problem is that a Windows kernel
+   session still CLAIMS the volume (the cached-metadata view in hiberfil.sys).
+   This is not dirt and no Linux tool can clean it: clearing the dirty bit to
+   force an rw mount would let the resumed Windows session return with stale
+   metadata expectations and corrupt the filesystem for real. Read-only
+   mounts are safe in every state (the forensic posture).
+
+Prevention beats cleanup — once, from an admin prompt in Windows:
+
+    powercfg /h off
+
+(deletes hiberfil.sys, disables hibernation AND fast startup: every shutdown
+becomes a full shutdown and the volume mounts rw from Linux every time).
+Per-occasion alternative: hold Shift while clicking Shut down.
+
+The image's own mount path already treats ntfs-3g as the authority on this —
+see the stale-vs-active hiberfil analysis in the comments of
+`kali-live-bitlocker-mount` (2026-10-23): an ACTIVE hibernation is refused at
+the mount, a STALE hiberfil.sys after a full shutdown is not.
