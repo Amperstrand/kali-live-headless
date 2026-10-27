@@ -95,3 +95,36 @@ Plan, in order:
    keep `-s` on by default with the knob from review point 1.
 4. Record each lane's SB policy next to its threat model; the suite asserts
    the policy (green chain, or documented-red with a reason).
+
+## The seam between the two medium models (and what may unify later)
+
+The two paths co-exist cleanly **because they share everything above the
+medium and diverge only at it**:
+
+| layer | shared? |
+|---|---|
+| build system (build.sh, adapters, variants, KLH_FEATURES) | **shared** — one product, one provenance |
+| the ISO bytes (gates, reproducibility, manifests) | **shared** — a Ventoy stick boots the same image |
+| device safety invariants (USB-only, whole-disk, serial confirm, live-medium guard, large-disk, unmount posture) | **DUPLICATED** — flash.sh (bash) and roles/ventoy (ansible) each implement them |
+| ISO acquisition + hash verification | parallel (build vs catalog) — same discipline, two formats |
+| medium verification | per-model (medium-verify.sh vs verify.yml) — necessarily different |
+| identity/provisioning (KLHCONFIG, salt, wifi override, vm-store) | our model only — **by design**, not a gap |
+
+The duplication row is the real dry-up candidate, and it has already bitten
+once: the live-medium guard existed in flash.sh and was missing from the
+ansible preflight until review caught it (PR #23, codex P1). The unification
+path, when the second consumer proves it worth doing:
+
+1. **One invariants module, two frontends** — a small preflight script (or
+   library) both flash.sh and the ventoy role call; the suite asserts it for
+   both paths. Do this when a third writer appears or the second drift
+   incident lands, not before.
+2. **One stick-manifest format** — our BUILD-MANIFEST/sha512 and the ventoy
+   catalog could converge on a single manifest that medium-verify and
+   verify.yml both consume.
+3. **Identity on a Ventoy stick**, if ever wanted, is a reserved file on the
+   exFAT volume rather than a partition — that would unify the identity model
+   across both media; it is a deliberate decision for later, not a gap.
+
+Rule for the interim: any new device-writing tool MUST reuse an existing
+guard implementation rather than re-derive it, or say explicitly why not.
