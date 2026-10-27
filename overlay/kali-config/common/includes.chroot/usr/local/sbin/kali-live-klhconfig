@@ -1,0 +1,159 @@
+#!/bin/sh
+# kali-live-klhconfig — lifecycle manager for the KLHCONFIG partition.
+#
+# The Raspberry Pi boot-partition pattern, plus deterministic identity:
+# a small FAT32 partition carrying config files + the master salt. This
+# tool owns the entire lifecycle so flash.sh and the provisioner don't
+# each implement their own (buggy) version of partition-finding, mounting,
+# and file management.
+#
+# Usage:
+#   kali-live-klhconfig init <device>     create partition + format + seed
+#   kali-live-klhconfig mount             find + mount the partition
+#   kali-live-klhconfig unmount           unmount
+#   kali-live-klhconfig read <file>       read a config file (cat)
+#   kali-live-klhconfig write <file> <src> write a file to the partition
+#   kali-live-klhconfig salt              read or generate master.salt
+#   kali-live-klhconfig status            show partition state + contents
+#   kali-live-klhconfig exists            exit 0 if partition found
+#
+# The partition is found by label using findmnt (standard tool, no custom
+# lsblk parsing). Files are plain text (NetworkManager keyfile format for
+# WiFi, raw binary for the salt). No cloud-init, no YAML, no Python.
+
+set -u
+
+LABEL=${KLHCONFIG_LABEL:-KLHCONFIG}
+MNT=${KLHCONFIG_MNT:-/run/kali-live-headless/klhconfig}
+
+err() { echo "klhconfig: $*" >&2; }
+log() { echo "klhconfig: $*" >&2; }
+
+# Find the partition device by label — one line, standard tool
+find_part() {
+  lsblk -rno NAME,LABEL 2>/dev/null | awk -v l="$LABEL" '$2==l{print "/dev/"$1; exit}'
+}
+
+is_mounted() {
+  findmnt -n -o TARGET --source-label "$LABEL" 2>/dev/null
+}
+
+do_mount() {
+  if [ -n "$(is_mounted)" ]; then
+    echo "$(is_mounted)"
+    return 0
+  fi
+  PART=$(find_part)
+  [ -n "$PART" ] || { err "no partition labeled $LABEL"; return 1; }
+  mkdir -p "$MNT"
+  mount -t vfat "$PART" "$MNT" 2>/dev/null || {
+    # retry after rereading the partition table
+    blockdev --rereadpt "${PART%[0-9]*}" 2>/dev/null
+    sleep 2
+    mount -t vfat "$PART" "$MNT" 2>/dev/null || { err "cannot mount $PART at $MNT"; return 1; }
+  }
+  echo "$MNT"
+}
+
+do_unmount() {
+  M=$(is_mounted) || M="$MNT"
+  [ -n "$M" ] && umount "$M" 2>/dev/null
+  rmdir "$MNT" 2>/dev/null
+  return 0
+}
+
+do_init() { # <device> (e.g. /dev/sda — the whole disk, not a partition)
+  DEV=${1:?}
+  [ -b "$DEV" ] || { err "$DEV is not a block device"; return 1; }
+
+  # already has a KLHCONFIG partition?
+  if [ -n "$(find_part)" ]; then
+    log "partition already exists: $(find_part)"
+    return 0
+  fi
+
+  # find the end of the last existing partition (portable method per AGENTS #19)
+  LAST_END=0
+  for p in /sys/block/${DEV##*/}/${DEV##*/}*/*/start; do
+    [ -f "$p" ] || continue
+    DISK=${DEV##*/}
+    PARTNUM=$(echo "$p" | grep -o "$DISK"'.*start' | grep -o '[0-9]*$' | head -1)
+    PSTART=$(cat "$p" 2>/dev/null || echo 0)
+    PSIZE=$(cat "/sys/block/$DISK/${DISK}${PARTNUM}/size" 2>/dev/null || echo 0)
+    END=$((PSTART + PSIZE))
+    [ "$END" -gt "$LAST_END" ] && LAST_END=$END
+  done
+
+  # next MiB-aligned sector after the last partition
+  START=$(( (LAST_END + 2047) / 2048 * 2048 ))
+  [ "$START" -le "$LAST_END" ] && START=$((LAST_END + 2048 - (LAST_END % 2048)))
+
+  log "appending KLHCONFIG partition at sector $START on $DEV"
+  printf 'start=%s, type=0c\n' "$START" | sfdisk --force --append "$DEV" 2>/dev/null || {
+    err "sfdisk failed"; return 1
+  }
+  blockdev --rereadpt "$DEV" 2>/dev/null
+  sleep 2
+
+  # find the new partition (the highest-numbered one)
+  NEWPART=$(lsblk -rno NAME "$DEV" | tail -1)
+  NEWPART="/dev/$NEWPART"
+  [ -b "$NEWPART" ] || { err "partition created but device node not found"; return 1; }
+
+  mkfs.vfat -n "$LABEL" "$NEWPART" 2>/dev/null || { err "mkfs.vfat failed on $NEWPART"; return 1; }
+  log "KLHCONFIG partition created: $NEWPART"
+  echo "$NEWPART"
+}
+
+do_salt() {
+  M=$(do_mount) || return 1
+  SALT_FILE="$M/master.salt"
+  if [ -s "$SALT_FILE" ]; then
+    cat "$SALT_FILE"
+    return 0
+  fi
+  # generate if not present
+  head -c 32 /dev/urandom > "$SALT_FILE"
+  chmod 600 "$SALT_FILE"
+  sync
+  cat "$SALT_FILE"
+  log "master.salt generated (32 bytes)"
+}
+
+do_status() {
+  PART=$(find_part)
+  MOUNTED=$(is_mounted)
+  echo "label:    $LABEL"
+  echo "device:   ${PART:-not found}"
+  echo "mounted:  ${MOUNTED:-no}"
+  if [ -n "$MOUNTED" ]; then
+    echo "contents:"
+    ls -la "$MOUNTED/" 2>/dev/null | tail -n +2
+  elif [ -n "$PART" ]; then
+    echo "(mount to see contents)"
+  fi
+}
+
+do_read() { # <file>
+  M=$(do_mount) || return 1
+  F="$M/${1:?}"
+  [ -f "$F" ] && cat "$F" || { err "no such file: $1"; return 1; }
+}
+
+do_write() { # <file> <src>
+  M=$(do_mount) || return 1
+  F="$M/${1:?}"
+  cp "${2:?}" "$F" && sync && log "wrote $1" || { err "failed to write $1"; return 1; }
+}
+
+case "${1:-}" in
+  init)   shift; do_init "$@" ;;
+  mount)  do_mount ;;
+  unmount) do_unmount ;;
+  read)   shift; do_read "$@" ;;
+  write)  shift; do_write "$@" ;;
+  salt)   do_salt ;;
+  status) do_status ;;
+  exists) [ -n "$(find_part)" ] ;;
+  *) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
+esac
