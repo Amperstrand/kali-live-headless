@@ -1,0 +1,109 @@
+---
+- name: Read the Ventoy version
+  ansible.builtin.command:
+    cmd: "./Ventoy2Disk.sh -l {{ ventoy_dev_path }}"
+    chdir: "{{ ventoy_cache_dir }}/ventoy-{{ ventoy_version }}"
+  become: true
+  register: ventoy_list_output
+  changed_when: false
+
+- name: Show the Ventoy version
+  ansible.builtin.debug:
+    var: ventoy_list_output.stdout_lines
+
+- name: Find the Ventoy data partition
+  ansible.builtin.shell:
+    cmd: >-
+      lsblk -lnpo NAME,FSTYPE,LABEL {{ ventoy_dev_path }}
+      | awk '$2 == "exfat" && $3 == "Ventoy" { print $1; exit }'
+  register: ventoy_data_part
+  changed_when: false
+
+- name: Require a Ventoy exFAT partition
+  ansible.builtin.assert:
+    that: ventoy_data_part.stdout | trim | length > 0
+    fail_msg: "No exFAT 'Ventoy' partition on {{ ventoy_dev_path }}."
+
+- name: Check for an existing mount of the data partition
+  ansible.builtin.command:
+    cmd: "findmnt -no TARGET {{ ventoy_data_part.stdout | trim }}"
+  register: ventoy_existing_mount
+  changed_when: false
+  failed_when: false
+
+- name: Choose the mount point
+  ansible.builtin.set_fact:
+    ventoy_data_mount: >-
+      {{ ventoy_existing_mount.stdout | trim
+         if ventoy_existing_mount.stdout | trim | length > 0
+         else ventoy_mount_dir }}
+    ventoy_mount_owned: "{{ ventoy_existing_mount.stdout | trim | length == 0 }}"
+
+- name: Ensure the mount directory exists
+  ansible.builtin.file:
+    path: "{{ ventoy_mount_dir }}"
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Mount the Ventoy data partition
+  ansible.builtin.command:
+    argv:
+      - mount
+      - -t
+      - exfat
+      - "{{ ventoy_data_part.stdout | trim }}"
+      - "{{ ventoy_mount_dir }}"
+  become: true
+  when: ventoy_mount_owned | bool
+
+- name: Hash every ISO on the stick
+  ansible.builtin.command:
+    argv:
+      - sha256sum
+      - "{{ ventoy_data_mount }}/{{ item.filename }}"
+  loop: "{{ ventoy_isos | selectattr('enabled') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: ventoy_stick_hashes
+  changed_when: false
+
+- name: Verify every ISO hash
+  ansible.builtin.assert:
+    that: item.stdout.split()[0] == item.item.sha256
+    fail_msg: "SHA-256 mismatch on the stick for {{ item.item.filename }}"
+  loop: "{{ ventoy_stick_hashes.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Validate ventoy.json
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "import json,sys; json.load(open(sys.argv[1]))"
+      - "{{ ventoy_data_mount }}/ventoy/ventoy.json"
+  changed_when: false
+
+- name: Flush writes
+  ansible.builtin.command:
+    cmd: sync
+  become: true
+  changed_when: false
+
+- name: Unmount the data partition
+  ansible.builtin.command:
+    argv:
+      - umount
+      - "{{ ventoy_data_mount }}"
+  become: true
+  when: ventoy_mount_owned | bool
+  failed_when: false
+
+- name: Report the verified stick
+  ansible.builtin.debug:
+    msg:
+      - "Ventoy: {{ ventoy_version }}"
+      - "Device: {{ ventoy_dev_path }} ({{ ventoy_usb_serial }})"
+      - "Verified: {{ ventoy_isos | selectattr('enabled') | map(attribute='filename') | list }}"
+      - "Menu: {{ ventoy_data_mount }}/ventoy/ventoy.json"

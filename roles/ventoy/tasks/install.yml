@@ -1,0 +1,48 @@
+---
+- name: Require explicit confirmation
+  ansible.builtin.assert:
+    that: ventoy_confirm | lower == 'yes'
+    fail_msg: "Refusing to install Ventoy without CONFIRM=yes."
+
+- name: Unmount the target's mounted paths
+  ansible.builtin.command:
+    argv:
+      - umount
+      - "{{ item }}"
+  become: true
+  failed_when: false
+  loop: "{{ ventoy_mounts }}"
+
+- name: Ensure the cache directory exists
+  ansible.builtin.file:
+    path: "{{ ventoy_cache_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Download the pinned Ventoy release
+  ansible.builtin.get_url:
+    url: "{{ ventoy_release_base }}/{{ ventoy_archive_name }}"
+    dest: "{{ ventoy_cache_dir }}/{{ ventoy_archive_name }}"
+    checksum: "sha256:{{ ventoy_archive_sha256 }}"
+    timeout: 120
+    mode: "0644"
+
+- name: Extract Ventoy
+  ansible.builtin.unarchive:
+    src: "{{ ventoy_cache_dir }}/{{ ventoy_archive_name }}"
+    dest: "{{ ventoy_cache_dir }}"
+    remote_src: true
+    creates: "{{ ventoy_cache_dir }}/ventoy-{{ ventoy_version }}/Ventoy2Disk.sh"
+
+- name: Install Ventoy (GPT, Secure Boot support)
+  ansible.builtin.command:
+    cmd: "./Ventoy2Disk.sh -i -g -s {{ ventoy_dev_path }}"
+    chdir: "{{ ventoy_cache_dir }}/ventoy-{{ ventoy_version }}"
+    stdin: "y\ny\ny\n"
+  become: true
+  register: ventoy_install_output
+  changed_when: true
+
+- name: Show the installer output
+  ansible.builtin.debug:
+    var: ventoy_install_output.stdout_lines

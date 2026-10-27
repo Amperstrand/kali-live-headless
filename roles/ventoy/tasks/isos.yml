@@ -1,0 +1,12 @@
+---
+- name: Ensure the ISO cache exists
+  ansible.builtin.file:
+    path: "{{ ventoy_iso_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Fetch and verify every enabled ISO
+  ansible.builtin.include_tasks: iso-one.yml
+  loop: "{{ ventoy_isos | selectattr('enabled') | list }}"
+  loop_control:
+    label: "{{ item.name }}"

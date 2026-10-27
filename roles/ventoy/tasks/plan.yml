@@ -1,0 +1,30 @@
+---
+- name: Show the target and catalog
+  ansible.builtin.debug:
+    msg:
+      - "device : {{ ventoy_dev_path }}"
+      - "model  : {{ ventoy_disk.model | default('', true) }}"
+      - "serial : {{ ventoy_usb_serial }}"
+      - "size   : {{ ventoy_size_gb | round(1) }} GB"
+      - "mounted: {{ ventoy_mounts | join(', ') if ventoy_mounts | length > 0 else 'none' }}"
+      - "ISOs   : {{ ventoy_iso_total_gb }} GB total"
+      - "free   : {{ ventoy_free_gb }} GB after the catalog"
+      - "next   : make ventoy-all USB={{ ventoy_dev_path }} CONFIRM=yes"
+
+- name: List the catalog entries
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.filename }} ({{ item.size_gb }} GB) -
+      {{ 'hash pinned' if item.sha256 | length == 64 else 'HASH PENDING' }}
+      {{ '- ' ~ item.note if item.note | default('') | length > 0 else '' }}
+  loop: "{{ ventoy_isos | selectattr('enabled') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Warn about entries without a pinned hash
+  ansible.builtin.debug:
+    msg: "WARNING: {{ item.name }} has no SHA-256; ventoy-isos will refuse it."
+  loop: "{{ ventoy_isos | selectattr('enabled') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.sha256 | length != 64
