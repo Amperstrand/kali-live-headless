@@ -101,7 +101,16 @@ NAME=${NAME//[^a-z0-9-]/-}
 # run (BatchMode still enforces key AUTH; only the host-key check loosens —
 # the wire is the LAN, and the stick's identity is proven by its baked
 # authorized_key accepting us, not by a stable host key).
-SSH=(ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$HOST")
+# ControlMaster multiplexing, always (AGENTS #15): a live-stick target rate-
+# limits ssh and the limit LATCHES — a burst of fresh connections from this
+# tool (probe, mkdir, bundle, clone, tmux) plus any operator ssh's can seal
+# the source with DROPs that look like network timeouts (hit 2026-10-27 on
+# the X280). One multiplexed connection is immune. The socket is per host
+# and persists for later invocations; stale sockets recover via the 5s
+# connection timeout fallback (ssh retries a dead master once, then dials).
+_MSOCK="${TMPDIR:-/tmp}/klh-remotebuild-mux-$(printf '%s' "$HOST" | tr -c 'a-zA-Z0-9.-' '_')"
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+     -o ControlMaster=auto -o ControlPath="$_MSOCK" -o ControlPersist=600 "$HOST")
 
 # ---------------------------------------------------------------- 1. probe
 info "probing $HOST"
