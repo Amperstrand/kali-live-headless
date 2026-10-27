@@ -576,7 +576,24 @@ SELF_HASH_START=$(sha256sum "$0" | cut -d' ' -f1)
 # build cannot destroy the previous image.
 mkdir -p "$STAGE_OUT"
 BUILD_ARGS=(-a "$ARCH" -b "$BRANCH" -v "$VARIANT" -H "$HOSTNAME" -o "$STAGE_OUT")
-[ -n "${BUILD_MIRROR:-}" ] && BUILD_ARGS+=(-m "$BUILD_MIRROR")
+if [ -n "${BUILD_MIRROR:-}" ]; then
+  BUILD_ARGS+=(-m "$BUILD_MIRROR")
+  # .mirror seeds kali's auto/config DEFAULTS — including --mirror-binary,
+  # which -m cannot reach and which upstream deliberately keeps on the public
+  # pool (http.kali.org). During pool-sync windows that pool serves Packages/
+  # Sources with CHANGING sizes and the late chroot apt touch kills the build
+  # (three strikes on 2026-10-27: 'unexpected size ... Mirror sync in
+  # progress?'). Consequence, accepted by default when a custom mirror is
+  # pinned: the SHIPPED image's /etc/apt/sources.list carries that mirror
+  # too (reproducibility beats load-spreading here). Opt out with
+  # KLH_KEEP_BINARY_MIRROR=1 to leave the shipped sources.list on the public
+  # pool (and re-expose the build to skew).
+  if [ "${KLH_KEEP_BINARY_MIRROR:-}" != 1 ]; then
+    printf '%s\n' "$BUILD_MIRROR" > "$UPSTREAM_DIR/.mirror" 2>/dev/null \
+      || klh_warn "could not write $UPSTREAM_DIR/.mirror (upstream tree missing?)"
+    klh_info "mirror pin covers --mirror-binary too (shipped sources.list: $BUILD_MIRROR)"
+  fi
+fi
 [ "$KEEP_ARTIFACTS" = true ] && BUILD_ARGS+=(-k)
 
 RC=0
