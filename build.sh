@@ -385,7 +385,10 @@ if [ "$TORAM_DEFAULT" = true ] && [ -f "$LIVE_CFG" ]; then
     if ! grep -q "toram=filesystem" "$LIVE_CFG"; then
         # the FIRST entry (label live-@FLAVOUR@) is the default: append the
         # toram module to its append line only
-        sed -i '0,/^label live-@FLAVOUR@$/,/append/ s|^        append @APPEND_LIVE@|        append @APPEND_LIVE@ toram=filesystem.squashfs|' "$LIVE_CFG"
+        # GNU sed cannot chain two address ranges (0,/re/,/re/ is invalid);
+        # instead: the FIRST bare @APPEND_LIVE@ (no FAILSAFE suffix) is
+        # unique to the default live entry, so a single substitution suffices
+        sed -i '0,/^        append @APPEND_LIVE@$/ s|$| toram=filesystem.squashfs|' "$LIVE_CFG"
         klh_info "boot menu: default entry now toram=filesystem.squashfs (auto; falls back to medium below 4G headroom)"
     fi
 fi
