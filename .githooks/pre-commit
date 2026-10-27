@@ -23,6 +23,11 @@
 #                       ships the feature dead with zero errors
 #   6. formatting       trailing whitespace, CRLF, missing final newline, and
 #                       any file over 2 MB
+#   7. feature matrix   docs/features.tsv consistency (see AGENTS #36)
+#   8. yaml + ansible   yamllint on staged yaml, ansible --syntax-check on
+#                       playbooks — the field lane's tooling class is gated
+#                       content, not an exception (loud SKIP when the tool
+#                       is absent, never a silent pass)
 #
 # Escape hatches, used sparingly and with a reason in the same line:
 #   leak-ok: <why>      the line legitimately contains a public address
@@ -280,6 +285,50 @@ for f in "${FILES[@]}"; do
             break ;;
     esac
 done
+
+# ---- 8. yaml + ansible (the field lane's tooling class) ----------------------
+# PR #23 introduced ansible content (roles/, playbooks/, .yamllint.yml) — a
+# whole new content class with NO gate until now. The 'tags: [isos]' bug in
+# that PR (include_tasks does not inherit tags, so 'make ventoy-isos' ran
+# nothing) is exactly what these checks catch at commit time instead of at
+# review time.
+_yaml_files=()
+_ansible_relevant=false
+for f in "${FILES[@]}"; do
+    case "$f" in
+        *.yml|*.yaml) _yaml_files+=("$f") ;;
+    esac
+    case "$f" in
+        roles/*|playbooks/*|inventory/*) _ansible_relevant=true ;;
+    esac
+done
+if [ ${#_yaml_files[@]} -gt 0 ]; then
+    if command -v yamllint >/dev/null 2>&1; then
+        _yl_fail=0
+        while IFS= read -r -d '' f; do
+            yamllint -c .yamllint.yml "$f" || _yl_fail=$((_yl_fail + 1))
+        done < <(printf '%s\0' "${_yaml_files[@]}")
+        [ "$_yl_fail" -eq 0 ] && ok "yamllint (${#_yaml_files[@]} yaml file(s))" \
+            || fail "yamllint ($_yl_fail file(s) — fix, or pip install a newer yamllint)"
+    else
+        # loud skip, never silent: an ungated content class is how the
+        # vacuous-pass family (AGENTS #16/#30) starts
+        printf '  SKIP  yamllint (not installed — pip install yamllint; %d staged yaml file(s) ungated)\n' "${#_yaml_files[@]}"
+    fi
+fi
+if [ "$_ansible_relevant" = true ]; then
+    if command -v ansible-playbook >/dev/null 2>&1; then
+        _ap_fail=0
+        for _pb in playbooks/*.yml; do
+            [ -f "$_pb" ] || continue
+            ansible-playbook --syntax-check -i inventory/localhost.yml "$_pb" >/dev/null 2>&1 \
+                || { _ap_fail=$((_ap_fail + 1)); fail "ansible syntax: $_pb"; }
+        done
+        [ "$_ap_fail" -eq 0 ] && ok "ansible syntax-check (playbooks/*)"
+    else
+        printf '  SKIP  ansible syntax-check (ansible-playbook not installed — pip install ansible-core; staged ansible content ungated)\n'
+    fi
+fi
 
 # ---- verdict ----------------------------------------------------------------
 if [ "$FAIL" -gt 0 ]; then
