@@ -148,7 +148,14 @@ elif [ -n "$SCRATCH_IMAGE" ]; then
     sudo mkdir -p \"\$(dirname \"\$img\")\" \"\$mnt\"
     if [ ! -f \"\$img\" ]; then
       sudo truncate -s \"\$size\" \"\$img\"
-      sudo mkfs.ext4 -q -F \"\$img\"
+      # lazy_itable_init=0 is not optional on FUSE-backed storage (ext4 image
+      # on ntfs-3g, worse through dislocker): with the default lazy init the
+      # kernel zeroes inode tables AT RUNTIME via WRITE_ZEROES, which a
+      # loop-on-FUSE stack cannot honor - the build dies in EIO storms
+      # (build #43 on the X280, 2026-10-27: 316 WRITE_ZEROES errors, then the
+      # stack degraded). With it off, mkfs zeroes up front with plain writes,
+      # which every layer supports.
+      sudo mkfs.ext4 -q -F -E lazy_itable_init=0,lazy_journal_init=0 \"\$img\"
     fi
     # the image must be a filesystem, never a formatted disk: mkfs refuses ok
     if ! mountpoint -q \"\$mnt\"; then
