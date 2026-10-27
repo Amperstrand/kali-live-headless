@@ -249,6 +249,16 @@ mkdir -p "$KLH_COMMON"
 klh_info "overlaying repo customizations into kali-config/common/"
 cp -a "$OVERLAY_DIR/." "$KLH_COMMON/"
 
+# Upstream's Dockerfile ships no kali-rolling symlink in live-build's
+# debian-cd data — auto/config exits 8 with "Run this first: ln -sf sid
+# ..." whenever the container's data dir isn't writable (ai-legion docker
+# engine, 2026-10-27). Bake it into the image we build from that tree.
+DF="$UPSTREAM_DIR/Dockerfile"
+if [ -f "$DF" ] && ! grep -q "debian-cd/kali-rolling" "$DF"; then
+  printf '\n# klh: kali-rolling is not in live-build debian-cd data by default\nRUN ln -sf sid /usr/share/live/build/data/debian-cd/kali-rolling\n' >> "$DF"
+  klh_info "Dockerfile: baked the kali-rolling debian-cd symlink"
+fi
+
 # The deb-pool hook copies ~900MB of .deb files inside the chroot, so it is
 # staged only for pooled builds. The rootfs/excludes entry that keeps that copy
 # out of the squashfs is always staged (a no-op path when pooling is off).
