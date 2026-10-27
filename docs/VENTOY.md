@@ -150,3 +150,28 @@ scripts/ventoy-test-loop.sh
 ```
 
 Upstream's Kali live-build files are untouched.
+
+## Lane positioning and the identity delta (2026-10-27)
+
+This tool belongs to the **field lane** (docs/lanes-and-gating.md): a
+carry-everything multiboot stick for the sysadmin on the move. The minimal
+lane (Debian + KVM, small and SB-bound) has no use for it and never runs it.
+
+**The identity delta, stated plainly.** A Ventoy stick boots our ISO as a
+file. There is no KLHCONFIG partition, so per-boot identity ROTATES (no
+master.salt), there is no Wi-Fi override, no vm-store, and nothing of the
+medium contract in tools/medium-verify.sh applies. For the field lane that
+is correct — its ISOs are disposable tools. It would be wrong for the
+minimal lane, whose stick *is* the identity.
+
+**Secure Boot.** `ventoy_secure_boot: true` (the installer's `-s` flag)
+ships the MOK-enrollment path: on first boot on a Secure-Boot machine the
+owner is asked to enroll the Ventoy key, which then vouches for every ISO on
+the stick. That is a deliberate trust delegation — fine for a field kit,
+wrong for the minimal lane. A lane that refuses it sets the knob to false
+and accepts that Secure-Boot machines will not boot the stick.
+
+**Catalog lanes.** Entries may carry `lanes: [field]`; entries without a
+`lanes` list are available to every lane. The preflight space check stays
+conservative (it sizes for ALL enabled entries) — smaller sticks simply
+disable entries, as before.

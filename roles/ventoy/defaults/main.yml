@@ -10,6 +10,16 @@ ventoy_mount_dir: "/mnt/ventoy-build"
 ventoy_menu_mode: "1"      # 1 = tree view
 ventoy_menu_timeout: "30"
 
+# Secure Boot support in the Ventoy installer (-s): ships the MOK-enrollment
+# path (the machine enrolls the VENTOY key on first boot). Default on for the
+# field lane; a lane that refuses that trust delegation sets it to false.
+ventoy_secure_boot: true
+
+# Which lane's catalog subset this workstation prepares (see
+# docs/lanes-and-gating.md). Entries without a 'lanes' list are always
+# available; entries listing lanes appear only when ventoy_lane matches.
+ventoy_lane: field
+
 ventoy_min_free_gb: 2
 ventoy_allow_loop: false
 ventoy_allow_large_usb: false

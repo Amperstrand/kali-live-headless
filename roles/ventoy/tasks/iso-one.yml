@@ -10,6 +10,7 @@
   ansible.builtin.set_fact:
     ventoy_iso_path: "{{ ventoy_iso_dir }}/{{ item.filename }}"
     ventoy_iso_part: "{{ ventoy_iso_dir }}/{{ item.filename }}.part"
+  tags: [isos]
 
 - name: Check the final {{ item.name }} file
   ansible.builtin.stat:
@@ -17,6 +18,7 @@
     get_checksum: true
     checksum_algorithm: sha256
   register: ventoy_iso_final
+  tags: [isos]
 
 - name: Check a partial {{ item.name }} file
   ansible.builtin.stat:
@@ -24,6 +26,7 @@
     get_checksum: true
     checksum_algorithm: sha256
   register: ventoy_iso_partial
+  tags: [isos]
 
 - name: Decide whether the ISO is already complete
   ansible.builtin.set_fact:
@@ -33,6 +36,7 @@
     ventoy_part_ready: >-
       {{ ventoy_iso_partial.stat.exists | default(false)
          and (ventoy_iso_partial.stat.checksum | default('')) == item.sha256 }}
+  tags: [isos]
 
 - name: Promote an already-complete partial for {{ item.name }}
   ansible.builtin.command:
@@ -40,6 +44,7 @@
   when:
     - not ventoy_iso_ready
     - ventoy_part_ready
+  tags: [isos]
 
 - name: Download {{ item.name }}
   ansible.builtin.command:
@@ -51,6 +56,7 @@
     - not ventoy_part_ready
   register: ventoy_download
   changed_when: true
+  tags: [isos]
 
 - name: Re-read the downloaded {{ item.name }} partial
   ansible.builtin.stat:
@@ -61,6 +67,7 @@
   when:
     - not ventoy_iso_ready
     - not ventoy_part_ready
+  tags: [isos]
 
 - name: Verify the {{ item.name }} download
   ansible.builtin.assert:
@@ -71,6 +78,7 @@
   when:
     - not ventoy_iso_ready
     - not ventoy_part_ready
+  tags: [isos]
 
 - name: Promote the verified {{ item.name }} partial
   ansible.builtin.command:
@@ -78,9 +86,11 @@
   when:
     - not ventoy_iso_ready
     - not ventoy_part_ready
+  tags: [isos]
 
 - name: Report {{ item.name }}
   ansible.builtin.debug:
     msg: >-
       {{ item.filename }} ready at {{ ventoy_iso_path }}
       ({{ item.size_gb }} GB planned, sha256 {{ item.sha256 }})
+  tags: [isos]

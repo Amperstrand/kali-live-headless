@@ -13,6 +13,9 @@ ventoy_archive_sha256: "d86ff9de63d94c8b8f1f6b14d23c55af4b88e8207bf2893890892a6a
 ventoy_isos:
   - name: archipelago
     enabled: true
+    # lane gate (docs/lanes-and-gating.md): only the field lane pulls this
+    # one; entries without a 'lanes' list are available to every lane
+    lanes: [field]
     filename: archipelago-installer-1.9.0-alpha-unbundled-x86_64.iso
     url: "https://source.archipelago-foundation.org/lfg2025/archy/releases/download/v1.9.0-alpha/archipelago-installer-1.9.0-alpha-unbundled-x86_64.iso"
     sha256: "aad5f0350428976969043079a63b0e7a8264dcee2574526bd34719c798c750af"

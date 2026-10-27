@@ -13,30 +13,17 @@
   failed_when: false
   loop: "{{ ventoy_mounts }}"
 
-- name: Ensure the cache directory exists
-  ansible.builtin.file:
-    path: "{{ ventoy_cache_dir }}"
-    state: directory
-    mode: "0755"
+- name: Prepare the pinned Ventoy release
+  ansible.builtin.import_tasks: release.yml
+  tags: [install, update]
 
-- name: Download the pinned Ventoy release
-  ansible.builtin.get_url:
-    url: "{{ ventoy_release_base }}/{{ ventoy_archive_name }}"
-    dest: "{{ ventoy_cache_dir }}/{{ ventoy_archive_name }}"
-    checksum: "sha256:{{ ventoy_archive_sha256 }}"
-    timeout: 120
-    mode: "0644"
-
-- name: Extract Ventoy
-  ansible.builtin.unarchive:
-    src: "{{ ventoy_cache_dir }}/{{ ventoy_archive_name }}"
-    dest: "{{ ventoy_cache_dir }}"
-    remote_src: true
-    creates: "{{ ventoy_cache_dir }}/ventoy-{{ ventoy_version }}/Ventoy2Disk.sh"
-
-- name: Install Ventoy (GPT, Secure Boot support)
+- name: Install Ventoy (GPT; Secure Boot support per ventoy_secure_boot)
   ansible.builtin.command:
-    cmd: "./Ventoy2Disk.sh -i -g -s {{ ventoy_dev_path }}"
+    # -s (Ventoy Secure Boot support) is the MOK-enrollment path: the stick
+    # will ask the machine's owner to enroll the Ventoy key on first boot
+    # (docs/lanes-and-gating.md). A lane that deliberately refuses that trust
+    # delegation turns it off here.
+    cmd: "./Ventoy2Disk.sh -i -g{{ ' -s' if ventoy_secure_boot | bool else '' }} {{ ventoy_dev_path }}"
     chdir: "{{ ventoy_cache_dir }}/ventoy-{{ ventoy_version }}"
     stdin: "y\ny\ny\n"
   become: true

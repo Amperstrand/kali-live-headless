@@ -35,7 +35,11 @@
     that:
       - ventoy_disk | length > 0
       - ventoy_disk.type | default('') == 'disk'
-    fail_msg: "{{ ventoy_dev_path }} is not a whole block device. Pass the disk, not a partition."
+        or (ventoy_allow_loop | bool and ventoy_disk.type | default('') == 'loop')
+    fail_msg: >-
+      {{ ventoy_dev_path }} is not a whole block device. Pass the disk, not a
+      partition. (loop devices pass only with ALLOW_LOOP=true, for the test
+      fixture — lsblk types them 'loop', not 'disk'.)
 
 - name: Classify the target
   ansible.builtin.set_fact:
@@ -84,6 +88,33 @@
       ventoy_root_pk.stdout | trim == ''
       or '/dev/' ~ (ventoy_root_pk.stdout | trim) != ventoy_dev_path
     fail_msg: "Refusing {{ ventoy_dev_path }}: it backs the running root filesystem."
+
+# The root-only check above does not protect a LIVE system: booted from a
+# stick, / is an overlay and has no backing disk, so that assert passes and
+# the running system's own boot medium looked like any other USB disk
+# (AGENTS live-medium write guard; flash.sh allows it only under toram with
+# its writers stopped — this tool does not support it at all).
+- name: Find the live boot medium's backing disk
+  ansible.builtin.shell:
+    cmd: |
+      src=$(findmnt -no SOURCE /run/live/medium 2>/dev/null || true)
+      [ -n "$src" ] || exit 0
+      pk=$(lsblk -no PKNAME "$src" 2>/dev/null | head -1)
+      [ -n "$pk" ] || pk=${src#/dev/}
+      echo "/dev/$pk"
+  register: ventoy_live_medium_disk
+  changed_when: false
+
+- name: Refuse the live boot medium of the running system
+  ansible.builtin.assert:
+    that: >-
+      ventoy_live_medium_disk.stdout | trim == ''
+      or (ventoy_live_medium_disk.stdout | trim) != ventoy_dev_path
+    fail_msg: >-
+      Refusing {{ ventoy_dev_path }}: it is the boot medium of the RUNNING
+      live system (/run/live/medium). Write your own boot stick is not
+      supported by this tool — use flash.sh, which handles toram semantics
+      and stops the medium's writers first.
 
 - name: Refuse an unexpectedly large USB disk
   ansible.builtin.assert:
@@ -151,7 +182,9 @@
       Only {{ ventoy_free_gb }} GB would remain after the ISOs; minimum is
       {{ ventoy_min_free_gb }} GB. Disable an entry in ventoy/catalog.yml or use
       a larger stick.
-  when: ansible_run_tags | intersect(['plan', 'install', 'config']) | length > 0
+  when:
+    - ansible_run_tags | intersect(['plan', 'install', 'config']) | length > 0
+    - not (ventoy_allow_loop | bool and ventoy_is_loop | bool)
 
 - name: Warn when the target is currently mounted
   ansible.builtin.debug:

@@ -7,6 +7,17 @@
 
 - name: Fetch and verify every enabled ISO
   ansible.builtin.include_tasks: iso-one.yml
+  # include_tasks does NOT inherit tags (ansible tag-inheritance rules — and
+  # 'apply' is illegal together with 'loop'): the 'isos' tag on the import in
+  # main.yml stopped at this include, so iso-one.yml's tasks ran under NO
+  # tag — 'make ventoy-isos' silently did nothing on an empty cache and
+  # 'ventoy-all' failed late at the copy step. The tasks inside carry the
+  # tag themselves now.
   loop: "{{ ventoy_isos | selectattr('enabled') | list }}"
+  # Lane gate (docs/lanes-and-gating.md): entries without 'lanes' are
+  # available everywhere; entries with a 'lanes' list must include the
+  # active lane. The preflight size check stays conservative (all enabled
+  # entries) on purpose.
+  when: item.lanes is not defined or ventoy_lane in item.lanes
   loop_control:
     label: "{{ item.name }}"

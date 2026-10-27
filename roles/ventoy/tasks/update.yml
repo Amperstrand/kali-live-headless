@@ -4,6 +4,10 @@
     that: ventoy_confirm | lower == 'yes'
     fail_msg: "Refusing to update Ventoy without CONFIRM=yes."
 
+- name: Prepare the pinned Ventoy release
+  ansible.builtin.import_tasks: release.yml
+  tags: [install, update]
+
 - name: Update Ventoy in place (keeps existing ISOs)
   ansible.builtin.command:
     cmd: "./Ventoy2Disk.sh -u {{ ventoy_dev_path }}"
