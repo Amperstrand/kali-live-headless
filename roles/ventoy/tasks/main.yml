@@ -1,0 +1,28 @@
+---
+- name: Validate the target and catalog
+  ansible.builtin.import_tasks: preflight.yml
+  tags: [plan, install, config, verify, update]
+
+- name: Show the plan
+  ansible.builtin.import_tasks: plan.yml
+  tags: [plan]
+
+- name: Fetch ISOs
+  ansible.builtin.import_tasks: isos.yml
+  tags: [isos]
+
+- name: Install Ventoy
+  ansible.builtin.import_tasks: install.yml
+  tags: [install]
+
+- name: Update Ventoy
+  ansible.builtin.import_tasks: update.yml
+  tags: [update]
+
+- name: Write ISOs and menu configuration
+  ansible.builtin.import_tasks: config.yml
+  tags: [config]
+
+- name: Verify the finished stick
+  ansible.builtin.import_tasks: verify.yml
+  tags: [verify]

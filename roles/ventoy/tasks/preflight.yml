@@ -1,0 +1,194 @@
+---
+- name: Require a target device
+  ansible.builtin.assert:
+    that:
+      - ventoy_device | length > 0
+    fail_msg: "Pass USB=/dev/sdX (run: make usb-list)."
+
+- name: Resolve the target path
+  ansible.builtin.command:
+    cmd: "realpath {{ ventoy_device }}"
+  register: ventoy_realpath
+  changed_when: false
+
+- name: Read the block-device tree
+  ansible.builtin.command:
+    cmd: >-
+      lsblk -J -o NAME,PATH,TYPE,TRAN,RM,SIZE,MODEL,SERIAL,MOUNTPOINTS,PKNAME
+  register: ventoy_lsblk_raw
+  changed_when: false
+
+- name: Parse the block-device tree
+  ansible.builtin.set_fact:
+    ventoy_lsblk: "{{ ventoy_lsblk_raw.stdout | from_json }}"
+    ventoy_dev_path: "{{ ventoy_realpath.stdout | trim }}"
+
+- name: Find the target disk
+  ansible.builtin.set_fact:
+    ventoy_disk: >-
+      {{ ventoy_lsblk.blockdevices
+         | selectattr('path', 'equalto', ventoy_dev_path)
+         | list | first | default({}) }}
+
+- name: Refuse a device that is not a whole disk
+  ansible.builtin.assert:
+    that:
+      - ventoy_disk | length > 0
+      - ventoy_disk.type | default('') == 'disk'
+        or (ventoy_allow_loop | bool and ventoy_disk.type | default('') == 'loop')
+    fail_msg: >-
+      {{ ventoy_dev_path }} is not a whole block device. Pass the disk, not a
+      partition. (loop devices pass only with ALLOW_LOOP=true, for the test
+      fixture — lsblk types them 'loop', not 'disk'.)
+
+- name: Classify the target
+  ansible.builtin.set_fact:
+    ventoy_is_removable: "{{ ventoy_disk.rm | default(false) | bool }}"
+    ventoy_is_loop: "{{ ventoy_dev_path is match('/dev/loop[0-9]+') }}"
+
+- name: Record the confirmation identity
+  ansible.builtin.set_fact:
+    ventoy_usb_serial: >-
+      {{ 'loop-test' if ventoy_is_loop | bool
+         else (ventoy_disk.serial | default('', true) | trim) }}
+
+- name: Refuse a non-USB, non-removable disk
+  ansible.builtin.assert:
+    that:
+      - (ventoy_disk.tran | default('', true) | lower) == 'usb'
+        or ventoy_is_removable
+        or (ventoy_allow_loop | bool and ventoy_is_loop)
+    fail_msg: >-
+      Refusing {{ ventoy_dev_path }}: transport
+      '{{ ventoy_disk.tran | default('', true) }}', removable={{ ventoy_is_removable }}.
+      Only USB/removable media is allowed.
+
+- name: Read the target size in bytes
+  ansible.builtin.command:
+    cmd: "lsblk -bdno SIZE {{ ventoy_dev_path }}"
+  register: ventoy_size_raw
+  changed_when: false
+
+- name: Record size facts
+  ansible.builtin.set_fact:
+    ventoy_size_bytes: "{{ ventoy_size_raw.stdout | trim | int }}"
+    ventoy_size_gb: "{{ (ventoy_size_raw.stdout | trim | int) / 1000000000 }}"
+
+- name: Find the root backing disk
+  ansible.builtin.shell:
+    cmd: |
+      src=$(findmnt -no SOURCE / 2>/dev/null || true)
+      if [ -n "$src" ]; then lsblk -no PKNAME "$src" 2>/dev/null | head -1; fi
+  register: ventoy_root_pk
+  changed_when: false
+
+- name: Refuse the running root disk
+  ansible.builtin.assert:
+    that: >-
+      ventoy_root_pk.stdout | trim == ''
+      or '/dev/' ~ (ventoy_root_pk.stdout | trim) != ventoy_dev_path
+    fail_msg: "Refusing {{ ventoy_dev_path }}: it backs the running root filesystem."
+
+# The root-only check above does not protect a LIVE system: booted from a
+# stick, / is an overlay and has no backing disk, so that assert passes and
+# the running system's own boot medium looked like any other USB disk
+# (AGENTS live-medium write guard; flash.sh allows it only under toram with
+# its writers stopped — this tool does not support it at all).
+- name: Find the live boot medium's backing disk
+  ansible.builtin.shell:
+    cmd: |
+      src=$(findmnt -no SOURCE /run/live/medium 2>/dev/null || true)
+      [ -n "$src" ] || exit 0
+      pk=$(lsblk -no PKNAME "$src" 2>/dev/null | head -1)
+      [ -n "$pk" ] || pk=${src#/dev/}
+      echo "/dev/$pk"
+  register: ventoy_live_medium_disk
+  changed_when: false
+
+- name: Refuse the live boot medium of the running system
+  ansible.builtin.assert:
+    that: >-
+      ventoy_live_medium_disk.stdout | trim == ''
+      or (ventoy_live_medium_disk.stdout | trim) != ventoy_dev_path
+    fail_msg: >-
+      Refusing {{ ventoy_dev_path }}: it is the boot medium of the RUNNING
+      live system (/run/live/medium). Write your own boot stick is not
+      supported by this tool — use flash.sh, which handles toram semantics
+      and stops the medium's writers first.
+
+- name: Refuse an unexpectedly large USB disk
+  ansible.builtin.assert:
+    that: >-
+      not ((ventoy_disk.tran | default('', true) | lower) == 'usb'
+           and (ventoy_size_bytes | int) > 2000000000000
+           and not (ventoy_allow_large_usb | bool))
+    fail_msg: >-
+      {{ ventoy_dev_path }} is a USB disk larger than 2 TB. Set
+      ALLOW_LARGE_USB=true only if this is deliberate (the backup HDD must not be used).
+
+- name: Collect mounted paths on the target
+  ansible.builtin.set_fact:
+    ventoy_mounts: >-
+      {{ ([ventoy_disk] + (ventoy_disk.children | default([])))
+         | map(attribute='mountpoints')
+         | flatten
+         | select('string')
+         | reject('equalto', '')
+         | list }}
+
+- name: Require a readable serial
+  ansible.builtin.assert:
+    that: ventoy_usb_serial | length > 0
+    fail_msg: "{{ ventoy_dev_path }} reports no serial; refusing an unidentifiable device."
+
+- name: Ask for the serial when it was not supplied
+  ansible.builtin.pause:
+    prompt: "Type the USB serial ({{ ventoy_usb_serial }}) to confirm"
+  register: ventoy_typed
+  when:
+    - ventoy_confirm | lower == 'yes'
+    - ventoy_serial | length == 0
+
+- name: Check a supplied serial
+  ansible.builtin.assert:
+    that: ventoy_serial == ventoy_usb_serial
+    fail_msg: "SERIAL= does not match {{ ventoy_usb_serial }}"
+  when:
+    - ventoy_confirm | lower == 'yes'
+    - ventoy_serial | length > 0
+
+- name: Check a typed serial
+  ansible.builtin.assert:
+    that: (ventoy_typed.user_input | default('')) == ventoy_usb_serial
+    fail_msg: "The typed serial did not match {{ ventoy_usb_serial }}"
+  when:
+    - ventoy_confirm | lower == 'yes'
+    - ventoy_serial | length == 0
+
+- name: Compute catalog size
+  ansible.builtin.set_fact:
+    ventoy_iso_total_gb: >-
+      {{ (ventoy_isos | selectattr('enabled') | map(attribute='size_gb')
+          | map('float') | sum) | round(2) }}
+    ventoy_free_gb: >-
+      {{ ((ventoy_size_gb | float)
+          - (ventoy_isos | selectattr('enabled') | map(attribute='size_gb')
+             | map('float') | sum)) | round(2) }}
+
+- name: Require enough space for the catalog
+  ansible.builtin.assert:
+    that: ventoy_free_gb | float >= ventoy_min_free_gb | float
+    fail_msg: >-
+      Only {{ ventoy_free_gb }} GB would remain after the ISOs; minimum is
+      {{ ventoy_min_free_gb }} GB. Disable an entry in ventoy/catalog.yml or use
+      a larger stick.
+  when:
+    - ansible_run_tags | intersect(['plan', 'install', 'config']) | length > 0
+    - not (ventoy_allow_loop | bool and ventoy_is_loop | bool)
+
+- name: Warn when the target is currently mounted
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ ventoy_dev_path }} is mounted at {{ ventoy_mounts | join(', ') }}.
+      Destructive targets unmount these paths after confirmation.
+  when: ventoy_mounts | length > 0

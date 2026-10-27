@@ -1,0 +1,96 @@
+---
+- name: Require a pinned SHA-256 for {{ item.name }}
+  ansible.builtin.assert:
+    that: item.sha256 | length == 64
+    fail_msg: >-
+      {{ item.name }} has no pinned SHA-256 in ventoy/catalog.yml.
+      Add the verified hash before downloading.
+
+- name: Set the {{ item.name }} paths
+  ansible.builtin.set_fact:
+    ventoy_iso_path: "{{ ventoy_iso_dir }}/{{ item.filename }}"
+    ventoy_iso_part: "{{ ventoy_iso_dir }}/{{ item.filename }}.part"
+  tags: [isos]
+
+- name: Check the final {{ item.name }} file
+  ansible.builtin.stat:
+    path: "{{ ventoy_iso_path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: ventoy_iso_final
+  tags: [isos]
+
+- name: Check a partial {{ item.name }} file
+  ansible.builtin.stat:
+    path: "{{ ventoy_iso_part }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: ventoy_iso_partial
+  tags: [isos]
+
+- name: Decide whether the ISO is already complete
+  ansible.builtin.set_fact:
+    ventoy_iso_ready: >-
+      {{ ventoy_iso_final.stat.exists | default(false)
+         and (ventoy_iso_final.stat.checksum | default('')) == item.sha256 }}
+    ventoy_part_ready: >-
+      {{ ventoy_iso_partial.stat.exists | default(false)
+         and (ventoy_iso_partial.stat.checksum | default('')) == item.sha256 }}
+  tags: [isos]
+
+- name: Promote an already-complete partial for {{ item.name }}
+  ansible.builtin.command:
+    cmd: "mv {{ ventoy_iso_part }} {{ ventoy_iso_path }}"
+  when:
+    - not ventoy_iso_ready
+    - ventoy_part_ready
+  tags: [isos]
+
+- name: Download {{ item.name }}
+  ansible.builtin.command:
+    cmd: >-
+      curl -fL --retry 5 --retry-delay 5 -C -
+      -o {{ ventoy_iso_part }} {{ item.url }}
+  when:
+    - not ventoy_iso_ready
+    - not ventoy_part_ready
+  register: ventoy_download
+  changed_when: true
+  tags: [isos]
+
+- name: Re-read the downloaded {{ item.name }} partial
+  ansible.builtin.stat:
+    path: "{{ ventoy_iso_part }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: ventoy_iso_partial_after
+  when:
+    - not ventoy_iso_ready
+    - not ventoy_part_ready
+  tags: [isos]
+
+- name: Verify the {{ item.name }} download
+  ansible.builtin.assert:
+    that: (ventoy_iso_partial_after.stat.checksum | default('')) == item.sha256
+    fail_msg: >-
+      SHA-256 mismatch for {{ item.filename }}. Keep the .part for resume,
+      or delete {{ ventoy_iso_part }} and retry.
+  when:
+    - not ventoy_iso_ready
+    - not ventoy_part_ready
+  tags: [isos]
+
+- name: Promote the verified {{ item.name }} partial
+  ansible.builtin.command:
+    cmd: "mv {{ ventoy_iso_part }} {{ ventoy_iso_path }}"
+  when:
+    - not ventoy_iso_ready
+    - not ventoy_part_ready
+  tags: [isos]
+
+- name: Report {{ item.name }}
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.filename }} ready at {{ ventoy_iso_path }}
+      ({{ item.size_gb }} GB planned, sha256 {{ item.sha256 }})
+  tags: [isos]

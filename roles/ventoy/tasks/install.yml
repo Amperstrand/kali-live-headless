@@ -1,0 +1,35 @@
+---
+- name: Require explicit confirmation
+  ansible.builtin.assert:
+    that: ventoy_confirm | lower == 'yes'
+    fail_msg: "Refusing to install Ventoy without CONFIRM=yes."
+
+- name: Unmount the target's mounted paths
+  ansible.builtin.command:
+    argv:
+      - umount
+      - "{{ item }}"
+  become: true
+  failed_when: false
+  loop: "{{ ventoy_mounts }}"
+
+- name: Prepare the pinned Ventoy release
+  ansible.builtin.import_tasks: release.yml
+  tags: [install, update]
+
+- name: Install Ventoy (GPT; Secure Boot support per ventoy_secure_boot)
+  ansible.builtin.command:
+    # -s (Ventoy Secure Boot support) is the MOK-enrollment path: the stick
+    # will ask the machine's owner to enroll the Ventoy key on first boot
+    # (docs/lanes-and-gating.md). A lane that deliberately refuses that trust
+    # delegation turns it off here.
+    cmd: "./Ventoy2Disk.sh -i -g{{ ' -s' if ventoy_secure_boot | bool else '' }} {{ ventoy_dev_path }}"
+    chdir: "{{ ventoy_cache_dir }}/ventoy-{{ ventoy_version }}"
+    stdin: "y\ny\ny\n"
+  become: true
+  register: ventoy_install_output
+  changed_when: true
+
+- name: Show the installer output
+  ansible.builtin.debug:
+    var: ventoy_install_output.stdout_lines

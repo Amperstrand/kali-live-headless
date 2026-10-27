@@ -1,0 +1,95 @@
+---
+- name: Require explicit confirmation
+  ansible.builtin.assert:
+    that: ventoy_confirm | lower == 'yes'
+    fail_msg: "Refusing to write the stick without CONFIRM=yes."
+
+- name: Find the Ventoy data partition
+  ansible.builtin.shell:
+    cmd: >-
+      lsblk -lnpo NAME,FSTYPE,LABEL {{ ventoy_dev_path }}
+      | awk '$2 == "exfat" && $3 == "Ventoy" { print $1; exit }'
+  register: ventoy_data_part
+  changed_when: false
+
+- name: Require a Ventoy exFAT partition
+  ansible.builtin.assert:
+    that: ventoy_data_part.stdout | trim | length > 0
+    fail_msg: "No exFAT 'Ventoy' partition on {{ ventoy_dev_path }}; run ventoy-install first."
+
+- name: Check for an existing mount of the data partition
+  ansible.builtin.command:
+    cmd: "findmnt -no TARGET {{ ventoy_data_part.stdout | trim }}"
+  register: ventoy_existing_mount
+  changed_when: false
+  failed_when: false
+
+- name: Choose the mount point
+  ansible.builtin.set_fact:
+    ventoy_data_mount: >-
+      {{ ventoy_existing_mount.stdout | trim
+         if ventoy_existing_mount.stdout | trim | length > 0
+         else ventoy_mount_dir }}
+    ventoy_mount_owned: "{{ ventoy_existing_mount.stdout | trim | length == 0 }}"
+
+- name: Ensure the mount directory exists
+  ansible.builtin.file:
+    path: "{{ ventoy_mount_dir }}"
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Mount the Ventoy data partition
+  ansible.builtin.command:
+    argv:
+      - mount
+      - -t
+      - exfat
+      - "{{ ventoy_data_part.stdout | trim }}"
+      - "{{ ventoy_mount_dir }}"
+  become: true
+  when: ventoy_mount_owned | bool
+
+- name: Ensure the ventoy configuration directory exists
+  ansible.builtin.file:
+    path: "{{ ventoy_data_mount }}/ventoy"
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Render ventoy.json
+  ansible.builtin.template:
+    src: ventoy.json.j2
+    dest: "{{ ventoy_data_mount }}/ventoy/ventoy.json"
+    mode: "0644"
+  become: true
+
+- name: Copy every enabled ISO
+  ansible.builtin.command:
+    argv:
+      - rsync
+      - -rlt
+      - --inplace
+      - --info=progress2
+      - "{{ ventoy_iso_dir }}/{{ item.filename }}"
+      - "{{ ventoy_data_mount }}/{{ item.filename }}"
+  loop: "{{ ventoy_isos | selectattr('enabled') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+  changed_when: true
+
+- name: Flush writes
+  ansible.builtin.command:
+    cmd: sync
+  become: true
+  changed_when: false
+
+- name: Unmount the data partition
+  ansible.builtin.command:
+    argv:
+      - umount
+      - "{{ ventoy_data_mount }}"
+  become: true
+  when: ventoy_mount_owned | bool
+  failed_when: false
