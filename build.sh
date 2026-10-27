@@ -591,6 +591,20 @@ if [ -n "${BUILD_MIRROR:-}" ]; then
   if [ "${KLH_KEEP_BINARY_MIRROR:-}" != 1 ]; then
     printf '%s\n' "$BUILD_MIRROR" > "$UPSTREAM_DIR/.mirror" 2>/dev/null \
       || klh_warn "could not write $UPSTREAM_DIR/.mirror (upstream tree missing?)"
+    # .mirror alone is NOT enough: kali's auto/config hardcodes the public
+    # pool (kali.download for bootstrap/d-i, http.kali.org for mirror-binary)
+    # and those exact strings survive into the chroot's restored sources.list
+    # at the archives-remove phase - whose apt update dies whenever the pool
+    # is mid-sync (four builds lost on 2026-10-27, two different skew
+    # signatures). Rewriting them in the CLONE is transient: the clone is
+    # regenerated from the pinned upstream ref on every build, the change is
+    # visible in this log, and it makes a pinned build immune end to end.
+    if [ -f "$UPSTREAM_DIR/auto/config" ]; then
+      sed -i -e "s|http://kali.download/kali|$BUILD_MIRROR|g" \
+             -e "s|http://http.kali.org/kali|$BUILD_MIRROR|g" \
+             "$UPSTREAM_DIR/auto/config" \
+        && klh_info "pinned auto/config public mirrors to $BUILD_MIRROR (clone-local, logged)"
+    fi
     klh_info "mirror pin covers --mirror-binary too (shipped sources.list: $BUILD_MIRROR)"
   fi
 fi
