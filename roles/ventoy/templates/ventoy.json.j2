@@ -1,0 +1,13 @@
+{
+  "control": [
+    { "VTOY_DEFAULT_MENU_MODE": "{{ ventoy_menu_mode }}" },
+    { "VTOY_MENU_TIMEOUT": "{{ ventoy_menu_timeout }}" }
+  ],
+  "menu_alias": [
+{% set entries = ventoy_isos | selectattr('enabled') | list %}
+{% for iso in entries %}
+    { "image": "/{{ iso.filename }}", "alias": "{{ iso.menu_alias }}" }{% if not loop.last %},{% endif %}
+
+{% endfor %}
+  ]
+}

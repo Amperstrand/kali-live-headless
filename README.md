@@ -90,6 +90,24 @@ Other honest notes:
 
 ---
 
+## Ventoy multiboot USB
+
+This repo also carries an optional, independent Ventoy builder for a single
+multiboot stick. It does not modify the Kali live-build path.
+
+```console
+$ make usb-list
+$ make ventoy-plan USB=/dev/sdc
+$ make ventoy-all USB=/dev/sdc CONFIRM=yes
+```
+
+The catalog covers Archipelago, Debian 13 netinst, Tails, Ubuntu 25.10,
+Kali Live and Omarchy 4.0.6, with every ISO pinned by SHA-256. Destructive
+targets require `CONFIRM=yes` and a serial check. See
+[`docs/VENTOY.md`](docs/VENTOY.md) for the safety model, targets, catalog
+pins and caveats (no persistence; Tails Persistent Storage needs its own
+partition).
+
 ## Prerequisites
 
 * A Linux build host with:

@@ -1,0 +1,31 @@
+---
+# Shared release preparation: fetch + unpack the hash-pinned Ventoy release.
+# Extracted from install.yml so 'make ventoy-update' works on a fresh
+# workstation or after a ventoy_version bump (previously the download lived
+# only on the install path, and update failed before invoking the updater).
+# Tags: both consumers select tags explicitly, and static-import tags apply
+# to everything inside, so [install, update] covers make ventoy-install,
+# ventoy-update and ventoy-all.
+- name: Ensure the cache directory exists
+  ansible.builtin.file:
+    path: "{{ ventoy_cache_dir }}"
+    state: directory
+    mode: "0755"
+  tags: [install, update]
+
+- name: Download the pinned Ventoy release
+  ansible.builtin.get_url:
+    url: "{{ ventoy_release_base }}/{{ ventoy_archive_name }}"
+    dest: "{{ ventoy_cache_dir }}/{{ ventoy_archive_name }}"
+    checksum: "sha256:{{ ventoy_archive_sha256 }}"
+    timeout: 120
+    mode: "0644"
+  tags: [install, update]
+
+- name: Extract Ventoy
+  ansible.builtin.unarchive:
+    src: "{{ ventoy_cache_dir }}/{{ ventoy_archive_name }}"
+    dest: "{{ ventoy_cache_dir }}"
+    remote_src: true
+    creates: "{{ ventoy_cache_dir }}/ventoy-{{ ventoy_version }}/Ventoy2Disk.sh"
+  tags: [install, update]
