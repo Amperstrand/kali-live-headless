@@ -16,6 +16,27 @@ clones the repo, and prints a **scratch map**: RAM, every writable volume,
 and a loud warning if the only big storage is BitLocker. `--check` first if
 you want the survey without installing.
 
+## 1b. Which stick you boot the host from IS a reliability decision
+
+The boot medium serves **every page fault of the running system** when the
+image does not boot `toram`: under sustained build load a weak or old stick
+dies exactly when you need it (2026-10-27: an old #29-era stick stormed
+block-layer I/O errors mid-build until base binaries EIO'd on exec). Boot a
+**proven** stick, prefer toram images for build hosts, and retire sticks
+that have served heavy duty — a stick that has survived a build marathon is
+not a stick to build on next.
+
+Two more X280-earned rules for FUSE-backed build volumes:
+
+- **mkfs.ext4 must use `-E lazy_itable_init=0,lazy_journal_init=0`** — with
+  the default lazy init the kernel zeroes metadata at runtime via
+  WRITE_ZEROES, which loop-on-FUSE stacks cannot honor (build #43 died this
+  way; now automatic in remote-build).
+- **`pkill -f` self-matches even with bracket patterns** when the same
+  script contains the plain string elsewhere (the dislocker invocation!) —
+  for process-name kills inside such scripts use `pkill -x`. Earned twice in
+  one recovery.
+
 ## 2. Storage: the decision that decides the roles
 
 | what you find | roles it enables |
