@@ -191,6 +191,16 @@ rules, and rewrites the file atomically. A `-` in the npub column means the
 host has no persistent salt (toram) — an honest gap, not a guess. Every deploy
 ends with a sync, so the file is never stale after tooling runs.
 
+## What features cost, and whether they are tested
+
+`docs/features.tsv` (rendered: `docs/features.md`) is the feature registry:
+one row per runtime feature — default, the knob that flips it, the check ids
+that gate it, when it was last tested, and its cost (RAM/CPU/disk/boot) and
+attack-surface delta. `tools/feature-matrix.sh validate` refuses a gate id no
+checker consumes (the vacuous-pass class), and the pre-commit hook runs that
+validation whenever the TSV changes. `unmeasured` is allowed but warned —
+filling a row's costs is a real task, not an admission of guilt.
+
 ## WireGuard: one session, host level — not per VM
 
 Guests do **not** get their own WireGuard sessions and should not: the stick is
@@ -269,6 +279,21 @@ volume with no defined domain and no `.deploy`/`.xml` sidecar. Provisioned
 guests are never swept, because a stopped guest is a decision, not garbage
 (this cost a live test guest its disk on 2026-10-26 when a suite run swept the
 host mid-debug).
+
+## Finding the VM host after a reflash (hardware hostnames)
+
+Since build #41 the stick names itself after the machine
+(`HOSTNAME_SCHEME=hardware`), so `kali@kali-live.local` stops resolving the
+moment a different image boots. Recovery, in order:
+
+1. `avahi-browse -art | grep -i -B2 <model>` on any machine on the same LAN
+   (the name encodes model, cores, RAM, disk), or
+2. `ping kali-live.local` — if the flashed image predates #41 it still answers, or
+3. through the hub if the tunnel is enrolled: `ssh -J root@<hub> kali@<tunnel-ip>`
+   (the tunnel IP is per-machine-derived; the hub's `wg show wg0 allowed-ips`
+   lists it).
+
+Pass what you found to every operator tool: `--stick kali@<name-or-ip>`.
 
 ## Troubleshooting & lessons
 

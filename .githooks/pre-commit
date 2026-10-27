@@ -266,6 +266,21 @@ for f in "${FILES[@]}"; do
 done
 [ "$fmt_bad" = 0 ] && ok "formatting (whitespace, line endings, size)"
 
+# ---- 7. feature-matrix consistency (when the registry changes) -------------
+for f in "${FILES[@]}"; do
+    case "$f" in
+        docs/features.tsv|tools/feature-matrix.sh)
+            if command -v "$PWD/tools/feature-matrix.sh" >/dev/null 2>&1; then
+                if "$PWD/tools/feature-matrix.sh" validate; then
+                    :
+                else
+                    fail "feature-matrix: validate (gate id with no consumer, or malformed row)"
+                fi
+            fi
+            break ;;
+    esac
+done
+
 # ---- verdict ----------------------------------------------------------------
 if [ "$FAIL" -gt 0 ]; then
     printf '\npre-commit: %d problem(s) — fix, or use the documented escape hatch.\n' "$FAIL" >&2

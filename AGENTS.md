@@ -387,6 +387,26 @@ drift is absorbed by bumping the pin, nothing else.
     `xorriso -indev stdio:/dev/sdX -check_media` — it also covers the
     system-area boot code, which a region compare deliberately does not.
 
+35. **IPv6 link-local is the metadata class wearing a different hat**
+    (2026-10-27, found by reading while documenting the metadata leak):
+    Hetzner serves metadata on `fe80::a9fe:a9fe` as well as 169.254.169.254
+    (AWS: `fd00:ec2::254`), and guest<->guest IPv6 on virbr0 is BRIDGED —
+    iptables' v4 FORWARD drops never see it. There is no sanctioned v6 on
+    that bridge (no RA/DHCPv6/NAT66), so `kali-live-kvm-firewall` now drops
+    ALL IPv6 from virbr0 (INPUT + FORWARD, ND included, deliberately) and
+    `post.iso.v6_linklocal` asserts silence from the GUEST's viewpoint (an
+    all-nodes ping must get zero answers — any responder is the host or a
+    peer). Proven in `tools/firewall-lab.sh` (invariant 5: install,
+    cover, self-heal after sabotage). Full provider table in
+    `docs/vm-checklist.md` § "The cloud-metadata class".
+36. **`docs/features.tsv` is the feature registry** (`tools/feature-matrix.sh
+    list|show|render|validate`): one row per runtime feature — default, knob,
+    gate ids, last-tested, RAM/CPU/disk/boot cost, attack-surface delta.
+    `validate` refuses a gate id no checker consumes (the vacuous-pass class,
+    items 16/30) and the pre-commit hook runs it whenever the TSV changes;
+    `unmeasured` costs are WARNED, never silently OK. Adding a feature means
+    adding a row with real gate ids — a feature without a gate is a claim.
+
 ## Public-repo hygiene
 
 The repo is **public**. Nothing private may land here, ever: no PSKs, SSIDs,

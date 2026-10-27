@@ -651,7 +651,9 @@ tools/vm-check.sh --postflight --name vps1 --expect-key ~/.ssh/id_ed25519.pub
 
 Optional per-guest FIPS mesh identities (`--fips`: salt+uuid derived npub,
 ~70 MiB + 0 % CPU per guest) and the alias ↔ uuid ↔ npub ↔ port registry
-(`tools/vm-registry.sh`) are documented in `docs/vm-deploy.md`.
+(`tools/vm-registry.sh`) are documented in `docs/vm-deploy.md`. Every
+runtime feature's default, gate, test status and cost lives in
+`docs/features.tsv` (`tools/feature-matrix.sh`).
 
 ### VM store on the internal NTFS disk (opt-in, M1)
 

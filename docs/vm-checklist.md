@@ -116,8 +116,10 @@ Two design rules worth keeping:
 |---|---|
 | `post.iso.host_ssh` / `post.iso.host_icmp` | the guest cannot reach the host's sshd and gets no reply from it |
 | `post.iso.lan_10` / `lan_172` / `lan_192` | the guest cannot reach any RFC1918 network |
-| `post.iso.metadata` | the guest cannot reach `169.254.169.254` — NAT'd through the concentrator that is the **concentrator's** cloud metadata service, not a harmless dead address |
+| `post.iso.metadata` | the guest cannot reach `169.254.169.254` — NAT'd through the concentrator that is the **concentrator's** cloud metadata service, not a harmless dead address (see below) |
+| `post.iso.v6_linklocal` | **nothing** on the bridge answers an IPv6 all-nodes ping from the guest — no host `fe80::` services (metadata is served on v6 too), no v6 guest↔guest (bridged traffic the v4 FORWARD drops cannot see) |
 | `post.iso.peer` | the guest cannot reach another guest (`--peer`) |
+| `post.host.fw_v6` | the host firewall drops **all** IPv6 from `virbr0` (INPUT + FORWARD) — there is no sanctioned v6 on this bridge: no RA, no DHCPv6, no NAT66 |
 
 ### Identity + FIPS posture
 
@@ -128,6 +130,33 @@ Two design rules worth keeping:
 | `post.fips.services` | with FIPS on: `fips` + `fips-dns` active in the guest |
 | `post.fips.mesh_addr` | with FIPS on: a ULA mesh address exists on `fips0` |
 | `post.fips.off` | with FIPS off: no fips daemon in the guest — opt-in must be provable in **both** directions |
+
+## The cloud-metadata class (why `post.iso.metadata` exists)
+
+A guest's packets to `169.254.169.254` are NAT'd at the concentrator, so the
+answer comes from **the concentrator's own cloud provider** — the guest
+effectively holds the viewpoint of the provisioned client. This is the
+SSRF-to-IMDS class (CWE-918) without needing an SSRF: plain egress was enough.
+What the address yields per provider:
+
+| provider | what `169.254.169.254` returns | worst case |
+|---|---|---|
+| **Hetzner** (our hub) | `/hetzner/v1/metadata`: hostname, instance-id, public-ipv4, region, AZ; `/metadata/private-networks`: every private subnet, alias IP, MAC; `/hetzner/v1/userdata`: the **cloud-init user-data** | infrastructure map + bootstrap secrets in userdata |
+| AWS | `/latest/meta-data/...`: **IAM role credentials** (live STS keys), user-data, SSH public keys, identity document | full role hijack — the Capital One 2019 breach (100 M records) was exactly this; IMDSv2 (token + hop-limit) exists because of it |
+| GCP | `metadata.google.internal`: project metadata, service-account **tokens** (with `Metadata-Flavor: Google`), SSH keys | project takeover via SA tokens |
+| Azure | `/metadata/instance` (needs `Metadata: true`): tags, network config; IMDS also serves **ACR tokens** | registry pull, lateral movement |
+| DigitalOcean / Vultr / Linode / Scaleway | instance data + **user-data**, no auth header needed | userdata secrets |
+
+And it is not only IPv4: Hetzner also serves metadata on `fe80::a9fe:a9fe`,
+AWS on `fd00:ec2::254`, Azure/GCP on `fe80::a9fe:a9fe`. That is why the v6
+checks above exist — link-local over IPv6 is the same class wearing a
+different hat, and it is invisible to iptables' v4 rules.
+
+Monitoring stance (what this checklist asserts, from *inside* the guest —
+never from the host): metadata v4 unreachable, IPv6 all-nodes silent, and the
+host-side firewall invariants that enforce both (`post.host.fw_metadata`,
+`post.host.fw_v6`). An egress tunnel moves the *location* of every
+special-use address; only the guest's viewpoint sees the truth.
 
 ## Checks that earned their place
 

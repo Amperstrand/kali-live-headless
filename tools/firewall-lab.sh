@@ -16,6 +16,11 @@
 #      detected and the daemon re-asserts (the shadowing self-heal)
 #   4. the stateful INPUT shield is present (ESTABLISHED,RELATED above
 #      the drop — the stateless drop broke every host->VM flow)
+#   5. the IPv6 layer installs and SELF-HEALS: ip6tables INPUT+FORWARD
+#      drop everything from virbr0 (link-local metadata surfaces live on
+#      v6 too — Hetzner fe80::a9fe:a9fe, AWS fd00:ec2::254 — and
+#      guest<->guest v6 is bridged traffic the v4 FORWARD drops never
+#      see). Deleting a rule mid-run must not survive a tick.
 #
 # Usage: tools/firewall-lab.sh          (builds fwlab:latest on first use)
 # Requires: docker (rootless or sudo -n). Exit 0 = all invariants hold.
@@ -38,7 +43,7 @@ if ! "${DOCKER[@]}" inspect --type image "$IMAGE" >/dev/null 2>&1; then
   echo " * building $IMAGE (one-time)"
   "${DOCKER[@]}" build --quiet -t "$IMAGE" - <<'EOF'
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends iptables iproute2 \
+RUN apt-get update && apt-get install -y --no-install-recommends iptables ip6tables iproute2 \
  && rm -rf /var/lib/apt/lists/*
 EOF
 fi
@@ -95,6 +100,22 @@ d=$(ln_of "$(drop_line)"); l=$(ln_of "$(lv_line)")
 [ -n "$d" ] && [ -n "$l" ] && [ "$d" -lt "$l" ] \
   && ok "drops re-asserted above the libvirt jump" \
   || bad "drop at ${d:-none} vs libvirt jump at ${l:-none} — shadowing not healed"
+
+echo "=== invariant 5: IPv6 layer installs and self-heals ==="
+if command -v ip6tables >/dev/null 2>&1; then
+  ip6tables -C INPUT -i virbr0 -j DROP 2>/dev/null && ok "ip6tables INPUT drop installed" || bad "ip6tables INPUT drop missing"
+  ip6tables -C FORWARD -i virbr0 -j DROP 2>/dev/null && ok "ip6tables FORWARD drop installed (guest<->guest v6 incl.)" || bad "ip6tables FORWARD drop missing"
+  # sabotage: delete both, wait for the daemon to notice
+  ip6tables -D INPUT -i virbr0 -j DROP 2>/dev/null
+  ip6tables -D FORWARD -i virbr0 -j DROP 2>/dev/null
+  sleep 4   # >= 4 ticks at TICK=1
+  ip6tables -C INPUT -i virbr0 -j DROP >/dev/null 2>&1 \
+    && ip6tables -C FORWARD -i virbr0 -j DROP >/dev/null 2>&1 \
+    && ok "v6 rules re-asserted after sabotage (self-heal)" \
+    || bad "v6 rules did not come back — a displaced/removed rule survives"
+else
+  echo " SKIP  no ip6tables in the lab container (kernel/pkg)"
+fi
 
 echo "=== invariant 1b: no rebuild churn when state is correct ==="
 sig_before=$(iptables -S FORWARD | md5sum | cut -d' ' -f1)
