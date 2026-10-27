@@ -128,3 +128,25 @@ path, when the second consumer proves it worth doing:
 
 Rule for the interim: any new device-writing tool MUST reuse an existing
 guard implementation rather than re-derive it, or say explicitly why not.
+
+## The audit bundle: how a human reviews the minimal lane line by line
+
+`tools/lane-audit.sh [lane]` renders everything the lane's image effectively
+IS into one directory — `PACKAGES.txt`, the full `OVERLAY/` tree (every file
+the image ships, scripts and units first in `UNITS.txt`), `HOOKS/`, a
+`BUDGET.txt` of the auditable numbers, `SOURCES.txt` (repo commit, upstream
+pin, feature rows) and `SHA256SUMS`.
+
+The numbers for the minimal lane today: **58 packages, 48 overlay files,
+11 boot units, 23 boot scripts, 0 setuid**. That is the whole review surface
+— a human can actually read it, which is the entire point. The field lane's
+features do not appear in it, so growth there cannot dilute this review.
+
+Review workflow: read v1 once, completely. Between releases:
+`diff -r audit-minimal-v1 audit-minimal-v2` — anything unchanged is
+unreviewed by design, and any number in BUDGET.txt that moved is a review
+item by rule. The intended end state (stage-b TODO): assert the built image's
+tree matches `OVERLAY/` byte-for-byte, at which point the reviewed bundle IS
+the product, and with (commit, sde) reproducibility the chain of custody is
+closed: reviewed bundle -> hashed manifest -> reproducible image -> suite
+asserts the match.
