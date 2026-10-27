@@ -7,6 +7,10 @@
   ansible.builtin.import_tasks: plan.yml
   tags: [plan]
 
+- name: Fetch ISOs
+  ansible.builtin.import_tasks: isos.yml
+  tags: [isos]
+
 - name: Install Ventoy
   ansible.builtin.import_tasks: install.yml
   tags: [install]
@@ -14,10 +18,6 @@
 - name: Update Ventoy
   ansible.builtin.import_tasks: update.yml
   tags: [update]
-
-- name: Fetch ISOs
-  ansible.builtin.import_tasks: isos.yml
-  tags: [isos]
 
 - name: Write ISOs and menu configuration
   ansible.builtin.import_tasks: config.yml
