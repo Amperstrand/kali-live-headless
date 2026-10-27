@@ -1,0 +1,9 @@
+---
+- name: Build a Ventoy multiboot USB
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars_files:
+    - ../ventoy/catalog.yml
+  roles:
+    - role: ventoy
