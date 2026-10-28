@@ -326,6 +326,13 @@ record_health() { # sha result write read errors note
                 "$sh" "$(clean "$model")" "$(clean "$vendor")" "$first" "$(now_utc)" \
                 "$res" "$wm" "$rm" "$ke" "$(clean "$note")"
         } > "$tmp" && mv "$tmp" "$HEALTH" || { rm -f "$tmp"; exit 1; }
+        # A root-run flash (sudo) replaces the ledger with a root-owned
+        # file and the operator loses read access (2026-10-28: an
+        # --allow-quarantined run did exactly that). Hand it back.
+        if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+            chown "$SUDO_USER:$(id -gn "$SUDO_USER" 2>/dev/null || echo "$SUDO_USER")" "$HEALTH" 2>/dev/null || true
+            chown "$SUDO_USER:$(id -gn "$SUDO_USER" 2>/dev/null || echo "$SUDO_USER")" "${HEALTH}.lock" 2>/dev/null || true
+        fi
     ) 9>"$HEALTH.lock" || { warn "could not update $HEALTH"; return 1; }
 }
 

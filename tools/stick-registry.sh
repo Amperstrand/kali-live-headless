@@ -111,6 +111,16 @@ cmd_note_build() { # $1=hash $2=build
     awk -F'\t' -v h="$1" -v b="$2" 'BEGIN{OFS="\t"} $1==h{$5=b} {print}' "$REGISTRY" > "$_tmp" 2>/dev/null \
         && mv "$_tmp" "$REGISTRY" || warn "could not record last_build=$2"
     chmod 600 "$REGISTRY" 2>/dev/null || true
+    reown_registry
+}
+
+reown_registry() { # root-run atomic writes must not flip the operator's
+    # file to root:root (the flash runs under sudo with SUDO_USER set —
+    # same class as the usb-probe ledger flip, 2026-10-28)
+    if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+        chown "$SUDO_USER:$(id -gn "$SUDO_USER" 2>/dev/null || echo "$SUDO_USER")" "$REGISTRY" 2>/dev/null || true
+    fi
+    return 0
 }
 
 cfg_partition_of() { # $1=disk -> partition dev with label KLHCONFIG
@@ -241,6 +251,7 @@ cmd_adopt() { # harvest the EXISTING salt off a stick before a destructive
         awk -F'\t' -v h="$_hash" -v s="$_onsalt" 'BEGIN{OFS="\t"} $1==h{$2=s; $6="re-adopted"} {print}' "$REGISTRY" > "$_tmp" 2>/dev/null \
             && mv "$_tmp" "$REGISTRY" || warn "re-adoption write failed"
         chmod 600 "$REGISTRY" 2>/dev/null || true
+        reown_registry
         echo "adopt: --adopt-on-stick — registry now holds the on-stick salt ($(printf '%s' "$_onsalt" | sha256sum | cut -c1-16))"
         return 0
     fi

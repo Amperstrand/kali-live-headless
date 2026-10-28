@@ -418,7 +418,7 @@ then re-run. flash.sh never unmounts on its own."
   # write is the classic signature of a bad port/cable/extension). Say it
   # BEFORE the verify burns minutes discovering it.
   if [ "$DD_RATE" -lt 15 ]; then
-    klh_warn "write rate only ${DD_RATE} MB/s — this smells like a USB2 port, bad cable, or a failing stick; verification failures below are likely NOT the ISO's fault. Try a direct USB3 port."
+    klh_warn "write rate only ${DD_RATE} MB/s — slow medium or slow port (usb-probe's preflight above printed the negotiated link: on a 5000M link this is the MEDIUM failing, not a USB2 port — the 2026-10-28 DataTraveler wrote 5.8 MB/s on USB3 all day; on a 480M link, try a direct USB3 port/cable first). Verification failures below are likely the medium's fault, not the ISO's."
   else
     klh_info "write completed at ${DD_RATE} MB/s"
   fi
