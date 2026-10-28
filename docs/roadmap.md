@@ -55,8 +55,26 @@ CI lanes and, where physical, by `vm-check`/`hw-check`.
 - Mechanical verdict ledger — test.sh emits a machine-readable verdict
   consumed by BUILDS.md rows (several rows were hand-typed; the ledger is
   only as trustworthy as its least-typed row).
-- Auto-pick `KLH_TEST_PORT` — kill the cross-lane "stale listener"
-  incident class.
+- ~~Auto-pick `KLH_TEST_PORT`~~ — LANDED (stage-cde auto-picks an ephemeral
+  port when unset; an explicit pin still wins).
+
+## Cross-links added 2026-10-28
+
+- **Lane presets** (`KLH_FEATURES` + `lib/lanes/{minimal,field}.env`) — the
+  two-lane design in `docs/lanes-and-gating.md` is still unimplemented; the
+  feature registry (`docs/features.tsv`) is its natural substrate.
+- **Audit-bundle custody closure** — `tools/lane-audit.sh` renders the
+  reviewable bundle; the remaining step is the stage-b assert that the built
+  image's tree matches `OVERLAY/` byte-for-byte.
+- **Secure Boot instrument** — the OVMF + enforced-SB suite stage: turns
+  "where does the chain stop" into a reproducible fact per lane
+  (`docs/lanes-and-gating.md` §4).
+- **toram default defect** —
+  [#45](https://github.com/Amperstrand/kali-live-headless/issues/45):
+  releases carry `TORAM_DEFAULT=false` until the patched 9990's fall-through
+  is fixed; the explicit load-to-RAM menu entry (toram-force) is proven.
+- **Ephemeral fleet** — LANDED (`vm-deploy` optimistic resume +
+  `--ephemeral`); taxonomy and runbook in `docs/vm-deploy.md`.
 
 Closed since the last sweep: parallel boot gates (landed), Stage F
 vm-store (restored + wired), zstd squashfs experiment (measured — see
