@@ -5,7 +5,24 @@
 kali-linux-core
 openssh-server
 network-manager
+wpasupplicant
 wireless-regdb
+
+## Radio firmware, EXPLICIT (2026-10-28, owner direction: no firmware diet —
+## inclusion by default). These arrived only transitively via upstream's
+## pinned lists before, so an upstream list change could silently strip them
+## (the #51 Legion incident: iwlwifi failed with error -1010 + hci0 could not
+## read supported features — root cause there was a Windows-fast-startup
+## wedged combo card, but the image must never be the variable).
+## iwlwifi covers ALL Intel wireless generations (212 ucode files in #44);
+## ibt-* Intel Bluetooth blobs ship in the firmware-iwlwifi tree.
+firmware-iwlwifi
+firmware-linux-nonfree
+firmware-misc-nonfree
+firmware-atheros
+firmware-brcm80211
+firmware-realtek
+bluez-firmware
 iw
 iproute2
 avahi-daemon
