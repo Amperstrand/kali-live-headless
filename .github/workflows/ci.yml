@@ -50,6 +50,12 @@ jobs:
           tools/feature-matrix.sh validate
           t1=$(date +%s%N)
           echo "bench feature_matrix_ms=$(( (t1 - t0) / 1000000 ))"
+      - name: USB probe self-test
+        run: |
+          t0=$(date +%s%N)
+          tools/usb-probe.sh --self-test
+          t1=$(date +%s%N)
+          echo "bench usb_probe_ms=$(( (t1 - t0) / 1000000 ))"
       - name: Firewall lab
         run: |
           t0=$(date +%s%N)
@@ -89,6 +95,12 @@ jobs:
           tools/feature-matrix.sh validate
           t1=$(date +%s%N)
           echo "bench feature_matrix_ms=$(( (t1 - t0) / 1000000 ))"
+      - name: USB probe self-test
+        run: |
+          t0=$(date +%s%N)
+          tools/usb-probe.sh --self-test
+          t1=$(date +%s%N)
+          echo "bench usb_probe_ms=$(( (t1 - t0) / 1000000 ))"
       - name: Firewall lab
         run: |
           t0=$(date +%s%N)
