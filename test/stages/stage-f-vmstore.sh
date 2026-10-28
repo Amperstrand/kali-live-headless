@@ -122,7 +122,10 @@ DOCKERFILE
             # image lifecycle through the real tools as the live user
             # (absolute paths: the ssh non-login shell PATH must not be
             # load-bearing for /usr/local/sbin)
-            vcout=$(timeout 180 ssh "${SSH_OPTS[@]}" -o ServerAliveCountMax=36 '/usr/local/sbin/kali-live-vm-create --id suite-smoke --cores 1 --ram-gb 1 --disk-gb 1' 2>&1)
+            # 600s: the pre-sparse vm-create (in images before the
+            # --allocation 0 fix) fallocates 1G through the FUSE store —
+            # measured >180s; with sparse (next builds) this is instant.
+            vcout=$(timeout 600 ssh "${SSH_OPTS[@]}" -o ServerAliveCountMax=120 '/usr/local/sbin/kali-live-vm-create --id suite-smoke --cores 1 --ram-gb 1 --disk-gb 1' 2>&1)
             if [ $? -eq 0 ]; then
               record pass "vmstore: vm-create made suite-smoke (1G raw, sparse)"
             else
