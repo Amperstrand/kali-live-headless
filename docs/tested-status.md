@@ -17,7 +17,7 @@ hygiene gates, everything below is system-level.
 | Firewall invariants (host side) | ✅ lab-proven | `tools/firewall-lab.sh` 8/8 invariants incl. IPv6 drop + self-heal; runs in CI on both lanes |
 | Repo CI, two lanes | ✅ green | kali-live-headless run 40687951106 (commit 6dc1653): self-hosted wall **56 s** vs hosted 92 s; pre-commit 22.2/19.9 s, firewall-lab 19.7 s warm vs 26.3 s cold, usb-probe self-test ~60 ms |
 | Self-hosted runner health | ✅ proven | `github-runner-install.sh --verify`: GitHub online+labels, guest unit/.runner/docker/toolchain — green, no restart |
-| Optimistic self-hosted lane (other repo) | 🟡 in flight | ccid-firmware-rs PR #478 (`fuzz-nightly` pick-runner probe, 120s→900s fuzz budget when the VM is online); dispatch-run evidence being collected 2026-10-28 |
+| Optimistic self-hosted lane (other repo) | ✅ proven | ccid-firmware-rs PR #478: dispatch 3 (run 40690347907) — probe detected the VM via executed jobs (cross-repo read works with the job token), fuzz legs executed on `legion-t7-vm-ccid`; v4 makes fuzzing self-hosted-only (no heartbeat ⇒ legs skip) at 1800 s/target. Bonus: the lane found a real `fuzz_nci_frame_decode` crash → ccid issue #480 |
 | FIPS identity derivation | ✅ proven stable | salt+uuid → npub reproducible across rebuilds; nsec never printed |
 | FIPS *wire* (peers) | ❌ untested | no peer exists; identity-without-wire is deliberate — [#40](https://github.com/Amperstrand/kali-live-headless/issues/40) |
 | Cross-VM isolation (guest↔guest) | ❌ untested | `post.iso.peer` needs a second guest — [#40](https://github.com/Amperstrand/kali-live-headless/issues/40) |
