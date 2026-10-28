@@ -145,6 +145,54 @@ v=$(guest '[ -d /sys/firmware/efi ] && echo uefi || echo bios'); record info "bo
 v=$(guest 'uptime -p 2>/dev/null || cut -d. -f1 /proc/uptime');  record info "up: $v"
 v=$(guest 'findmnt -n -o SOURCE /run/live/medium 2>/dev/null || lsblk -no LABEL /dev/disk/by-label/* 2>/dev/null | sort -u | tr "\n" " '); record info "live medium: $v"
 
+section "boot medium health (tools/usb-probe.sh)"
+# The machine already booted, but a quarantined medium means the stick is
+# not to be trusted or reflashed (issue #38). Runs the repo's probe on the
+# stick itself against the boot device — read-only. Note the operator's
+# health ledger is NOT shared with the stick; this records what the probe
+# sees right now (topology, rates, kernel errors this boot).
+if [ -x "$REPO_DIR/tools/usb-probe.sh" ]; then
+  med=$(guest 'findmnt -n -o SOURCE /run/live/medium 2>/dev/null')
+  bootdev=""
+  case "$med" in
+    /dev/*p[0-9]) bootdev=${med%p*} ;;   # nvme0n1p3 -> nvme0n1
+    /dev/*[0-9])  bootdev=${med%[0-9]*} ;; # sda1 -> sda
+  esac
+  if [ -z "$bootdev" ]; then
+    # toram boot: provision logs the medium resolved by USB iso9660 signature
+    bootdev=$(guest_sudo 'dmesg 2>/dev/null' \
+      | sed -n 's/.*iso9660 signature: \(\/dev\/[a-z]*\).*/\1/p' | tail -n1)
+    [ -n "$bootdev" ] && record info "toram boot — boot device by iso9660 signature: $bootdev"
+  fi
+  if [ -n "$bootdev" ] && guest "test -b '$bootdev'" >/dev/null 2>&1; then
+    guest 'cat > /tmp/usb-probe.hw-check.sh' < "$REPO_DIR/tools/usb-probe.sh"
+    pb_out=$(guest_sudo "bash /tmp/usb-probe.hw-check.sh --device '$bootdev' --preflight 2>&1")
+    pb_rc=$?   # capture on the NEXT line (AGENTS #10)
+    { echo "\$ usb-probe --device $bootdev --preflight (rc=$pb_rc)"; printf '%s\n' "$pb_out"; } > "$EVID/usb-probe.txt"
+    pb_verdict=$(printf '%s\n' "$pb_out" | sed -n 's/^usb-probe: verdict: //p' | tail -n1)
+    case "$pb_rc:$pb_verdict" in
+      0:OK)
+        record pass "boot medium healthy (usb-probe)" \
+          "$(printf '%s\n' "$pb_out" | grep -E 'usb bus=|read 64MiB' | head -2 | tr '\n' ' ')"
+        ;;
+      0:SLOW*)
+        record pass "boot medium healthy but slow (usb-probe: $pb_verdict)" "see $EVID/usb-probe.txt"
+        ;;
+      2:*)
+        record fail "boot medium QUARANTINED or kernel-erroring (usb-probe: ${pb_verdict:-rc=2})" \
+          "do NOT trust or reflash this stick; see $EVID/usb-probe.txt"
+        ;;
+      *)
+        record info "usb-probe inconclusive (rc=$pb_rc verdict='${pb_verdict:-none}')" "see $EVID/usb-probe.txt"
+        ;;
+    esac
+  else
+    record info "boot device not resolvable (${bootdev:-none}) — medium probe skipped"
+  fi
+else
+  record info "tools/usb-probe.sh not executable — medium health not probed"
+fi
+
 section "sshd (same as the QEMU suite)"
 eff=$(guest_sudo 'sshd -T 2>/dev/null' | grep -iE '^(passwordauthentication|permitrootlogin|pubkeyauthentication)' | tr 'A-Z' 'a-z' | sort)
 echo "$eff" | grep -q '^passwordauthentication no' && record pass "effective PasswordAuthentication no" || record fail "effective PasswordAuthentication no"

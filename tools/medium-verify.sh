@@ -80,8 +80,10 @@ else
     _abs=$((SYSAREA + _off - 1))
     fail "MISMATCH: payload differs at ISO offset $_abs (payload byte $_off)
 $out
-A single offset usually means a dropped flush or a medium defect; see
-flash.sh's chunk map for the extent."
+A single offset is classified by re-reading it: tools/usb-probe.sh
+--verify-region separates stable corruption (bad NAND — quarantine) from
+unstable reads (failing medium); flash.sh's verify paths do this
+automatically and record the quarantine."
   fi
   fail "MISMATCH: $out"
 fi

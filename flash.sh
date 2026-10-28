@@ -354,8 +354,21 @@ if [ "$VERIFY_ONLY" = true ]; then
     klh_warn "mismatch — flushing device buffers and retrying once before giving up"
     blockdev --flushbufs "$DEVPATH" 2>/dev/null || true
     sync; sleep 3
-    "$REPO_DIR/tools/medium-verify.sh" --iso "$ISO" --device "$DEVPATH" \
-      || klh_die "verify-only: the medium does not carry this ISO's payload (see the offset above)"
+    _mvout=$("$REPO_DIR/tools/medium-verify.sh" --iso "$ISO" --device "$DEVPATH" 2>&1) || {
+      printf '%s\n' "$_mvout"
+      # Classify before dying: stable corruption (same wrong bytes on 3
+      # re-reads) = quarantine the serial; changing bytes = failing medium.
+      # The offset comes straight from medium-verify's MISMATCH line.
+      _off=$(printf '%s' "$_mvout" | sed -n 's/.*payload differs at ISO offset \([0-9]*\).*/\1/p')
+      if [ -n "$_off" ] && [ -x "$REPO_DIR/tools/usb-probe.sh" ]; then
+        "$REPO_DIR/tools/usb-probe.sh" --device "$DEVPATH" --verify-region "$ISO" \
+          --offset "$_off" --length 67108864 || true
+        "$REPO_DIR/tools/usb-probe.sh" --device "$DEVPATH" --record \
+          --result quarantined \
+          --note "verify-only mismatch at ISO offset $_off" || true
+      fi
+      klh_die "verify-only: the medium does not carry this ISO's payload (see the classification above)"
+    }
   fi
 else
   # NEVER auto-unmount (owner rule 2026-10-26): the old best-effort

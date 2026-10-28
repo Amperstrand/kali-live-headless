@@ -253,13 +253,24 @@ fi
 
 # Mechanical verdict capture: if a suite log exists for this build number,
 # its VERDICT line becomes the INDEX verdict — no hand-typed rows (the
-# hand-typed ones lied twice; see AGENTS watch-list).
+# hand-typed ones lied twice; see AGENTS watch-list). The MECHANICAL verdict
+# always wins over a hand-passed --verdict: a hand override that disagrees
+# is exactly the "least-typed row" lie the ledger exists to prevent.
 for _lg in "$OUT_DIR"/test-run-b"$BUILD".log "$OUT_DIR"/test-run-b"$BUILD"-*.log; do
   [ -f "$_lg" ] || continue
   _v=$(grep -m1 "^VERDICT " "$_lg" 2>/dev/null || true)
   if [ -n "$_v" ] && [ -f "$DEST_DIR/INDEX.md" ]; then
     _pretty=$(printf '%s' "$_v" | sed 's/^VERDICT //; s/ iso=.*//; s/level=/stage=/')
-    [ -n "$VERDICT" ] || VERDICT="**$_pretty**"
+    if [ -n "$VERDICT" ] && [ "$VERDICT" != "**$_pretty**" ]; then
+      klh_warn "--verdict '$VERDICT' conflicts with the suite log — recording the MECHANICAL verdict instead (hand-typed rows are how CHAIN-STATUS lied; AGENTS #10)"
+    fi
+    VERDICT="**$_pretty**"
+    case "$_v" in
+      "VERDICT FAIL"*)
+        klh_warn "archiving a FAILED build — evidence only, never flash it; the BUILDS.md row below is pre-marked FAIL"
+        VERDICT="**$_pretty** — DO NOT FLASH (failed suite)"
+        ;;
+    esac
     python3 - "$DEST_DIR/INDEX.md" "**$_pretty** (mechanical, from $(basename "$_lg"))" <<'PY'
 import re, sys
 path, verdict = sys.argv[1], sys.argv[2]
@@ -300,5 +311,6 @@ echo
 klh_ok "build $BUILD archived: $DEST_DIR"
 ls -lh "$DEST_DIR" | tail -n +2
 echo
-printf 'Add to BUILDS.md:\n\n| #%s | %s | `%s` | `%s` | | | | `output/iso-build%s/` |\n\n' \
-  "$BUILD" "$(date -u '+%Y-%m-%d %H:%M')" "${SHA512:0:12}" "$REPO_HEAD" "$BUILD"
+printf 'Add to BUILDS.md:\n\n| #%s | %s | `%s` | `%s` | %s | | | `output/iso-build%s/` |\n\n' \
+  "$BUILD" "$(date -u '+%Y-%m-%d %H:%M')" "${SHA512:0:12}" "$REPO_HEAD" \
+  "$(printf '%s' "${VERDICT:-_suite verdict pending_}" | sed 's/\*\*//g' | cut -c1-70)" "$BUILD"
