@@ -28,6 +28,14 @@
 #                    host's own uplink; only choose this deliberately).
 #   --restore        re-define and start an existing guest from the domain
 #                    XML kept on the store (survives a live-session reboot).
+#   --fresh          with an existing guest: discard it (vm-rm) and create a
+#                    NEW one instead of resuming. Without this flag a deploy
+#                    that finds the old disk + XML on the store RESUMES them
+#                    optimistically — same uuid, same fips npub, same port.
+#   --ephemeral      fully RAM-resident VM: disk and seed live under /run
+#                    (tmpfs), nothing touches the store, nothing survives a
+#                    destroy or a host reboot. The volatile .env state still
+#                    works for this boot. NOT resumable — that is the point.
 #   --adopt          take over a guest that was created by hand or by an older
 #                    image: save its domain XML, move a RAM-only seed ISO onto
 #                    the store, and write the .deploy/.env state so --restore
@@ -62,7 +70,7 @@ die()  { log "ERROR: $*"; exit 1; }
 say()  { printf '%s\n' "$*"; }
 
 ID="" CORES="" RAM_GB="" DISK_GB="" GUEST_USER=debian PORT="" IMAGE_URL=$DEFAULT_IMAGE
-CPU=Skylake-Client FORMAT=raw EGRESS=wg0 WAIT=240 RESTORE=false ADOPT=false
+CPU=Skylake-Client FORMAT=raw EGRESS=wg0 WAIT=240 RESTORE=false ADOPT=false EPHEMERAL=false FRESH=false
 KEYS=""
 
 while [ $# -gt 0 ]; do
@@ -84,6 +92,8 @@ $(cat "${2:?}" 2>/dev/null)"; shift 2 ;;
         --wait)          WAIT=${2:?}; shift 2 ;;
         --restore)       RESTORE=true; shift ;;
         --adopt)         ADOPT=true; shift ;;
+        --ephemeral)     EPHEMERAL=true; shift ;;
+        --fresh)         FRESH=true; shift ;;
         -h|--help)       usage ;;
         *) echo "kali-live-vm-deploy: unknown option: $1" >&2; usage ;;
     esac
@@ -217,7 +227,8 @@ STICK_WG_PUB=$(wg show "$WG_IF" public-key 2>/dev/null || echo '')
 STICK_WG_IP=$(ip -4 -o addr show "$WG_IF" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
 CREATED=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     printf '%s\n' "$_body" > "$RUN_DIR/vm-$ID.env"
-    printf '%s\n' "$_body" > "$STORE_DIR/$ID.deploy" 2>/dev/null || true
+    # the .deploy sidecar is the RESUME contract: ephemeral VMs have none
+    [ "$EPHEMERAL" = true ] || printf '%s\n' "$_body" > "$STORE_DIR/$ID.deploy" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------- adopt
@@ -265,6 +276,24 @@ if [ "$ADOPT" = true ]; then
     exit 0
 fi
 
+# ------------------------------------------------- optimistic resume
+# The hosts are ephemeral (live sticks) but the store is not: a deploy that
+# finds the old disk + XML on the store RESUMES them instead of erroring —
+# same uuid => same fips npub (salt+uuid derivation) => same identity.
+# --fresh discards first; an image WITHOUT XML is incomplete state and dies.
+if [ "$RESTORE" != true ] && [ "$EPHEMERAL" != true ] && [ -f "$STORE_DIR/$ID.image" ]; then
+    if [ "$FRESH" = true ]; then
+        log "--fresh: discarding the old $ID"
+        $SBIN/kali-live-vm-rm --id "$ID" >/dev/null 2>&1 || die "--fresh: could not remove the old $ID"
+    elif [ -f "$STORE_DIR/$ID.xml" ]; then
+        say "found the old $ID on the store — RESUMING (same uuid, same fips identity, same port)"
+        say "  start over instead:  $0 --id $ID --cores N --ram-gb N --disk-gb N --fresh"
+        RESTORE=true
+    else
+        die "guest '$ID' has an image but no $STORE_DIR/$ID.xml — incomplete state; kali-live-vm-rm --id $ID it first"
+    fi
+fi
+
 # ---------------------------------------------------------------- restore
 if [ "$RESTORE" = true ]; then
     ensure_store
@@ -292,7 +321,9 @@ case "$RAM_GB"  in ''|*[!0-9]*) die "--ram-gb is required (positive integer)" ;;
 case "$DISK_GB" in ''|*[!0-9]*) die "--disk-gb is required (positive integer)" ;; esac
 case "$FORMAT"  in raw|qcow2) ;; *) die "--format must be raw or qcow2" ;; esac
 
-ensure_store
+# the store is a PERSISTENT-VM dependency only: an ephemeral deploy must work
+# on a host with no store mounted at all (that is the point of fully-RAM VMs)
+[ "$EPHEMERAL" = true ] || ensure_store
 ensure_host_key
 [ -n "$(key_lines | head -1)" ] || die "at least one --ssh-key is required (otherwise nobody can log in)"
 
@@ -316,12 +347,28 @@ done
 IFS=$_oldifs
 KEYS=$_norm
 
-# volume (reuse kali-live-vm-create: its guards, its .meta sidecar)
-VOL="$STORE_DIR/$ID.image"
-[ -f "$VOL" ] && die "guest '$ID' already exists ($VOL) — pick another --id or kali-live-vm-rm it first"
-$SBIN/kali-live-vm-create --id "$ID" --cores "$CORES" --ram-gb "$RAM_GB" \
-    --disk-gb "$DISK_GB" --format "$FORMAT" >/dev/null \
-    || die "kali-live-vm-create refused (see journal)"
+# volume. Persistent VMs reuse kali-live-vm-create (its guards, .meta
+# sidecar, store pool). EPHEMERAL VMs skip the store entirely: a sparse raw
+# image on tmpfs — RAM is the disk, allocation is lazy (only written blocks
+# cost memory), and NOTHING survives a destroy or a host reboot by design.
+if [ "$EPHEMERAL" = true ]; then
+    install -d -m 0755 "$RUN_DIR/vm-$ID"
+    VOL="$RUN_DIR/vm-$ID.image"
+    SEED="$RUN_DIR/vm-$ID-seed.iso"
+    XMLF="$RUN_DIR/vm-$ID.xml"
+    [ -e "$VOL" ] && die "ephemeral $ID already exists this boot ($VOL)"
+    qemu-img create -f "$FORMAT" "$VOL" "${DISK_GB}G" >/dev/null \
+        || die "qemu-img could not create the ephemeral disk (RAM full?)"
+    log "ephemeral disk at $VOL (tmpfs: nothing persists, nothing is resumable)"
+else
+    VOL="$STORE_DIR/$ID.image"
+    SEED=""
+    XMLF="$STORE_DIR/$ID.xml"
+    [ -f "$VOL" ] && die "guest '$ID' already exists ($VOL) — pick another --id or kali-live-vm-rm it first"
+    $SBIN/kali-live-vm-create --id "$ID" --cores "$CORES" --ram-gb "$RAM_GB" \
+        --disk-gb "$DISK_GB" --format "$FORMAT" >/dev/null \
+        || die "kali-live-vm-create refused (see journal)"
+fi
 
 # cloud image (cached; a fresh download is the only slow part)
 install -d -m 0755 "$CACHE_DIR"
@@ -377,7 +424,8 @@ runcmd:
 CLOUD
 } > "$SEEDDIR/user-data"
 printf 'instance-id: %s-%s\nlocal-hostname: %s\n' "$ID" "$(date +%s)" "$ID" > "$SEEDDIR/meta-data"
-SEED="$STORE_DIR/$ID-seed.iso"
+# (SEED is pre-set for ephemeral VMs — keep that override)
+SEED="${SEED:-$STORE_DIR/$ID-seed.iso}"
 xorriso -as mkisofs -V cidata -joliet -rock -o "$SEED" "$SEEDDIR" >/dev/null 2>&1 \
     || die "xorriso could not build the seed ISO"
 
@@ -409,7 +457,7 @@ virt-install --print-xml 1 --connect qemu:///system --name "$ID" \
     --graphics none --video vga --console pty,target_type=serial \
     --rng /dev/urandom --osinfo detect=on,name=debian13 \
     --boot hd --import --check all=off \
-    > "$STORE_DIR/$ID.xml" || die "virt-install --print-xml failed"
+    > "$XMLF" || die "virt-install --print-xml failed"
 
 # virt-install (or libvirt's mitigation heuristics) may add
 # <feature policy='require' name='ibpb|md-clear|spec-ctrl|ssbd'/> to the CPU.
@@ -418,7 +466,7 @@ virt-install --print-xml 1 --connect qemu:///system --name "$ID" \
 # NOT the boot blocker (the missing video device was), but a long feature
 # list on a hybrid Intel CPU is exactly the class of thing that resets a
 # guest, so it stays out of the definition.
-python3 - "$STORE_DIR/$ID.xml" <<'PY' || die "could not normalize the CPU element"
+python3 - "$XMLF" <<'PY' || die "could not normalize the CPU element"
 import re, sys
 p = sys.argv[1]
 s = open(p).read()
@@ -429,7 +477,7 @@ if m:
 open(p, 'w').write(s)
 PY
 
-virsh -c qemu:///system define "$STORE_DIR/$ID.xml" >/dev/null || die "virsh define failed"
+virsh -c qemu:///system define "$XMLF" >/dev/null || die "virsh define failed"
 virsh -c qemu:///system start "$ID" >/dev/null || die "virsh start failed"
 
 say "waiting for $ID to come up (cloud-init, up to ${WAIT}s) ..."
@@ -473,7 +521,11 @@ say " tunnel:  $(ip -4 -o addr show "$WG_IF" 2>/dev/null | awk '{print $4}' | cu
 say "--------------------------------------------------------------"
 printf '%s\n' "$_verify" | sed 's/^/ /'
 say "--------------------------------------------------------------"
-say " state:   $RUN_DIR/vm-$ID.env  +  $STORE_DIR/$ID.{deploy,xml}"
+if [ "$EPHEMERAL" = true ]; then
+    say " state:   $RUN_DIR/vm-$ID.env  (volatile only — an ephemeral VM keeps NOTHING on the store)"
+else
+    say " state:   $RUN_DIR/vm-$ID.env  +  $STORE_DIR/$ID.{deploy,xml}"
+fi
 say " next:    hub side -> tools/hub-enroll-stick.sh + tools/hub-vm-forward.sh"
 say "          (tools/vm-deploy.sh does both automatically)"
 say "=============================================================="
