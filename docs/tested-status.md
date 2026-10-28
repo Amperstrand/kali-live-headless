@@ -23,7 +23,7 @@ hygiene gates, everything below is system-level.
 | FIPS *wire* (peers) | ❌ untested | no peer exists; identity-without-wire is deliberate — [#40](https://github.com/Amperstrand/kali-live-headless/issues/40) |
 | Cross-VM isolation (guest↔guest) | ❌ untested | `post.iso.peer` needs a second guest — [#40](https://github.com/Amperstrand/kali-live-headless/issues/40) |
 | Hub port allocation | ⚠️ known gap | stale DNAT 22024 → removed tunnel; pick_port is tmpfs-only — [#39](https://github.com/Amperstrand/kali-live-headless/issues/39) |
-| Stick image freshness | ⚠️ hot-patched | running stick predates bech32/WG-PostUp/MSS/pre-commit fixes (all hot-patched + proven live); rebuild tracked in [#41](https://github.com/Amperstrand/kali-live-headless/issues/41) |
+| Stick image freshness | ✅ image ready | **build #53** (2026-10-28, `bd287d2`): every hot-patch baked (toram #45 fix, bech32 derive, WG PostUp, MSS clamp, pre-commit shebang era), fully gated — content 355/0, override 370/0, bios 384/0; first fully-green toram-default build. Reflash pending: all live-booted hosts currently offline |
 | Actions on OpenTollGate org | ❌ blocked externally | org-level disable: `workflow run` → HTTP 422 despite repo permission `enabled: true`; needs an org owner |
 
 Hardware matrix so far: Legion 7 (20c/32G, VM host + runners), ThinkPad
