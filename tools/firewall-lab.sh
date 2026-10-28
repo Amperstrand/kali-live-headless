@@ -41,7 +41,13 @@ DOCKER=(docker); docker info >/dev/null 2>&1 || DOCKER=(sudo -n docker)
 
 if ! "${DOCKER[@]}" inspect --type image "$IMAGE" >/dev/null 2>&1; then
   echo " * building $IMAGE (one-time)"
-  "${DOCKER[@]}" build --quiet -t "$IMAGE" - <<'EOF'
+  # --network=host for BUILD only: on hosts whose docker bridge hands out
+  # a resolver the bridge itself cannot reach (ai-legion: embedded
+  # resolv.conf points at the LAN router, apt then Ignores every repo and
+  # the image dies at exit 100), build-time apt goes through the host's
+  # working netns. Runtime containers below keep their own netns — the
+  # lab's isolation semantics are unchanged. Harmless on ubuntu-latest.
+  "${DOCKER[@]}" build --quiet --network=host -t "$IMAGE" - <<'EOF'
 FROM debian:bookworm-slim
 # `ip6tables` is not a package in bookworm; the binary ships in `iptables`.
 # Naming it made every cold CI build fail with apt exit 100 (2026-10-28,
