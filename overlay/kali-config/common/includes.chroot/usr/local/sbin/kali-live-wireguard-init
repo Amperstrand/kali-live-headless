@@ -147,6 +147,20 @@ mkdir -p /etc/wireguard
     printf '[Interface]\n'
     printf 'Address = %s/16\n' "$TUNIP"
     printf 'PrivateKey = %s\n' "$PRIV"
+    # Guest egress and DNAT replies arrive FROM arbitrary internet addresses;
+    # WireGuard's AllowedIPs is a crypto filter, so the peer must permit them.
+    # Putting 0.0.0.0/0 in AllowedIPs would make wg-quick install a default
+    # route and steal the host's own uplink, so widen the filter in PostUp
+    # instead: routing stays table 100 (guests only). Found live 2026-10-28 —
+    # the stick could reach the internet through the tunnel while guests had
+    # no egress and every published-port reply was dropped.
+    if [ -n "$HUBADDR" ]; then
+        printf 'PostUp = wg set %%i peer %s allowed-ips %s.0.0/16,%s,0.0.0.0/0\n' \
+            "$PEER" "$TUNNET" "$HUBADDR"
+    else
+        printf 'PostUp = wg set %%i peer %s allowed-ips %s.0.0/16,0.0.0.0/0\n' \
+            "$PEER" "$TUNNET"
+    fi
     printf '\n[Peer]\n'
     printf 'PublicKey = %s\n' "$PEER"
     printf 'Endpoint = %s:%s\n' "$ENDPOINT" "$PORT"

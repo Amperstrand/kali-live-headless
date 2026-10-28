@@ -237,6 +237,9 @@ set -u
 NAME=$1
 v="virsh -c qemu:///system"
 echo "state=$($v domstate "$NAME" 2>/dev/null | head -1)"
+echo "lan_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") {print $(i + 1); exit}}')"
+echo "lan_gw=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}')"
+echo "wg_ip=$(ip -4 -o addr show wg0 2>/dev/null | awk '{print $4}' | cut -d/ -f1)"
 echo "cpu=$($v dominfo "$NAME" 2>/dev/null | sed -n 's/^CPU(s): *//p')"
 echo "mem_kib=$($v dominfo "$NAME" 2>/dev/null | sed -n 's/^Max memory: *//p' | tr -dc 0-9)"
 echo "ip=$($v domifaddr "$NAME" --source lease 2>/dev/null | awk '/ipv4/{sub(/\/.*/,"",$4); print $4}' | head -1)"
@@ -253,6 +256,7 @@ echo "fw_active=$(systemctl is-active kali-live-kvm-firewall 2>/dev/null || true
 echo "fw_drop=$(iptables -S FORWARD 2>/dev/null | awk '/-i virbr0/ && /DROP/ && /192\.168/' | wc -l | tr -d ' ')"
 echo "fw_meta=$(iptables -S FORWARD 2>/dev/null | awk '/-i virbr0/ && /DROP/ && /169\.254/' | wc -l | tr -d ' ')"
 echo "fw_v6=$( { ip6tables -C INPUT -i virbr0 -j DROP >/dev/null 2>&1 && ip6tables -C FORWARD -i virbr0 -j DROP >/dev/null 2>&1; } && echo yes || echo no)"
+echo "mss_clamp=$(iptables -t mangle -S FORWARD 2>/dev/null | grep -c -- '--clamp-mss-to-pmtu' || true)"
 echo "store_free_gb=$(df -BG --output=avail /mnt/klh-vmstore 2>/dev/null | tail -1 | tr -dc 0-9)"
 echo "dom_uuid=$($v dominfo "$NAME" 2>/dev/null | sed -n "s/^UUID: *//p" | head -1)"
 echo "fips=$(sed -n "s/^FIPS=//p" /mnt/klh-vmstore/vms/$NAME.deploy 2>/dev/null | head -1)"
@@ -265,12 +269,13 @@ REMOTE
 
 collect_guest() { # one ssh through the published port; emits key=value lines
     ssh "${SSH_OPTS[@]}" -p "$PORT" "$GUEST_USER@$HUB_HOST" \
-        "bash -s -- '${PEER_IP:-}' '${PEER_PORT:-}'" <<'REMOTE' 2>/dev/null
+        "bash -s -- '${PEER_IP:-}' '${PEER_PORT:-}' '${SITE_IP:-}' '${SITE_GW:-}' '${HOST_WG:-}' '${HUB_TUNIP:-}'" <<'REMOTE' 2>/dev/null
 set -u
-PEER_IP=$1; PEER_PORT=$2
+PEER_IP=$1; PEER_PORT=$2; SITE_IP=$3; SITE_GW=$4; HOST_WG=$5; HUB_TUNIP=$6
 echo "hostname=$(hostname)"
 echo "user=$(id -un)"
 echo "keys=$(awk '{print $1" "$2}' ~/.ssh/authorized_keys 2>/dev/null | paste -sd, -)"
+echo "key_count=$(awk 'NF{n++} END{print n+0}' ~/.ssh/authorized_keys 2>/dev/null)"
 if sudo -n true 2>/dev/null; then echo "sudo=yes"; else echo "sudo=no"; fi
 echo "sudo_all=$(sudo -n -l 2>/dev/null | grep -c 'NOPASSWD: ALL' || true)"
 st=$(sudo -n sshd -T 2>/dev/null || true)
@@ -296,11 +301,39 @@ echo "lan_10=$(timeout 3 bash -c 'echo > /dev/tcp/10.0.0.1/80' 2>/dev/null && ec
 echo "lan_172=$(timeout 3 bash -c 'echo > /dev/tcp/172.16.0.1/80' 2>/dev/null && echo open || echo blocked)"
 echo "lan_192=$(timeout 3 bash -c 'echo > /dev/tcp/192.168.0.1/80' 2>/dev/null && echo open || echo blocked)"
 echo "meta=$(timeout 3 bash -c 'echo > /dev/tcp/169.254.169.254/80' 2>/dev/null && echo open || echo blocked)"
+if command -v curl >/dev/null 2>&1; then
+    echo "tls=$(curl -4 -sS -m 12 -o /dev/null -w '%{http_code}' https://github.com 2>/dev/null || true)"
+else
+    echo "tls=unknown"
+fi
+if [ -n "$SITE_IP" ]; then
+    echo "site_host=$(timeout 3 bash -c "echo > /dev/tcp/$SITE_IP/22" 2>/dev/null && echo open || echo blocked)"
+else
+    echo "site_host=unknown"
+fi
+if [ -n "$SITE_GW" ]; then
+    echo "site_gw=$(timeout 3 bash -c "echo > /dev/tcp/$SITE_GW/80" 2>/dev/null && echo open || echo blocked)"
+else
+    echo "site_gw=unknown"
+fi
+if [ -n "$HOST_WG" ]; then
+    echo "host_wg=$(timeout 3 bash -c "echo > /dev/tcp/$HOST_WG/22" 2>/dev/null && echo open || echo blocked)"
+else
+    echo "host_wg=unknown"
+fi
+if [ -n "$HUB_TUNIP" ]; then
+    echo "hub_mgmt=$(timeout 3 bash -c "echo > /dev/tcp/$HUB_TUNIP/22" 2>/dev/null && echo open || echo blocked)"
+else
+    echo "hub_mgmt=unknown"
+fi
 if [ -n "$PEER_IP" ] && [ -n "$PEER_PORT" ]; then
     echo "peer=$(timeout 3 bash -c "echo > /dev/tcp/$PEER_IP/$PEER_PORT" 2>/dev/null && echo open || echo blocked)"
 fi
 nic=$(ip -o -4 route show default 2>/dev/null | awk "{print \$5; exit}")
-r=$(ping -6 -c1 -W2 "ff02::1%${nic:-enp1s0}" 2>/dev/null | awk "/received/{print \$4; exit}")
+# The guest's own all-nodes ping is answered by its own link-local address;
+# that is not a bridge responder. Count only replies from OTHER addresses.
+own=$(ip -o -6 addr show dev "${nic:-enp1s0}" scope link 2>/dev/null | awk "{print \$4; exit}" | cut -d/ -f1)
+r=$(ping -6 -c2 -W2 "ff02::1%${nic:-enp1s0}" 2>/dev/null | awk -v own="$own" '/bytes from/ {src=$4; sub(/%[^%]*$/, "", src); if (src != own) n++} END {print n+0}')
 echo "v6ll=${r:-0}"
 echo "fips_svc=$(systemctl is-active fips fips-dns 2>/dev/null | paste -sd, -)"
 echo "fips_addr=$(ip -o -6 addr show fips0 2>/dev/null | awk "{print \$4; exit}")"
@@ -327,6 +360,8 @@ postflight() {
     fi
 
     HV=$(collect_host)
+    SITE_IP=$(kv "$HV" lan_ip); SITE_GW=$(kv "$HV" lan_gw); HOST_WG=$(kv "$HV" wg_ip)
+    HUB_TUNIP=$(hubx "ip -4 -o addr show wg0 2>/dev/null | awk '{print \$4}' | cut -d/ -f1" 2>/dev/null | head -1)
 
     expect post.host.running "domain is running" running "$(kv "$HV" state)"
     expect post.host.cpu_mode "CPU uses check='none' (no triple fault)" 'check=none' "$(kv "$HV" cpu_check)"
@@ -341,6 +376,11 @@ postflight() {
     expect post.host.firewall "kvm-firewall daemon active" active "$(kv "$HV" fw_active)"
     at_least post.host.fw_rules "host firewall drops guest->RFC1918" 1 "$(kv "$HV" fw_drop)"
     at_least post.host.fw_metadata "host firewall drops guest->link-local (cloud metadata)" 1 "$(kv "$HV" fw_meta)"
+    # Without MSS clamping the guest advertises MSS 1460 through the 1420-MTU
+    # tunnel: small HTTP works, big TLS handshakes/downloads stall (found live
+    # 2026-10-28 — the GitHub runner download reset and api.github.com timed out
+    # while the same host's requests through wg0 succeeded).
+    at_least post.host.mss_clamp "TCP MSS clamped on the tunnel forward path" 2 "$(kv "$HV" mss_clamp)"
     expect post.host.fw_v6 "host firewall drops IPv6 from virbr0 (metadata+v6 guest<->guest)" yes "$(kv "$HV" fw_v6)"
     if printf '%s' "$(kv "$HV" fwd)" | grep -q "ext port $PORT"; then
         pass post.host.forward "forward rule publishes port $PORT"
@@ -381,6 +421,18 @@ postflight() {
         expect post.hub.unit "DNAT unit enabled (survives hub reboot)" enabled "$en"
     else
         skip post.hub.dnat "concentrator not reachable from here"
+    fi
+
+    # The published port must exist ONLY behind the hub DNAT. If the VM host's
+    # LAN address answers on it, the guest escaped onto the site network.
+    if [ -n "$SITE_IP" ]; then
+        if timeout 3 bash -c "echo > /dev/tcp/$SITE_IP/$PORT" 2>/dev/null; then
+            fail post.host.lan_exposed "published port $PORT answers on the VM host's LAN IP $SITE_IP"
+        else
+            pass post.host.lan_exposed "published port $PORT is not bound on the VM host's LAN IP"
+        fi
+    else
+        skip post.host.lan_exposed "VM host LAN address unknown"
     fi
 
     # --- guest-side view (ONE connection)
@@ -424,6 +476,34 @@ postflight() {
         skip post.ssh.keys "no --expect-key given"
     fi
 
+    # The list must contain NOTHING ELSE: the host's management key + the
+    # explicitly requested keys. Present-but-extra keys are how a box quietly
+    # outlives its authorization.
+    if [ ${#EXPECT_KEYS[@]} -gt 0 ]; then
+        expect post.ssh.keys_count "authorized_keys = host key + ${#EXPECT_KEYS[@]} expected key(s)" \
+            "$(( ${#EXPECT_KEYS[@]} + 1 ))" "$(kv "$G" key_count)"
+    fi
+
+    # Active auth probes (not config reads): the server must advertise
+    # publickey ONLY, and a key nobody authorized must be refused. Both are
+    # observed from OUTSIDE, through the same public port a user would use.
+    methods=$(ssh "${SSH_OPTS[@]}" -v -o PubkeyAuthentication=no \
+        -o PreferredAuthentications=password -p "$PORT" "$GUEST_USER@$HUB_HOST" true 2>&1 \
+        | sed -n 's/.*Authentications that can continue: //p' | tr -d '\r' | tail -1)
+    expect post.ssh.auth_methods "server advertises publickey only (password auth off)" publickey "$methods"
+    tmpk=$(mktemp -d /tmp/vmc-wrongkey.XXXXXX 2>/dev/null || mktemp -d)
+    if ssh-keygen -q -t ed25519 -N '' -f "$tmpk/id" >/dev/null 2>&1; then
+        if ssh "${SSH_OPTS[@]}" -i "$tmpk/id" -o IdentitiesOnly=yes -o PubkeyAuthentication=yes \
+            -o PreferredAuthentications=publickey -p "$PORT" "$GUEST_USER@$HUB_HOST" true >/dev/null 2>&1; then
+            fail post.ssh.wrong_key "an unauthorized key was ACCEPTED"
+        else
+            pass post.ssh.wrong_key "an unauthorized key is rejected"
+        fi
+    else
+        warn post.ssh.wrong_key "could not generate a throwaway key"
+    fi
+    rm -rf "$tmpk"
+
     # --- fips posture: opt-in must be provable in BOTH directions
     case "$(kv "$HV" fips)" in
         on)
@@ -445,6 +525,12 @@ postflight() {
     esac
 
     expect post.egress.ip "egress leaves via the concentrator" "$HUB_PUB" "$(kv "$G" egress)"
+    tls=$(kv "$G" tls)
+    if [ "$tls" = unknown ]; then
+        skip post.egress.tls "curl not installed in the guest"
+    else
+        expect post.egress.tls "guest completes a real TLS fetch (github.com)" 200 "$tls"
+    fi
     # /etc/resolv.conf points at the systemd-resolved stub; the UPSTREAM is
     # what matters (a stub in front of the site's DHCP resolver still leaks).
     dns_up=$(kv "$G" dns_up); dns_stub=$(kv "$G" dns_stub)
@@ -468,6 +554,26 @@ postflight() {
     expect post.iso.lan_10 "guest cannot reach 10/8" blocked "$(kv "$G" lan_10)"
     expect post.iso.lan_172 "guest cannot reach 172.16/12" blocked "$(kv "$G" lan_172)"
     expect post.iso.lan_192 "guest cannot reach 192.168/16" blocked "$(kv "$G" lan_192)"
+    if [ -n "$SITE_IP" ]; then
+        expect post.iso.site_host "guest cannot reach the VM host's LAN address" blocked "$(kv "$G" site_host)"
+    else
+        skip post.iso.site_host "VM host LAN address unknown"
+    fi
+    if [ -n "$SITE_GW" ]; then
+        expect post.iso.site_gw "guest cannot reach the site gateway" blocked "$(kv "$G" site_gw)"
+    else
+        skip post.iso.site_gw "site gateway unknown"
+    fi
+    if [ -n "$HOST_WG" ]; then
+        expect post.iso.host_wg "guest cannot reach the VM host's tunnel sshd" blocked "$(kv "$G" host_wg)"
+    else
+        skip post.iso.host_wg "VM host tunnel address unknown"
+    fi
+    if [ -n "$HUB_TUNIP" ]; then
+        expect post.iso.hub_mgmt "guest cannot reach the concentrator's own sshd" blocked "$(kv "$G" hub_mgmt)"
+    else
+        skip post.iso.hub_mgmt "concentrator tunnel address unknown"
+    fi
     expect post.iso.metadata "guest cannot reach cloud metadata" blocked "$(kv "$G" meta)"
     # any responder here is either the HOST (fe80:: services — Hetzner-class
     # metadata is served on fe80::a9fe:a9fe) or another GUEST (bridged v6 the

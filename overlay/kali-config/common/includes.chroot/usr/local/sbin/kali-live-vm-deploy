@@ -169,6 +169,17 @@ ensure_egress() {
     # a fresh deploy never has the window open.
     iptables -C FORWARD -i virbr0 -d 169.254.0.0/16 -j DROP >/dev/null 2>&1 \
         || iptables -I FORWARD -i virbr0 -d 169.254.0.0/16 -j DROP 2>/dev/null || true
+    # MSS clamping: guests see a 1500-MTU NIC and advertise MSS 1460, but the
+    # tunnel is 1420. Large packets then vanish: small requests work while TLS
+    # handshakes and downloads hang/reset (found live 2026-10-28 — the GitHub
+    # runner install could not download its tarball). Clamp to the route PMTU
+    # in both directions; this is per-VM-host state, not per-guest.
+    for _dir in -o -i; do
+        iptables -t mangle -C FORWARD "$_dir" "$WG_IF" -p tcp --tcp-flags SYN,RST SYN \
+            -j TCPMSS --clamp-mss-to-pmtu >/dev/null 2>&1 \
+            || iptables -t mangle -A FORWARD "$_dir" "$WG_IF" -p tcp --tcp-flags SYN,RST SYN \
+                -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
+    done
     return 0
 }
 
