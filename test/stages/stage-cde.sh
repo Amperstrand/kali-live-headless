@@ -438,7 +438,10 @@ else
             # medium (fstype stays as-is) with the decline announced on the
             # console. Refusal-without-decline or a silent skip is the bug.
             v=$(guest 'findmnt -n -o FSTYPE /run/live/medium 2>/dev/null')
-            _declined=$(guest 'dmesg 2>/dev/null | grep -c "toram declined" || true')
+            # the decline marker is an `echo > /dev/console` from the initramfs
+            # — it appears on the SERIAL console, not in the guest's kernel
+            # ring (dmesg), so read this run's own serial capture
+            _declined=$(grep -ac "toram declined" "$SCRATCH/serial-override.log" 2>/dev/null || true)
             if [ "$v" = "tmpfs" ]; then
               record pass "toram: medium is tmpfs (copy happened)"
             elif [ "${_declined:-0}" -ge 1 ]; then
