@@ -319,15 +319,17 @@ docker), or register an organization-level runner.
 
 ### A second tenant, and preferring the VM when it is online
 
-Since 2026-10-28 the guest also runs `legion-t7-vm-ccid` for
-`Amperstrand/ccid-firmware-rs` (fuzz-nightly lane), installed exactly that
-way. Both services carry the `legion-vm` label: it is a **machine-class
-pool** — any runner carrying it may take a job, so several services on one
-VM give matrix parallelism (one job per service) without more hardware.
+Since 2026-10-28 the guest also runs two runner services for
+`Amperstrand/ccid-firmware-rs` (`legion-t7-vm-ccid`, `-ccid-2`), installed
+exactly that way. The shared `legion-vm` label is the `runs-on` machine
+class — but note what it is NOT: repo-scoped registrations only receive
+**their own repo's** jobs (proven live: ccid legs queued behind the one
+ccid service while the kali runner idled). Parallel matrix legs therefore
+need one service per slot *per repo*, which is why ccid has two.
 
 ```sh
 tools/github-runner-install.sh --guest debian@inr2.cashu.exchange:22023 \
-  --repo Amperstrand/ccid-firmware-rs --name legion-t7-vm-ccid --labels legion-vm
+  --repo Amperstrand/ccid-firmware-rs --name legion-t7-vm-ccid-2 --labels legion-vm
 tools/github-runner-install.sh ... --verify    # health: no token, no restart
 ```
 
@@ -339,13 +341,15 @@ unit it configures — check for a busy runner first).
 
 Because GitHub Actions has **no native self-hosted→hosted fallback** (a job
 whose runner is absent queues until timeout), the ccid fuzz lane added a
-`pick-runner` job: a seconds-cheap hosted probe of the runners API that
-routes the legs to `[self-hosted, legion-vm]` when one is online and to
-`ubuntu-latest` otherwise — and raises the fuzz budget 120s→900s when on
-the fast box, so the preference buys 7.5× more fuzzing per night rather
-than just a shorter run. Pattern and trade-offs: PR #478 in
-ccid-firmware-rs, [`prior-art.md`](prior-art.md#1-self-hosted-ci-runners);
-extension to more lanes is [#42](https://github.com/Amperstrand/kali-live-headless/issues/42).
+`pick-runner` job: a seconds-cheap hosted probe — inferring availability
+from *executed jobs*, since the runners API is admin-only to job tokens —
+that gates the fuzz legs: heartbeat present → run on the VM with the
+budget raised 120s→**1800s** per target (15× more fuzzing per night);
+heartbeat absent → the legs **skip** (fuzzing is self-hosted-only by
+owner policy — no hosted consolation pass). Pattern and trade-offs:
+PR #478 in ccid-firmware-rs,
+[`prior-art.md`](prior-art.md#1-self-hosted-ci-runners); extension to
+more lanes is [#42](https://github.com/Amperstrand/kali-live-headless/issues/42).
 
 ### The CI proof
 

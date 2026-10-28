@@ -432,16 +432,21 @@ drift is absorbed by bumping the pin, nothing else.
     disk returns under a *new* kernel name, so always mount the store by
     PARTUUID. Hibernated Windows means `powercfg /h off` on the Windows
     side — never automate `remove_hiberfile`.
-40. **Runners on the VM: one service per repo, labels are the machine
-    class** (2026-10-28): `github-runner-install.sh --name X` per repo
-    (shared `runner` user/docker, separate unit+dir); every service
-    carrying `legion-vm` forms one pool, so N services = N parallel jobs
-    on one box. `--verify` is the health check (no token, no restart —
-    safe during a job; remember `/home/runner` is 0700, so guest-side
-    asserts must run *as* runner). GitHub has **no native
-    self-hosted→hosted fallback** — the `pick-runner` availability probe
-    (ccid fuzz-nightly, PR #478) is the pattern; prefer scaling the work
-    budget (fuzz 120s→900s) over shaving seconds.
+40. **Runners on the VM: one service per repo *per parallel slot*, labels
+    route but do not pool across repos** (2026-10-28): `github-runner-install.sh
+    --name X` per repo (shared `runner` user/docker, separate unit+dir). A
+    repo-scoped registration only ever receives **its own repo's** jobs —
+    proven when ccid fuzz legs queued behind the single ccid service while
+    the identically-labelled kali runner idled; labels like `legion-vm` are
+    the `runs-on` machine class, not a cross-repo pool. So N services on
+    the same repo = N parallel jobs for that repo (ccid now runs two).
+    `--verify` is the health check (no token, no restart — safe during a
+    job; remember `/home/runner` is 0700, so guest-side asserts must run
+    *as* runner). GitHub has **no native self-hosted→hosted fallback** —
+    the `pick-runner` executed-jobs probe (ccid fuzz-nightly, PR #478) is
+    the pattern (the runners API is admin-only to job tokens, and
+    `gh api` has no `--argjson`; both were silent-failure traps).
+    Prefer scaling the work budget (fuzz 120s→1800s) over shaving seconds.
 
 ## Public-repo hygiene
 
