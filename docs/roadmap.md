@@ -47,16 +47,20 @@ CI lanes and, where physical, by `vm-check`/`hw-check`.
   demo therefore lives on Amperstrand repos, which the tool supports
   natively (`--repo`).
 
-## Carried from the old backlog (still open, still ranked)
+## Carried from the old backlog (audited 2026-10-28)
 
 - Hot-chroot lane (preserve `chroot/` across iteration builds) and the
   `:8000` HTTP apt cache — build-time levers; release builds stay
   cold-clean. See `docs/reproducible-builds.md`.
-- Mechanical verdict ledger — test.sh emits a machine-readable verdict
-  consumed by BUILDS.md rows (several rows were hand-typed; the ledger is
-  only as trustworthy as its least-typed row).
+- ~~Mechanical verdict capture~~ — LANDED and hardened 2026-10-28:
+  `test.sh` emits `VERDICT …` and `iso-archive.sh` consumes it
+  mechanically; the MECHANICAL verdict now outranks a hand `--verdict`
+  (conflicts warn loudly) and a FAIL suite pre-marks the BUILDS.md row
+  DO-NOT-FLASH.
 - ~~Auto-pick `KLH_TEST_PORT`~~ — LANDED (stage-cde auto-picks an ephemeral
   port when unset; an explicit pin still wins).
+- A run-level verdict ledger for boot gates that never reach
+  `iso-archive` (archive-time capture exists; the gates write logs only).
 
 ## Cross-links added 2026-10-28
 
