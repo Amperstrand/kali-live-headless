@@ -63,6 +63,10 @@ elif [ "${HOSTNAME_SCHEME:-static}" = hardware ]; then
 else
   HOST="$HOSTNAME.local"
 fi
+# Tolerate --host user@host: the script always prepends the login user
+# (kali@), so a caller passing --host kali@<ip> used to probe
+# kali@kali@<ip> and retry until the reach timeout (2026-10-28).
+HOST=${HOST#*@}
 SSH_PUB=$(klh_expand_tilde "$SSH_PUBKEY_PATH")
 [ -f "$SSH_PUB" ] || klh_die "SSH public key not found: $SSH_PUB (re-run ./configure.sh)"
 SSH_KEY=${SSH_PUB%.pub}
@@ -87,7 +91,7 @@ section() { printf '\n=== %s ===\n' "$*"; }
 SSH_OPTS=(-F none -i "$SSH_KEY" -o UserKnownHostsFile="$EVID/known_hosts" \
   -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes \
   -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
-  -o ControlMaster=auto -o ControlPath="$EVID/ssh-%p" -o ControlPersist=900 \
+  -o ControlMaster=auto -o ControlPath="$EVID/ssh-master" -o ControlPersist=900 \
   kali@"$HOST")
 # ^ ControlMaster is CORRECTNESS here, not speed: the image arms SSH rate
 # limiting (>3 new connections/min per source, iptables recent whose
@@ -223,6 +227,13 @@ if [ -n "$npub" ]; then
     # our own only when the blackbox isn't holding it.
     v=$(guest_sudo "grep '^FIPS_NPUB=' /run/klh-blackbox/host-role.conf 2>/dev/null | cut -d= -f2 || { mount -o ro /dev/$klh_part /mnt 2>/dev/null && grep '^FIPS_NPUB=' /mnt/host-role.conf 2>/dev/null | cut -d= -f2; umount /mnt 2>/dev/null; }" | tail -1)
     [ "$v" = "$npub" ] && record pass "KLHCONFIG identity matches (persistent npub)" || record fail "KLHCONFIG identity matches (want $npub, got '${v:-none}')"
+  elif guest_sudo 'journalctl -b -t kali-live-headless --no-pager 2>/dev/null' | grep -q 'boot-medium config found (KLHCONFIG)'; then
+    # toram boot with the stick pulled after boot: the salt WAS read from
+    # KLHCONFIG at boot (the journal proves it), so this npub is
+    # salt-derived and survives the next boot with the stick inserted. The
+    # partition being absent NOW is the point of toram, not a persistence
+    # failure (2026-10-28, legion).
+    record pass "KLHCONFIG identity at boot (toram: medium removed after boot)" "salt-derived; persists on next boot with the stick"
   else
     record fail "KLHCONFIG partition present" "npub exists but no config partition — where does it persist? (reboot = new identity)"
   fi
@@ -341,11 +352,22 @@ if [ "$WITH_KVM" = true ]; then
     record fail "guest firewall rules installed" "INPUT/FORWARD rules missing after 75 s — daemon state above"
     capture fw-rules guest_sudo 'iptables -S INPUT; iptables -S FORWARD; ip link show virbr0; virsh -c qemu:///system net-list --all'
   fi
-  v=$(guest_sudo 'iptables -S FORWARD 2>/dev/null | sed -n "2,4p"')
-  if printf '%s\n' "$v" | grep -q '10.0.0.0/8' && printf '%s\n' "$v" | grep -q '172.16.0.0/12' && printf '%s\n' "$v" | grep -q '192.168.0.0/16'; then
-    record pass "RFC1918 drops at TOP of FORWARD (not shadowed by libvirt chains)"
+  # What matters is that every v4 special-use drop appears ABOVE the first
+  # libvirt jump. Do not count lines: the metadata rule (169.254/16,
+  # 2026-10-26) is now first and pushed 192.168/16 out of the old hardcoded
+  # sed 2,4p window; iptables also reorders its own dump (-d CIDR -i virbr0)
+  # — match case-insensitively and by prefix, never positionally.
+  all=$(guest_sudo 'iptables -S FORWARD 2>/dev/null')
+  jump=$(printf '%s\n' "$all" | grep -n -i -m1 'j LIBVIRT' | cut -d: -f1)
+  [ -n "$jump" ] || jump=9999
+  top=$(printf '%s\n' "$all" | head -n "$jump")
+  if printf '%s\n' "$top" | grep -q '10\.0\.0\.0/8' \
+     && printf '%s\n' "$top" | grep -q '172\.16\.0\.0/12' \
+     && printf '%s\n' "$top" | grep -q '192\.168\.0\.0/16' \
+     && printf '%s\n' "$top" | grep -q '169\.254\.0\.0/16'; then
+    record pass "special-use drops above the first libvirt jump (RFC1918 + metadata)"
   else
-    record fail "RFC1918 drops at TOP of FORWARD" "got: $(printf '%s' "$v" | tr '\n' ' ')"
+    record fail "special-use drops above the first libvirt jump" "got: $(printf '%s' "$all" | tr '\n' ' ')"
   fi
   v=$(guest_sudo "virsh -c qemu:///system net-info default 2>/dev/null | grep -c 'Autostart:.*yes' || true")
   [ "${v:-0}" -ge 1 ] 2>/dev/null && record pass "libvirt default network autostarts (deterministic virbr0)" || record fail "libvirt default network autostarts"
@@ -601,8 +623,15 @@ fi
 
 section "hardware health"
 capture dmesg-warn guest_sudo 'dmesg --level=err,warn | tail -n 60'
-v=$(guest_sudo "dmesg 2>/dev/null | grep -ci 'firmware.*fail' || true")
-[ "${v:-1}" -eq 0 ] 2>/dev/null && record pass "no firmware load failures" || { record fail "firmware load failures ($v) — see $EVID/dmesg-warn.txt"; }
+v=$(guest_sudo "dmesg 2>/dev/null | grep -i 'firmware.*fail' | grep -vi 'iwl-debug-yoyo' | head -3 || true")
+# Non-vacuous: prove dmesg is readable before trusting an empty match set.
+if [ -z "$(guest_sudo 'dmesg 2>/dev/null | head -1')" ]; then
+    record info "firmware load failures not checked (dmesg unreadable)"
+elif [ -z "$v" ]; then
+    record pass "no firmware load failures (iwl-debug-yoyo debug blob ignored)"
+else
+    record fail "firmware load failures — $v"
+fi
 v=$(guest 'swapon --show --noheadings 2>/dev/null')
 [ -z "$v" ] && record pass "no swap in use" || record fail "swap in use (internal disk touched!): $v"
 v=$(guest 'cat /sys/class/dmi/id/product_name 2>/dev/null'); record info "DMI: $v"

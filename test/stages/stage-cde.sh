@@ -92,7 +92,7 @@ else
     # socket) left the channel open indefinitely and wedged the suite
     # (2026-10-24, 3/3 deterministic on bios3). timeout 120 is the outer
     # deadline (worst legitimate guest command ≈ 85 s retry loop).
-    SSH_OPTS=(-F none -i "$SSH_KEY" -p "$PORT" -o UserKnownHostsFile="$SCRATCH/known_hosts" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o BatchMode=yes -o ControlMaster=auto -o ControlPath="$SCRATCH/ssh-%p" -o ControlPersist=300 kali@127.0.0.1)
+    SSH_OPTS=(-F none -i "$SSH_KEY" -p "$PORT" -o UserKnownHostsFile="$SCRATCH/known_hosts" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o BatchMode=yes -o ControlMaster=auto -o ControlPath="$SCRATCH/ssh-master" -o ControlPersist=300 kali@127.0.0.1)
     # ControlMaster multiplexing is not a speed nicety — it is CORRECTNESS:
     # the image's provision arms SSH rate limiting (>3 new connections/min
     # per source) late in boot, and the suite's poll+assert pattern is a

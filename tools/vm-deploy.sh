@@ -110,7 +110,12 @@ comment_list=$(printf '%s\n' "${KEYLINES[@]}" | awk '{print $NF}' | paste -sd, -
 printf 'keys: %s\n' "$comment_list"
 
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-          -o ConnectTimeout=15 -o ServerAliveInterval=15)
+          -o ConnectTimeout=15 -o ServerAliveInterval=15
+          -o ControlMaster=auto -o ControlPath=/tmp/opencode/vmd-%h -o ControlPersist=300)
+# ^ ControlMaster is CORRECTNESS here, not speed: the image arms an SSH rate
+# limiter (>7 new connections/min per source, iptables recent whose --update
+# refreshes the window) and this tool makes ~8 stick connections in bursts
+# (tool checks, scp, deploy, state, fips). One multiplexed session per host.
 
 if $VERIFY_ONLY; then
     step "verify only: $NAME (no provisioning)"
