@@ -89,7 +89,7 @@ def machine_fingerprint() -> str:
 # ---------------------------------------------------------------------------
 # bech32 (Nostr nsec/npub) — same code as host_role_init
 
-CHARSET = "qpzry9x8gf2tvdcw0s3jn54khce6mua7l"
+CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 
 
 def _bech32_polymod(values):

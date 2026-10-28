@@ -440,8 +440,22 @@ blk_unlock() {
     fi
 }
 
+mnt_is_ro() { findmnt -no OPTIONS "$MNT" 2>/dev/null | grep -qE '(^|,)ro(,|$)'; }
+
+mount_refuse_ro() {
+    log "ERROR: $DEVICE is mounted READ-ONLY (hibernated Windows / dirty NTFS — ntfs-3g's silent ro downgrade; NEVER forced) — a VM store needs rw. Boot Windows, run 'powercfg /h off', do a FULL shutdown (Shift+Shutdown also works once), then boot the stick again"
+    exit 1
+}
+
 do_mount() {
     if mountpoint -q "$MNT" 2>/dev/null; then
+        # A pre-existing mount can be the silent ro downgrade (2026-10-28,
+        # legion: hiberfil.sys 34G -> ntfs-3g mounted ro, the old code logged
+        # "VM store ready" and the first volume create failed with EROFS).
+        if mnt_is_ro; then
+            DEVICE=$(findmnt -no SOURCE "$MNT" 2>/dev/null || echo unknown)
+            mount_refuse_ro
+        fi
         log "$MNT already mounted — reusing"
         return 0
     fi
@@ -468,6 +482,7 @@ do_mount() {
         exit 1
     fi
     log "mounted $DEVICE at $MNT (type $MOUNT_TYPE, opts $MOUNT_OPTS)"
+    if mnt_is_ro; then mount_refuse_ro; fi
 }
 
 do_pool() {

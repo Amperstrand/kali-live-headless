@@ -41,6 +41,31 @@ echo "== formats =="
 NPUB=$(printf '%s' "$A" | cut -f1); NSEC=$(printf '%s' "$A" | cut -f2)
 printf '%s' "$NPUB" | grep -qE '^npub1[0-9a-z]{58}$' && ok "npub bech32 shape" || bad "npub shape: $NPUB"
 printf '%s' "$NSEC" | grep -qE '^nsec1[0-9a-z]{58}$' && ok "nsec bech32 shape" || bad "nsec shape: $NSEC"
+# Shape is not validity: a corrupted CHARSET alphabet still passes the regex
+# (found live 2026-10-28 — derive_identity.py carried "tvd**c**w0", so every
+# nsec/npub it produced failed bech32 decoding in the fips daemon).
+python3 - "$NPUB" "$NSEC" <<'PY' && ok "npub/nsec bech32 checksums valid" || bad "bech32 checksum invalid (charset/encoding)"
+import sys
+CH = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
+def polymod(v):
+    c = 1
+    for x in v:
+        b = c >> 25
+        c = ((c & 0x1ffffff) << 5) ^ x
+        for i in range(5):
+            if (b >> i) & 1:
+                c ^= GEN[i]
+    return c
+for s in sys.argv[1:]:
+    hrp, _, data = s.rpartition("1")
+    vals = [CH.find(ch) for ch in data]
+    if -1 in vals:
+        sys.exit(1)
+    exp = [ord(x) >> 5 for x in hrp] + [0] + [ord(x) & 31 for x in hrp] + vals
+    if polymod(exp) != 1:
+        sys.exit(1)
+PY
 WG=$(py "$SALT" --fingerprint "$FP1" --purpose wireguard)
 printf '%s' "$WG" | grep -qE '^[A-Za-z0-9+/]{43}=$' && ok "wg key base64 shape" || bad "wg shape: $WG"
 PW=$(py "$SALT" --fingerprint "$FP1" --purpose console)
