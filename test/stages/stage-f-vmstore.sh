@@ -154,7 +154,11 @@ DOCKERFILE
             v=$(guest '/usr/local/sbin/kali-live-vm-rm --stale 2>/dev/null | tail -1')
             case "$v" in removed*) record pass "vmstore: --stale sweep runs clean ($v)" ;; *) record fail "vmstore: --stale sweep ($v)" ;; esac
 
-            timeout 30 guest_sudo 'poweroff' >/dev/null 2>&1 || kill_qemu vmstore-live
+            # release the store BEFORE poweroff: an active FUSE store mount
+            # can wedge the guest's shutdown sequence (serial stops at the
+            # login prompt, no shutdown messages) and the kill -9 then
+            # loses unflushed pool deletions — the #51 'leftovers' fail.
+            timeout 60 guest_sudo 'umount /mnt/klh-vmstore 2>/dev/null; poweroff' >/dev/null 2>&1 || kill_qemu vmstore-live
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
             kill -9 "$QPID" 2>/dev/null || true
 
