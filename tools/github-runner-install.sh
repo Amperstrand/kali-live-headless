@@ -23,6 +23,8 @@
 #                         (fallback when the guest's egress cannot sustain the
 #                         ~228 MB download — e.g. an unclamped tunnel MSS)
 #   --no-docker           do not install docker.io / add runner to the group
+#   --verify              check the registered runner, systemd unit, docker
+#                         and toolchain, then exit (no token, no changes)
 #
 # The runner is REPO-SCOPED: one repository per invocation. Run again with a
 # different --name for a second repo (each gets its own runner directory and
@@ -36,10 +38,10 @@
 set -euo pipefail
 
 GUEST="" REPO="" NAME="legion-vm" LABELS="" SSH_KEY="${HOME}/.ssh/id_ed25519"
-RUNNER_VERSION="" TARBALL="" WITH_DOCKER=true
+RUNNER_VERSION="" TARBALL="" WITH_DOCKER=true VERIFY=false
 
 die() { printf 'github-runner-install: %s\n' "$*" >&2; exit 1; }
-usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -51,6 +53,7 @@ while [ $# -gt 0 ]; do
         --runner-version) RUNNER_VERSION=${2:?}; shift 2 ;;
         --runner-tarball) TARBALL=${2:?}; shift 2 ;;
         --no-docker)      WITH_DOCKER=false; shift ;;
+        --verify)         VERIFY=true; shift ;;
         -h|--help)        usage ;;
         *) die "unknown argument: $1" ;;
     esac
@@ -77,6 +80,47 @@ SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o C
 SCP=(scp -q -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
 if [ -n "$PORT" ]; then SSH+=(-p "$PORT"); SCP+=(-P "$PORT"); fi
 
+SLUG=${REPO//\//-}
+
+# --verify is deliberately before token minting: checking a runner must never
+# rotate its registration, and it is safe to run while a CI job is active.
+if [ "$VERIFY" = true ]; then
+    UNIT="actions.runner.$SLUG.$NAME.service"
+    DIR="/home/runner/actions-runner-$SLUG"
+    printf 'runner-verify: %s @ %s\n' "$NAME" "$REPO"
+    STATUS=$(gh api "repos/$REPO/actions/runners" \
+        --jq ".runners[] | select(.name==\"$NAME\") | .status" 2>/dev/null || true)
+    [ "$STATUS" = online ] || die "runner '$NAME' is not online on $REPO (status='${STATUS:-not registered}')"
+    RLABELS=$(gh api "repos/$REPO/actions/runners" \
+        --jq ".runners[] | select(.name==\"$NAME\") | .labels | map(.name) | join(\",\")" 2>/dev/null || true)
+    WANT="self-hosted,Linux,X64"
+    [ -n "$LABELS" ] && WANT="$WANT,$LABELS"
+    WANT=$(printf '%s' "$WANT" | tr -d ' ')
+    IFS=',' read -ra _want <<< "$WANT"
+    for _w in "${_want[@]}"; do
+        case ",$RLABELS," in
+            *",$_w,"*) ;;
+            *) die "runner label missing: $_w (have: $RLABELS)" ;;
+        esac
+    done
+    printf 'runner-verify: github online labels=%s\n' "$RLABELS"
+    "${SSH[@]}" "$TARGET" "bash -s -- '$UNIT' '$DIR'" <<'REMOTE' \
+        || die "guest checks failed (unit/docker/toolchain/registration)"
+set -euo pipefail
+UNIT=$1 DIR=$2
+systemctl is-active --quiet "$UNIT"
+sudo -n -u runner test -f "$DIR/.runner"
+sudo -n -u runner docker version --format '{{.Server.Version}}' >/dev/null
+for t in shellcheck yamllint ansible-playbook docker jq git; do
+    command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 1; }
+done
+printf 'runner-verify: guest unit=active docker=%s tools=ok\n' \
+    "$(sudo -n -u runner docker version --format '{{.Server.Version}}')"
+REMOTE
+    printf 'runner-verify: PASS\n'
+    exit 0
+fi
+
 [ -n "$RUNNER_VERSION" ] || RUNNER_VERSION=$(gh api repos/actions/runner/releases/latest --jq .tag_name 2>/dev/null | sed 's/^v//')
 [ -n "$RUNNER_VERSION" ] || RUNNER_VERSION=2.338.0
 
@@ -84,7 +128,6 @@ TOKEN=$(gh api -X POST "repos/$REPO/actions/runners/registration-token" --jq .to
     || die "could not mint a registration token for $REPO (admin required, and Actions must be enabled)"
 [ -n "$TOKEN" ] || die "GitHub returned an empty registration token"
 
-SLUG=${REPO//\//-}
 STAGED=false
 if [ -n "$TARBALL" ]; then
     "${SCP[@]}" "$TARBALL" "$TARGET:/tmp/runner.tgz" \

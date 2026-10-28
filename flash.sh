@@ -29,11 +29,12 @@ ALLOW_LARGE=false
 LIST_ONLY=false
 DRY_RUN=false
 VERIFY_ONLY=false
+ALLOW_QUARANTINED=false
 ORIG_ARGS=("$@")   # preserved across the sudo re-exec below
 
 usage() {
   cat <<EOF
-Usage: ./flash.sh [--build N | --iso PATH] [--device PATH] [--yes] [--dry-run] [--list]
+Usage: ./flash.sh [--build N | --iso PATH] [--device PATH] [--yes] [--dry-run] [--list] [--allow-quarantined]
 
   --build N      Flash the archived build N (output/iso-buildN/)
   --iso PATH     ISO to write (default: newest archived build, else the slot)
@@ -42,6 +43,10 @@ Usage: ./flash.sh [--build N | --iso PATH] [--device PATH] [--yes] [--dry-run] [
   --allow-large  Allow flashing a removable device over 64G (default:
                  refused — that is probably an external SSD/HDD, not a
                  stick, and the write destroys it wholesale)
+  --allow-quarantined
+                 Flash a stick that tools/usb-probe.sh has quarantined or
+                 that logged kernel I/O errors (accept a corrupt boot
+                 medium only when you mean it)
   --yes          Skip the typed confirmation (scripted use — dangerous)
   --dry-run      Check ISO, devices and target, then stop before writing
                  (runs unprivileged; use it to convince yourself first)
@@ -66,6 +71,7 @@ EOF
     --device)  DEVICE=${2:?}; shift 2 ;;
     --yes)     ASSUME_YES=true; shift ;;
     --allow-large) ALLOW_LARGE=true; shift ;;
+    --allow-quarantined) ALLOW_QUARANTINED=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     --verify-only) VERIFY_ONLY=true; shift ;;
     -h|--help) usage ;;
@@ -304,6 +310,31 @@ if [ "$ASSUME_YES" != true ] && [ "$DRY_RUN" != true ]; then
   [ "$typed" = "$DEVPATH" ] || klh_die "confirmation mismatch — aborting (nothing was written)"
 fi
 
+# USB health gate — read-only, and deliberately BEFORE the dry-run exit so a
+# dry run shows the evidence too. The probe's ledger lives outside the repo
+# in the operator's home (SUDO_USER, not root): a stick that failed a flash
+# here stays refused until a later test/flash records a pass.
+if [ -x "$REPO_DIR/tools/usb-probe.sh" ]; then
+  _probe_args=(--device "$DEVPATH" --preflight)
+  [ "$ALLOW_QUARANTINED" = true ] && _probe_args+=(--allow-quarantined)
+  probe_rc=0
+  "$REPO_DIR/tools/usb-probe.sh" "${_probe_args[@]}" || probe_rc=$?
+  case "$probe_rc" in
+    0|2) ;;
+    *) klh_warn "usb-probe preflight failed (rc=$probe_rc) — continuing unmeasured; see above" ;;
+  esac
+  if [ "$probe_rc" -eq 2 ]; then
+    if [ "$DRY_RUN" = true ]; then
+      klh_warn "dry run: a real flash would REFUSE $DEVPATH (quarantined or kernel errors) — see usb-probe above"
+      klh_warn "override only with --allow-quarantined if you accept a corrupt boot medium"
+    elif [ "$ALLOW_QUARANTINED" = true ]; then
+      klh_warn "usb-probe refused this stick, but --allow-quarantined was given — proceeding"
+    else
+      klh_die "refusing to flash a quarantined/erroring stick ($DEVPATH) — see usb-probe above; --allow-quarantined overrides only if you accept the risk"
+    fi
+  fi
+fi
+
 if [ "$DRY_RUN" = true ]; then
   klh_ok "dry run: target $DEVPATH validated, ISO checksum OK — nothing was written"
   klh_info "re-run without --dry-run to write it"
@@ -405,6 +436,15 @@ if [ "$ISO_HASH" != "$DEV_HASH" ]; then
 fi
 if [ "$ISO_HASH" = "$DEV_HASH" ]; then
   klh_ok "verified: $DEVPATH matches the ISO (sha256 prefix ${ISO_HASH:0:16}...)"
+  # Record the health verdict on the way through: the bytes matched, but a
+  # device that logged kernel errors is still not fit to trust (the ledger
+  # then refuses the next flash unless explicitly overridden).
+  if [ -x "$REPO_DIR/tools/usb-probe.sh" ]; then
+    probe_rc=0
+    "$REPO_DIR/tools/usb-probe.sh" --device "$DEVPATH" --postflight \
+      --write-mbs "$DD_RATE" || probe_rc=$?
+    [ "$probe_rc" -eq 0 ] || klh_warn "usb-probe postflight rc=$probe_rc — payload verified, but the medium reported trouble; see above"
+  fi
 else
   # Real mismatch: give the operator EVIDENCE, not just a verdict — where
   # do the bytes differ, and how widespread is it? A single window = a
@@ -424,16 +464,31 @@ else
     fi
     chunk_no=$((chunk_no + 1))
   done
+  if [ -x "$REPO_DIR/tools/usb-probe.sh" ] && [ -n "$first_diff" ]; then
+    # Re-read the suspect region THREE times and compare against the ISO:
+    # identical wrong bytes = stable corruption (bad NAND/controller),
+    # changing bytes = unstable medium. The old message guessed "dropped
+    # flush" for both; the 2026-10-28 DataTraveler was the first kind.
+    "$REPO_DIR/tools/usb-probe.sh" --device "$DEVPATH" --verify-region "$ISO" \
+      --offset "$first_diff" --length 67108864 || true
+  fi
+  if [ -x "$REPO_DIR/tools/usb-probe.sh" ]; then
+    "$REPO_DIR/tools/usb-probe.sh" --device "$DEVPATH" --record \
+      --result quarantined --write-mbs "$DD_RATE" \
+      --note "verify mismatch first=${first_diff:-unknown} chunks=${diff_chunks}/${chunk_no}" || true
+  fi
   klh_die "verification FAILED — $DEVPATH does not match the ISO.
   ISO-side hash was verified BEFORE the write (the .iso on disk is good).
   Differing: ${diff_chunks} of ${chunk_no} 64M chunks, first at byte offset ${first_diff:-unknown}.
-  What this means:
-    * one small window  -> the USB bridge dropped a flush (cheap stick /
-      marginal port); the boot payload often still works but the stick is
-      NOT trustworthy — re-flash on a direct USB3 port
-    * widespread diffs  -> failing medium or cable; use another stick
-  (A USB2-speed write (under ~15 MB/s, see the rate above) is the classic
-  signature of the ports/cables that cause exactly this.)"
+  What this means (usb-probe above classified the suspect region):
+    * device re-reads are IDENTICAL but wrong -> stable corruption (bad
+      NAND/controller); a reflash may not remap it — quarantine the stick
+    * device re-reads DIFFER -> unstable medium/link; retire the stick
+    * widespread diffs -> failing medium or cable; use another stick
+  The health ledger now quarantines this serial. A slow write is not proof
+  of a USB2 port: usb-probe --preflight printed the negotiated link and
+  cache mode. On a 5000M link, under ~15 MB/s means the MEDIUM is the
+  bottleneck, not the port — use a different stick, not a different port."
 fi
 fi
 
