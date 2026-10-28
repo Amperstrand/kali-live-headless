@@ -407,6 +407,42 @@ drift is absorbed by bumping the pin, nothing else.
     `unmeasured` costs are WARNED, never silently OK. Adding a feature means
     adding a row with real gate ids — a feature without a gate is a claim.
 
+37. **A verify failure is a hypothesis, not a verdict** (2026-10-28,
+    DataTraveler case): a USB3 5000M link with 5–6 MB/s writes is a slow
+    *medium*, not a USB2 port; a differing region that reads back the SAME
+    wrong bytes 3× is **stable corruption** (bad NAND/controller —
+    quarantine; a reflash may not remap), while changing bytes mean
+    failing media/link. Kernel `device offline` during read-back is
+    evidence even when later reads are fast. `tools/usb-probe.sh`
+    (--preflight/--verify-region/--postflight/--burn-in) measures link,
+    cache, rates and kernel log; its ledger
+    (`~/.local/share/kali-live-headless/stick-health.tsv`, serial-hash
+    keyed, outside the repo) makes a failed stick refused by the next
+    `flash.sh` unless `--allow-quarantined`.
+38. **WireGuard egress: never `AllowedIPs = 0.0.0.0/0` on the host peer**
+    (2026-10-28) — it steals the host's default route. Widen the crypto
+    filter at runtime instead (`PostUp = wg set %i peer … allowed-ips
+    10.66.0.0/16,10.99.0.1/32,0.0.0.0/0`), and clamp TCP MSS
+    **bidirectionally** on the tunnel forward path or TLS handshakes die
+    on MTU. Both are asserted by `vm-check` (`post.egress.*`,
+    `post.host.mss_clamp`).
+39. **When a fuseblk mount outlives its device** (NTFS store, 2026-10-28):
+    the exclusive mount blocks `dmsetup` and unmount has nothing to talk
+    to. Recovery is a PCI hot-remove + rescan of the NVMe controller; the
+    disk returns under a *new* kernel name, so always mount the store by
+    PARTUUID. Hibernated Windows means `powercfg /h off` on the Windows
+    side — never automate `remove_hiberfile`.
+40. **Runners on the VM: one service per repo, labels are the machine
+    class** (2026-10-28): `github-runner-install.sh --name X` per repo
+    (shared `runner` user/docker, separate unit+dir); every service
+    carrying `legion-vm` forms one pool, so N services = N parallel jobs
+    on one box. `--verify` is the health check (no token, no restart —
+    safe during a job; remember `/home/runner` is 0700, so guest-side
+    asserts must run *as* runner). GitHub has **no native
+    self-hosted→hosted fallback** — the `pick-runner` availability probe
+    (ccid fuzz-nightly, PR #478) is the pattern; prefer scaling the work
+    budget (fuzz 120s→900s) over shaving seconds.
+
 ## Public-repo hygiene
 
 The repo is **public**. Nothing private may land here, ever: no PSKs, SSIDs,

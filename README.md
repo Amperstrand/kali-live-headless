@@ -14,6 +14,20 @@ $ ssh kali@kali-live.local          # or ssh kali@<IPv4 shown on the console>
 You authenticate with your existing SSH private key. The private key never
 touches the USB stick.
 
+The same stick can also act as a **secure VM host and CI-runner host**: a
+firewalled KVM guest with tunnel-only egress and repo-scoped self-hosted
+GitHub Actions runners — proven live and asserted after every boot.
+
+## Start here
+
+| I want to… | Read |
+|---|---|
+| build and flash my first stick (and probe the USB medium first) | [`docs/getting-started.md`](docs/getting-started.md) |
+| host VMs / a CI runner on the stick | [`docs/vm-host-legion.md`](docs/vm-host-legion.md) |
+| see exactly what is proven — and what is not | [`docs/tested-status.md`](docs/tested-status.md) |
+| know the plan and open issues | [`docs/roadmap.md`](docs/roadmap.md) |
+| see how it compares to prior art | [`docs/prior-art.md`](docs/prior-art.md) |
+
 ---
 
 ## How it works
