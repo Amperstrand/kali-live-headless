@@ -43,7 +43,11 @@ if ! "${DOCKER[@]}" inspect --type image "$IMAGE" >/dev/null 2>&1; then
   echo " * building $IMAGE (one-time)"
   "${DOCKER[@]}" build --quiet -t "$IMAGE" - <<'EOF'
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends iptables ip6tables iproute2 \
+# `ip6tables` is not a package in bookworm; the binary ships in `iptables`.
+# Naming it made every cold CI build fail with apt exit 100 (2026-10-28,
+# first self-hosted run). Retries cover transient mirror failures.
+RUN apt-get -o Acquire::Retries=3 update \
+ && apt-get -o Acquire::Retries=3 install -y --no-install-recommends iptables iproute2 \
  && rm -rf /var/lib/apt/lists/*
 EOF
 fi
