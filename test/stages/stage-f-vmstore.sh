@@ -154,13 +154,12 @@ DOCKERFILE
             v=$(guest '/usr/local/sbin/kali-live-vm-rm --stale 2>/dev/null | tail -1')
             case "$v" in removed*) record pass "vmstore: --stale sweep runs clean ($v)" ;; *) record fail "vmstore: --stale sweep ($v)" ;; esac
 
-            # release the store BEFORE poweroff, in dependency order:
-            # pool-destroy releases libvirt's hold (else umount EBUSY),
-            # umount flushes the FUSE cache, sync belts it, poweroff.
-            # Without this an active FUSE store wedges the guest's shutdown
-            # (serial stops at the login prompt) and kill -9 loses the
-            # unflushed pool deletions — the #51 'leftovers' fail.
-            timeout 90 guest_sudo 'virsh -c qemu:///system pool-destroy klh-vmstore >/dev/null 2>&1; umount /mnt/klh-vmstore >/dev/null 2>&1; sync; poweroff' >/dev/null 2>&1 || kill_qemu vmstore-live
+            # PROVEN recipe (tdbg, 2026-10-28): plain ssh + sudo -n, umount
+            # → sync → poweroff, NOTHING chained ahead that can hang (the
+            # guest_sudo pipe + pool-destroy variant never even reached
+            # poweroff — serial showed zero shutdown output three gates
+            # running). Clean systemd shutdown observed with exactly this.
+            timeout 90 ssh "${SSH_OPTS[@]}" 'sudo -n umount /mnt/klh-vmstore >/dev/null 2>&1; sudo -n sync; sudo -n poweroff' >/dev/null 2>&1 || kill_qemu vmstore-live
             for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || break; sleep 2; done
             kill -9 "$QPID" 2>/dev/null || true
 
