@@ -23,6 +23,7 @@ GitHub Actions runners — proven live and asserted after every boot.
 | I want to… | Read |
 |---|---|
 | build and flash my first stick (and probe the USB medium first) | [`docs/getting-started.md`](docs/getting-started.md) |
+| keep sticks healthy — or retire one | [`docs/usb-media.md`](docs/usb-media.md) |
 | host VMs / a CI runner on the stick | [`docs/vm-host-legion.md`](docs/vm-host-legion.md) |
 | see exactly what is proven — and what is not | [`docs/tested-status.md`](docs/tested-status.md) |
 | know the plan and open issues | [`docs/roadmap.md`](docs/roadmap.md) |

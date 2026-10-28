@@ -216,13 +216,18 @@ drift is absorbed by bumping the pin, nothing else.
   flag with no consumer IS a vacuous pass.
 - ~~**Parallel boot stages**~~ — LANDED 2026-10-25: `tools/suite-parallel.sh`
   (see the build-time budget entry above).
-- **Mechanical verdict ledger** — test.sh should emit a machine-readable
-  verdict line that `iso-archive.sh`/BUILDS.md rows consume; several
-  rows were hand-typed and one chain lied (item 10). The ledger is only
-  as trustworthy as its least-typed row.
-- **Auto-pick `KLH_TEST_PORT`** (free ephemeral port + lock dir) instead
-  of a fixed default — eliminates the cross-lane "kill the stale
-  listener" incident class rather than documenting it.
+- ~~**Mechanical verdict ledger**~~ — LANDED in two steps: `test.sh` has
+  long emitted `VERDICT … pass=/fail=` and `iso-archive.sh` captures it
+  mechanically into INDEX.md + the BUILDS.md row; hardened 2026-10-28 so
+  the MECHANICAL verdict outranks a hand `--verdict`, a conflicting hand
+  override warns loudly, and a FAIL suite pre-marks the row DO-NOT-FLASH.
+  Remaining nuance if ever needed: a run-level ledger for boot gates that
+  never reach `iso-archive` (archive-time capture already covers the
+  release path).
+- ~~**Auto-pick `KLH_TEST_PORT`**~~ — LANDED: `stage-cde`/`stage-f` pick a
+  free ephemeral port when `KLH_TEST_PORT` is unset and log it, so
+  parallel lanes see each other instead of killing "stale" listeners
+  (the 2026-10-23 incident class). Explicit pinning still available.
 - **Mesh end-to-end campaign** — stick identity, enrollment, hub
   handshake are proven; actual FIPS mesh traffic (rendezvous, peer
   round-trip, socat forwards into a VM) is the last unproven README
@@ -447,6 +452,23 @@ drift is absorbed by bumping the pin, nothing else.
     the pattern (the runners API is admin-only to job tokens, and
     `gh api` has no `--argjson`; both were silent-failure traps).
     Prefer scaling the work budget (fuzz 120s→1800s) over shaving seconds.
+
+41. **Private-repo hosted minutes run out; self-hosted never does**
+    (2026-10-28): the exhaustion signature is jobs failing with
+    `steps=0` and no `runner_name` (never provisioned) — "dead, not red";
+    always check the run's `head_sha` against the merge commit before
+    debugging, pre-merge-SHA runs still use the old workflow text. Private
+    repos have no untrusted-fork PRs, so ALL legs (incl. PRs) may run
+    self-hosted; public repos keep PRs hosted. The `legion-vm` label is a
+    machine CLASS spanning hosts (the Legion VM, ai-legion's CI fleet) —
+    but a repo-scoped registration only serves its own repo, so jobs
+    queue serially, one per service per repo (add a `-2` service for a
+    parallel slot). Operations trivia that cost time to learn: a runner
+    service can go **stale after job completion** (API shows
+    `offline busy=true`, systemd shows active/idle; queued jobs wait
+    forever) — `systemctl restart` of the idle unit fixes it; and a
+    workflow `startup_failure` (e.g. a caller racing a shared-workflow
+    input change) is **not retryable** — it self-heals on the next event.
 
 ## Public-repo hygiene
 

@@ -351,6 +351,24 @@ PR #478 in ccid-firmware-rs,
 [`prior-art.md`](prior-art.md#1-self-hosted-ci-runners); extension to
 more lanes is [#42](https://github.com/Amperstrand/kali-live-headless/issues/42).
 
+### Fleet operations (multi-host state, 2026-10-28 evening)
+
+The `legion-vm` label is the **machine class**; members live on more than
+one host. Current fleet:
+
+| host | runners | notes |
+|---|---|---|
+| `vps-ci` VM on the Legion stick host | `legion-t7-vm` (kali), `legion-t7-vm-ccid{,-2}` | host OFFLINE since 2026-10-28 ~14:00 — runners dark until it boots; ccid fuzz intentionally skips meanwhile (its probe trusts `legion-*` runners only) |
+| `ai-legion` (Ubuntu bench/services box) | `ai-legion-ci-{conwrt-bench,cashu-cf,mcp-oda,tg-s3-rs,kali}` + the pre-existing `ai-legion-bench-*` | interim + capacity node; one job at a time per service per repo — add `-2` services for parallel slots |
+
+Operational notes, each learned the hard way on 2026-10-28: a runner
+service can go stale after a job (API `offline busy=true`, systemd
+active) — restart the idle unit and the queue drains; `startup_failure`
+runs (caller racing a shared-workflow input change) are not retryable and
+self-heal on the next event; jobs from one repo never land on another
+repo's runner no matter the labels. Health check:
+`tools/github-runner-install.sh … --verify` (no token, no restart).
+
 ### The CI proof
 
 `.github/workflows/ci.yml` runs identical gates on `ubuntu-latest` and
