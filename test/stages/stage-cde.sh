@@ -432,10 +432,20 @@ else
                 record fail "override: wg0 up" "no wg0; wg0.conf Address: ${w:-none} — staged WG_TUNNET stale?"
               fi
             fi
-            # ---- FR-6: this stage boots WITH toram and enough RAM — the
-            # medium must be tmpfs (the copy happened, squashfs-only)
+            # ---- FR-6: toram=auto has TWO green outcomes (issue #45's fix):
+            # with headroom the copy runs and the medium becomes tmpfs; below
+            # the 4G headroom the gate REFUSES and the boot proceeds from the
+            # medium (fstype stays as-is) with the decline announced on the
+            # console. Refusal-without-decline or a silent skip is the bug.
             v=$(guest 'findmnt -n -o FSTYPE /run/live/medium 2>/dev/null')
-            [ "$v" = "tmpfs" ] && record pass "toram: medium is tmpfs (copy happened)" || record fail "toram: medium tmpfs" "got ${v:-none} — auto refused or copy skipped?"
+            _declined=$(guest 'dmesg 2>/dev/null | grep -c "toram declined" || true')
+            if [ "$v" = "tmpfs" ]; then
+              record pass "toram: medium is tmpfs (copy happened)"
+            elif [ "${_declined:-0}" -ge 1 ]; then
+              record pass "toram: auto refused below headroom — clean medium boot (the #45 fix)"
+            else
+              record fail "toram: medium tmpfs" "got ${v:-none} and no decline marker — toram silently skipped?"
+            fi
             # ---- identity unification end-to-end (2026-10-24/25): with a
             # valid fixture salt aboard, EVERY identity must be derived from
             # it — npub == derive_identity(salt, machine) computed INSIDE the
