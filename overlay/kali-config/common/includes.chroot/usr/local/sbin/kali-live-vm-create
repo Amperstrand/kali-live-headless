@@ -111,7 +111,12 @@ if [ $(( AVAIL_MB - NEED_MB )) -lt "$RESERVED_MB" ]; then
 fi
 
 # ---------------------------------------------------------------- create
-ALLOC_ARGS=""
+# SPARSE is the default contract (.meta records it) — without an explicit
+# --allocation 0 libvirt FULLY ALLOCATES file volumes, and 1G through the
+# FUSE-backed store outlives an ssh session's ServerAlive budget (the
+# #51 Stage-F cascade: caller killed at 30s, libvirtd finished the volume
+# asynchronously, every downstream assert raced its appearance).
+ALLOC_ARGS="--allocation 0"
 [ "$PREALLOC" = true ] && ALLOC_ARGS="--allocation ${DISK_GB}G"
 if ! virsh -c qemu:///system vol-create-as "$POOL" "$VOL" "${DISK_GB}G" --format "$FORMAT" $ALLOC_ARGS >/dev/null 2>&1; then
     die "virsh vol-create-as failed for '$VOL' (see libvirtd journal)"

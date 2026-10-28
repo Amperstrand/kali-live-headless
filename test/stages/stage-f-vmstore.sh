@@ -122,10 +122,11 @@ DOCKERFILE
             # image lifecycle through the real tools as the live user
             # (absolute paths: the ssh non-login shell PATH must not be
             # load-bearing for /usr/local/sbin)
-            if guest '/usr/local/sbin/kali-live-vm-create --id suite-smoke --cores 1 --ram-gb 1 --disk-gb 1' >/dev/null 2>&1; then
+            vcout=$(timeout 180 ssh "${SSH_OPTS[@]}" -o ServerAliveCountMax=36 '/usr/local/sbin/kali-live-vm-create --id suite-smoke --cores 1 --ram-gb 1 --disk-gb 1' 2>&1)
+            if [ $? -eq 0 ]; then
               record pass "vmstore: vm-create made suite-smoke (1G raw, sparse)"
             else
-              record fail "vmstore: vm-create made suite-smoke"
+              record fail "vmstore: vm-create made suite-smoke" "rc!=0: $(printf '%s' "$vcout" | tail -2 | tr '\n' ' ' | head -c 200)"
             fi
             v=$(guest 'test -f /mnt/klh-vmstore/vms/suite-smoke.image -a -f /mnt/klh-vmstore/vms/suite-smoke.meta && echo ok')
             [ "$v" = ok ] && record pass "vmstore: <id>.image + .meta visible in C:\\vms" || record fail "vmstore: image/meta files visible"
@@ -139,10 +140,11 @@ DOCKERFILE
             else
               record pass "vmstore: oversized image refused (headroom guard)"
             fi
-            if guest '/usr/local/sbin/kali-live-vm-rm --id suite-smoke' >/dev/null 2>&1; then
+            vcout=$(timeout 180 ssh "${SSH_OPTS[@]}" -o ServerAliveCountMax=36 '/usr/local/sbin/kali-live-vm-rm --id suite-smoke' 2>&1)
+            if [ $? -eq 0 ]; then
               record pass "vmstore: vm-rm removed suite-smoke"
             else
-              record fail "vmstore: vm-rm removed suite-smoke"
+              record fail "vmstore: vm-rm removed suite-smoke" "rc!=0: $(printf '%s' "$vcout" | tail -2 | tr '\n' ' ' | head -c 200)"
             fi
             v=$(guest 'test ! -e /mnt/klh-vmstore/vms/suite-smoke.image && echo gone')
             [ "$v" = gone ] && record pass "vmstore: image file deleted from the store" || record fail "vmstore: image file deletion"
