@@ -508,7 +508,7 @@ run_write_test() {
         || die "not enough unallocated tail space for a ${SIZE_MB}MiB test (or bad geometry)"
     start_mb=$(( start_sector / 2048 ))
     warn "writing ${SIZE_MB}MiB at sector $start_sector (unallocated tail; partitions untouched)"
-    src=$(mktemp) || die "mktemp failed"
+    src=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/usb-probe-pattern.XXXXXX") || die "mktemp failed"
     dd if=/dev/urandom of="$src" bs=1M count="$SIZE_MB" status=none || die "cannot create test pattern"
     t0=$(date +%s%N)
     dd if="$src" of="$DEV" bs=1M seek="$start_mb" conv=fdatasync status=none || die "write test failed (device offline?)"
@@ -570,7 +570,10 @@ run_record() {
 # ---------------------------------------------------------------- self-test
 run_self_test() {
     local tmp rc=0
-    tmp=$(mktemp -d) || die "mktemp -d failed"
+    # RUNNER_TEMP first: GitHub runners give every job a writable temp dir,
+    # and hardened hosts may not share /tmp with job users (learned on the
+    # ai-legion fleet 2026-10-28: mktemp /tmp/tmp.XXX → Permission denied).
+    tmp=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/usb-probe-selftest.XXXXXX") || die "mktemp -d failed"
     # shellcheck disable=SC2064 # expand tmp now: the trap must see this path
     trap "rm -rf '$tmp'" EXIT
     KLH_STICK_HEALTH="$tmp/health.tsv"
