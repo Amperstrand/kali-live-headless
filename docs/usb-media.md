@@ -28,7 +28,21 @@ and still turned out to be unfit:
 
 Verdict: **quarantined by serial hash** in the health ledger; the next
 `flash.sh` on that stick refuses unless `--allow-quarantined` is passed
-and the operator accepts a corrupt boot medium. The stick later crashed
+and the operator accepts a corrupt boot medium.
+
+**Postscript — the twist (22:05 the same evening):** after a full
+power-cycle (unplug/replug), the exact bad window accepted and held a
+fresh 38 MB pattern across three direct reads. A third full flash
+followed immediately — and the verify served the *original* stale bytes
+again (`8ed02360…`, fourth consecutive failure at the same offset). The
+stick's FTL serves isolated writes from a healthy block and resurrects
+the stale mapping under a sustained full-image write; the controller
+reports every write as successful throughout. Two lessons were welded in
+permanently: (1) **an isolated-window write test is not evidence a full
+image will hold** — `--write-test` can no longer lift a quarantine; only
+a fully verified flash (`--postflight`) clears one; (2) a power cycle
+can make a failing FTL look briefly healthy — never conclude "fixed"
+without the real workload passing. The stick later crashed
 out entirely — a live-booted host running from it left the network
 mid-session.
 
