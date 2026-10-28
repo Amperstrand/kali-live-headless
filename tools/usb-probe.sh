@@ -529,7 +529,21 @@ run_write_test() {
     rm -f "$src"
     if [ "$got1" = "$want" ] && [ "$got2" = "$want" ]; then
         ok "tail write verified twice (${rate} MB/s)"
-        record_health "$serial_sha" "$( [ "$rate" -lt 15 ] && echo slow || echo ok )" "$rate" "${read_mbs:--}" 0 "tail write test ${SIZE_MB}MiB at sector $start_sector" || true
+        # A passing isolated-window test does NOT lift a quarantine: the
+        # 2026-10-28 DataTraveler held a fresh 38 MB pattern 3/3 after a
+        # power cycle, then failed the next full-image verify with the
+        # ORIGINAL stale bytes — the FTL serves isolated writes from a
+        # healthy block and resurrects the stale mapping under sustained
+        # write load. Only a full verified flash (--postflight) clears.
+        _prior=$(lookup_health "$serial_sha")
+        _prior_res=$(health_field "$_prior" 6)
+        if [ "$_prior_res" = quarantined ]; then
+            record_health "$serial_sha" quarantined "$rate" "${read_mbs:--}" 0 \
+                "tail window ok (isolated, ${SIZE_MB}MiB @ $start_sector) — quarantine NOT lifted; only a full verified flash clears (2026-10-28 lesson)" || true
+            warn "tail window verified, but the stick stays QUARANTINED — an isolated write is not evidence a full image will hold"
+        else
+            record_health "$serial_sha" "$( [ "$rate" -lt 15 ] && echo slow || echo ok )" "$rate" "${read_mbs:--}" 0 "tail write test ${SIZE_MB}MiB at sector $start_sector" || true
+        fi
         return 0
     fi
     warn "tail write did NOT verify (want=$want read1=$got1 read2=$got2)"
