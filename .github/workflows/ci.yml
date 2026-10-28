@@ -1,0 +1,97 @@
+name: CI
+
+# Two lanes, identical work:
+#   hosted     — ubuntu-latest (4 vCPU), the baseline
+#   selfhosted — the disposable legion VM runner ([self-hosted, legion-vm])
+#
+# The self-hosted lane refuses fork PRs on purpose: a self-hosted runner is
+# not a sandbox for untrusted code (see tools/github-runner-install.sh). The
+# repo is public, so that boundary is a security property, not a formality.
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate-hosted:
+    name: gate (hosted)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck yamllint ansible-core
+          shellcheck --version | head -2
+          yamllint --version
+          ansible-playbook --version | head -1
+      - name: Runner identity
+        run: |
+          echo "runner: $(hostname) | $(uname -m) | $(nproc) cores"
+          docker version --format 'docker: {{.Server.Version}}'
+      - name: Repo hygiene gate
+        run: |
+          t0=$(date +%s%N)
+          .githooks/pre-commit --all
+          t1=$(date +%s%N)
+          echo "bench precommit_ms=$(( (t1 - t0) / 1000000 ))"
+      - name: Feature registry
+        run: |
+          t0=$(date +%s%N)
+          tools/feature-matrix.sh validate
+          t1=$(date +%s%N)
+          echo "bench feature_matrix_ms=$(( (t1 - t0) / 1000000 ))"
+      - name: Firewall lab
+        run: |
+          t0=$(date +%s%N)
+          tools/firewall-lab.sh
+          t1=$(date +%s%N)
+          echo "bench firewall_lab_ms=$(( (t1 - t0) / 1000000 ))"
+
+  gate-selfhosted:
+    name: gate (self-hosted)
+    # Never run untrusted fork code on a persistent runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, legion-vm]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (preinstalled by tools/github-runner-install.sh)
+        run: |
+          for t in shellcheck yamllint ansible-playbook docker jq git; do
+            command -v "$t" >/dev/null || { echo "missing: $t" >&2; exit 1; }
+          done
+          shellcheck --version | head -2
+          yamllint --version
+          ansible-playbook --version | head -1
+      - name: Runner identity
+        run: |
+          echo "runner: $(hostname) | $(uname -m) | $(nproc) cores"
+          docker version --format 'docker: {{.Server.Version}}'
+      - name: Repo hygiene gate
+        run: |
+          t0=$(date +%s%N)
+          .githooks/pre-commit --all
+          t1=$(date +%s%N)
+          echo "bench precommit_ms=$(( (t1 - t0) / 1000000 ))"
+      - name: Feature registry
+        run: |
+          t0=$(date +%s%N)
+          tools/feature-matrix.sh validate
+          t1=$(date +%s%N)
+          echo "bench feature_matrix_ms=$(( (t1 - t0) / 1000000 ))"
+      - name: Firewall lab
+        run: |
+          t0=$(date +%s%N)
+          tools/firewall-lab.sh
+          t1=$(date +%s%N)
+          echo "bench firewall_lab_ms=$(( (t1 - t0) / 1000000 ))"

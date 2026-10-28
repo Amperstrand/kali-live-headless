@@ -77,6 +77,7 @@ Two design rules worth keeping:
 | `post.host.disk` / `post.host.seed_on_store` | disk and seed ISO live on the persistent store |
 | `post.host.saved_xml` / `post.host.saved_state` | `NAME.xml` + `NAME.deploy` exist, so `--restore` can rebuild the domain after a reboot |
 | `post.host.firewall` / `post.host.fw_rules` / `post.host.fw_metadata` | the firewall daemon is up and drops guest→RFC1918 **and** guest→link-local |
+| `post.host.mss_clamp` | TCP MSS is clamped in **both** directions on the tunnel forward path (`TCPMSS --clamp-mss-to-pmtu`). Without it a 1500-MTU guest advertises MSS 1460 through a 1420-MTU tunnel: small requests work, TLS handshakes and large downloads stall (AGENTS.md #37) |
 | `post.host.forward` | a forward rule publishes exactly this port |
 | `post.host.vcpus` / `post.host.ram` | the guest got the vCPU/RAM it was asked for |
 
@@ -86,6 +87,7 @@ Two design rules worth keeping:
 |---|---|
 | `post.hub.dnat` | the concentrator DNATs the port |
 | `post.hub.unit` | the DNAT unit is enabled (survives a concentrator reboot) |
+| `post.host.lan_exposed` | the published port does **not** answer on the VM host's LAN address — the only way in is the concentrator DNAT (probed from the operator's machine, i.e. the site LAN) |
 
 ### Guest: access and posture
 
@@ -93,14 +95,18 @@ Two design rules worth keeping:
 |---|---|
 | `post.ssh.public` | ssh through `<hub>:<port>` works |
 | `post.ssh.password_auth` / `post.ssh.root_login` | `PasswordAuthentication no`, `PermitRootLogin no` |
+| `post.ssh.auth_methods` | observed from outside: the server advertises **publickey only** (a password attempt gets `Permission denied (publickey)`, not a prompt) |
+| `post.ssh.wrong_key` | a freshly generated key nobody authorized is **refused** — proves authorization, not just reachability |
 | `post.ssh.sudo` / `post.ssh.sudo_all` | the guest user has passwordless sudo (`NOPASSWD: ALL`) |
 | `post.ssh.keys` | every `--expect-key` is in `authorized_keys` (compared by fingerprint) |
+| `post.ssh.keys_count` | `authorized_keys` contains **exactly** the host management key + the `--expect-key` set — a present-but-extra key fails |
 
 ### Guest: egress
 
 | id | property |
 |---|---|
 | `post.egress.ip` | `https://ifconfig.me` returns the concentrator's address |
+| `post.egress.tls` | the guest completes a real TLS fetch (`https://github.com` → 200). This is the MSS/PMTU canary: a 1400-byte ping can pass while a full TLS handshake stalls (AGENTS.md #37) |
 | `post.egress.dns` | the resolver **upstream** is pinned (9.9.9.9 / 149.112.112.112); the systemd-resolved stub on `127.0.0.53` is fine, a stub in front of the site's DHCP resolver is not |
 | `post.egress.ipv6` | no **public** (2000::/3) IPv6 — a `fd00::/8` ULA on `fips0` is the guest's mesh address, not a leak path |
 | `post.clock` | guest clock synchronized |
@@ -116,8 +122,10 @@ Two design rules worth keeping:
 |---|---|
 | `post.iso.host_ssh` / `post.iso.host_icmp` | the guest cannot reach the host's sshd and gets no reply from it |
 | `post.iso.lan_10` / `lan_172` / `lan_192` | the guest cannot reach any RFC1918 network |
+| `post.iso.site_host` / `post.iso.site_gw` | the guest cannot reach the **actual** site host address or default gateway (stronger than the generic RFC1918 probes — these are the boxes on this LAN) |
+| `post.iso.host_wg` / `post.iso.hub_mgmt` | the guest cannot reach the VM host's tunnel address or the concentrator's own sshd (`10.99.0.1:22`) — management planes stay off the guest's path |
 | `post.iso.metadata` | the guest cannot reach `169.254.169.254` — NAT'd through the concentrator that is the **concentrator's** cloud metadata service, not a harmless dead address (see below) |
-| `post.iso.v6_linklocal` | **nothing** on the bridge answers an IPv6 all-nodes ping from the guest — no host `fe80::` services (metadata is served on v6 too), no v6 guest↔guest (bridged traffic the v4 FORWARD drops cannot see) |
+| `post.iso.v6_linklocal` | **nothing else** on the bridge answers an IPv6 all-nodes ping from the guest — the guest's own self-reply is excluded (a link-local NIC always answers itself); any other responder is the host or a peer, i.e. a real leak path |
 | `post.iso.peer` | the guest cannot reach another guest (`--peer`) |
 | `post.host.fw_v6` | the host firewall drops **all** IPv6 from `virbr0` (INPUT + FORWARD) — there is no sanctioned v6 on this bridge: no RA, no DHCPv6, no NAT66 |
 
