@@ -357,3 +357,35 @@ defined or provisioned guests.
 | `overlay/.../usr/local/sbin/kali-live-vm-forward` | inbound port rules (reused) |
 | `overlay/.../usr/local/sbin/kali-live-vm-rm` | explicit removal + guarded sweep |
 | `docs/vmhost-first-guest-bringup.md` | the original manual bring-up and host facts |
+
+## The ephemeral fleet: what survives what (2026-10-28)
+
+Three lifetimes, one tool. The layering is deliberate: the HOST is always
+ephemeral (a live stick — RAM only), the STORE is a disk on the host machine
+(NTFS), and VMs choose their own lifetime:
+
+| layer | lifetime | what brings it back |
+|---|---|---|
+| host (stick) | until reboot | boot the stick; `docs/host-bringup.md` |
+| store mount | per host boot | KLHCONFIG `vm-store.conf` (seed at flash time via `./config` VMSTORE_* + `scripts/stick-conf.sh --vm-store`), or `KLH_VMSTORE_CONF` env for a hand-mounted store |
+| **semi-ephemeral VM** (default) | disk + XML + .deploy on the store survive everything | **just deploy again**: `kali-live-vm-deploy --id NAME` finds the old state and RESUMES it — same uuid, same fips npub, same port. `--restore` is the explicit form; `--fresh` discards |
+| **ephemeral VM** (`--ephemeral`) | until destroy or host reboot — disk/seed on tmpfs, nothing on the store | nothing to bring back; redeploy fresh. Lazy allocation: only written blocks cost RAM |
+| registry.tsv / .deploy sidecars | with the store | `tools/vm-registry.sh sync` after deploys |
+
+### The again-and-again runbook
+
+    # boot the stick on the machine -> wifi -> ssh in, then:
+    sudo tools/live-host-setup.sh                      # toolchain (if needed)
+    # store mounts itself from KLHCONFIG vm-store.conf; verify:
+    findmnt /mnt/klh-vmstore
+    # bring the fleet back (resume is the DEFAULT now):
+    sudo kali-live-vm-deploy --id vps-ci               # resumes: same identity
+    sudo kali-live-vm-deploy --id scratch --ephemeral --cores 2 --ram-gb 4 --disk-gb 10 --ssh-key <pub>
+    # tear one down but keep its identity on the store:
+    sudo virsh destroy NAME && sudo virsh undefine NAME
+    # ...or delete it entirely:
+    sudo kali-live-vm-rm --id NAME
+
+Proven live on the Legion (2026-10-28): destroy+undefine → plain re-deploy →
+"RESUMING (same uuid, same fips identity, same port)", uuid identical; an
+ephemeral deploy left the store listing untouched.
