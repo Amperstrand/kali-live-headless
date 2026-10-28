@@ -187,10 +187,10 @@ probe_device() {
     [ -n "$VENDOR_OVERRIDE" ] && vendor=$VENDOR_OVERRIDE
 }
 
-link_class() { # link_mbps -> usb2|usb3|unknown
+link_class() { # link_mbps -> usb2|usb3|unknown (non-numeric is unknown, not usb2)
     case "${1:-}" in
-        ''|?) printf 'unknown' ;;
-        *) if [ "$1" -ge 5000 ] 2>/dev/null; then printf 'usb3'; else printf 'usb2'; fi ;;
+        ''|*[!0-9]*) printf 'unknown' ;;
+        *) if [ "$1" -ge 5000 ]; then printf 'usb3'; else printf 'usb2'; fi ;;
     esac
 }
 
@@ -233,13 +233,32 @@ partitions() {
     fi
 }
 
-free_tail_sectors() {
+last_end_sectors() { # stdin: "name start size" sector lines -> last end sector (pure, fixture-testable)
     local last=0 nm st sz
     while read -r nm st sz; do
-        [ -n "${st:-}" ] || continue
+        [ -n "${st:-}" ] || [ -n "${sz:-}" ] || continue
+        case "$st$sz" in ''|*[!0-9]*) continue ;; esac
         [ "$((st + sz))" -gt "$last" ] && last=$((st + sz))
-    done < <(partitions)
+    done
     printf '%s' "$last"
+}
+
+free_tail_sectors() {
+    partitions | last_end_sectors
+}
+
+tail_test_sector() { # last_end size_sectors size_mb -> start sector (rc 2 = no space, 1 = bad args)
+    # Pure geometry math, split out of run_write_test so the placement
+    # rules (1 GiB past the last partition, 8 GiB floor, 1 MiB alignment
+    # for dd bs=1M seek units, strict fit) are unit-testable — the seek-
+    # units bug class this guards against shipped in the first cut.
+    local last=$1 size_sectors=$2 size_mb=$3 start
+    case "$last$size_sectors$size_mb" in ''|*[!0-9]*) return 1 ;; esac
+    start=$(( last + 2097152 ))                 # >= 1 GiB past the last partition
+    [ "$start" -lt 16777216 ] && start=16777216 # and >= 8 GiB into the device
+    start=$(( (start + 2047) / 2048 * 2048 ))   # 1 MiB alignment
+    [ $((start + size_mb * 2048)) -lt "$size_sectors" ] || return 2
+    printf '%s' "$start"
 }
 
 read_bench() { # sets read_mbs; 64 MiB direct read, fallback to buffered
@@ -485,13 +504,8 @@ run_write_test() {
     last=$(free_tail_sectors)
     size_sectors=$(( size_bytes / 512 ))
     [ "$last" -gt 0 ] || die "no partition table found — refusing a blind write"
-    # Stay >= 1 GiB past the last partition and >= 8 GiB into the device, then
-    # align to 1 MiB so the dd seek is expressible in whole bs=1M units.
-    start_sector=$(( last + 2097152 ))
-    [ "$start_sector" -lt 16777216 ] && start_sector=16777216
-    start_sector=$(( (start_sector + 2047) / 2048 * 2048 ))
-    [ $((start_sector + SIZE_MB * 2048)) -lt "$size_sectors" ] \
-        || die "not enough unallocated tail space for a ${SIZE_MB}MiB test"
+    start_sector=$(tail_test_sector "$last" "$size_sectors" "$SIZE_MB") \
+        || die "not enough unallocated tail space for a ${SIZE_MB}MiB test (or bad geometry)"
     start_mb=$(( start_sector / 2048 ))
     warn "writing ${SIZE_MB}MiB at sector $start_sector (unallocated tail; partitions untouched)"
     src=$(mktemp) || die "mktemp failed"
@@ -577,6 +591,15 @@ run_self_test() {
     check "verdict ok" OK "$(verdict 5000 25 60 0 '')"
     check "link usb3" usb3 "$(link_class 5000)"
     check "link usb2" usb2 "$(link_class 480)"
+    check "link junk is unknown" unknown "$(link_class '5000M')"
+    check "tail sectors two parts" 4792896 "$(printf '/dev/sda1 64 4784064\n/dev/sda2 4784128 8768\n' | last_end_sectors)"
+    check "tail sectors empty" 0 "$(printf '' | last_end_sectors)"
+    check "tail sectors ignores garbage" 100 "$(printf 'header junk\n/dev/sda1 0 100\n' | last_end_sectors)"
+    check "placement floor 8GiB" 16777216 "$(tail_test_sector 0 40265318 64)"
+    check "placement past partition" 22097920 "$(tail_test_sector 20000000 40265318 64)"
+    check "placement aligned" 0 "$(( $(tail_test_sector 4792896 40265318 64) % 2048 ))"
+    tail_test_sector 30000000 30218842 64 >/dev/null 2>&1
+    check "placement no-space rc" 2 "$?"
 
     model="TestStick" vendor="TestVendor"
     record_health "deadbeef" ok 25 60 0 "first record" >/dev/null 2>&1
