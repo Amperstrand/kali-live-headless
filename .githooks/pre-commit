@@ -71,12 +71,27 @@ is_text() {
     fi
     return 0
 }
-shebang_of() { sed -n '1s/^#!//p' "$1" 2>/dev/null | awk '{print $1}'; }
+shebang_of() {
+    # Return the interpreter, resolving `#!/usr/bin/env bash` to `bash`.
+    # (The old version returned `/usr/bin/env` for every env-shebang script,
+    # so the syntax gate fell back to `sh -n` — harmless on hosts whose
+    # /bin/sh is bash, a false failure on Debian/Ubuntu where it is dash.
+    # Found by the first self-hosted CI run on Debian 2026-10-28.)
+    awk 'NR == 1 {
+        if ($0 !~ /^#!/) exit
+        sub(/^#![ \t]*/, "")
+        n = split($0, a, /[ \t]+/)
+        if (n == 0) exit
+        if (a[1] ~ /\/env$/ && n >= 2) print a[2]
+        else print a[1]
+        exit
+    }' "$1" 2>/dev/null
+}
 is_shell() {
     local f=$1 sb
     sb=$(shebang_of "$f")
     case "$sb" in
-        */bash|*/sh|*/dash|*/ksh) return 0 ;;
+        bash|*/bash|sh|*/sh|dash|*/dash|ksh|*/ksh) return 0 ;;
     esac
     case "$f" in *.sh|*.bash) return 0 ;; esac
     return 1
@@ -99,8 +114,9 @@ if [ ${#SHELL_FILES[@]} -gt 0 ]; then
     for f in "${SHELL_FILES[@]}"; do
         sb=$(shebang_of "$f")
         case "$sb" in
-            */bash) prog=/bin/bash ;;
-            *)      prog=/bin/sh ;;
+            bash|*/bash) prog=/bin/bash ;;
+            sh|*/sh|dash|*/dash|ksh|*/ksh) prog=/bin/sh ;;
+            *) continue ;;
         esac
         if ! err=$("$prog" -n "$f" 2>&1); then
             fail "syntax: $f — $(printf '%s' "$err" | head -1)"
