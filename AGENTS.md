@@ -76,6 +76,9 @@ drift is absorbed by bumping the pin, nothing else.
    stamps correctly; the only real verdicts are `output/test-run*.log`
    RESULT lines.
 11. **`tools/firewall-lab.sh` gates firewall changes** (30 s, docker):
+    (its one-off sibling `tools/vmfw-proof.sh` — manual, sudo, netns —
+    is the unique proof for vm-forward's env-less IFACES persistence
+    from d873e69; run it when touching that state file's semantics):
    runs the REAL kvm-firewall daemon + vm-forward in a NET_ADMIN
    container at 1-second ticks and asserts the four hard-won
    invariants (drops install; sanctioned exceptions tolerated — no
@@ -110,14 +113,16 @@ drift is absorbed by bumping the pin, nothing else.
    hardware runs too. hw-check now asserts "virbr0 up without help"
    BEFORE remediating — keep that ordering, and apply the pattern:
    *verify the product did X, then fix X for downstream tests*.
-8. **dd-ing an ISO onto a stick restores the ISO's own partition table** —
+43. **dd-ing an ISO onto a stick restores the ISO's own partition table** —
    any partition appended afterwards (KLHCONFIG!) is orphaned even though
    its sectors survive past the image. flash.sh detects and reuses a
    surviving labeled partition (7ff7ef5); before that, every flash
    silently dropped the stick's identities. Related: never write to a
    device on a live stick without first matching it against the device
-   backing `/run/live/medium`.
-9. **Orphaned build clients burn CPU silently** (found 2026-10-22): when the
+   backing `/run/live/medium`. *(Renumbered 2026-10-29: this and #44 were
+   originally misfiled as a second "8"/"9" after #14 — no references
+   used the old numbers.)*
+44. **Orphaned build clients burn CPU silently** (found 2026-10-22): when the
    tmux that drives a build dies, the root-owned
    `sudo -E build-in-container.sh → sudo → docker run` chain can survive with
    no container behind it and spin ~1.4 cores each forever (three chains from
@@ -125,10 +130,9 @@ drift is absorbed by bumping the pin, nothing else.
    Before blaming a slow build, compare
    `ps -eo user,pid,ppid,etime,pcpu,cmd | grep -E "build-in-container|docker run"`
    with `sudo docker ps` — a client with no container is a zombie; kill the
-   whole chain. Related: the suite's SSH forward is 127.0.0.1:2222, so a leaked
-   QEMU (deleted pidfile = `test.sh` cleanup can't find it) makes all four boot
-   stages FAIL on port bind after ~40 min of waiting; check
-   `ss -ltnp | grep 2222` before starting the suite.
+   whole chain. Related: a leaked QEMU (deleted pidfile = `test.sh` cleanup
+   can't find it) makes all boot stages FAIL on port bind after ~40 min of
+   waiting; check the suite's hostfwd port before starting it.
 
 ## Build discipline (hard-won)
 

@@ -19,6 +19,17 @@ fi
 for f in build.sh configure.sh flash.sh test.sh; do
   if bash -n "$REPO_DIR/$f" 2>"$SCRATCH/syntax.err"; then record pass "bash -n $f"; else record fail "bash -n $f" "$(head -1 "$SCRATCH/syntax.err")"; fi
 done
+
+# Tool self-tests that need no hardware: the media probe's classifier/
+# ledger/placement math and the verdict-ledger parser. CI runs the same
+# two on both lanes — this keeps a local `--level static` equivalent.
+for _t in tools/usb-probe.sh tools/verdict.sh; do
+  if "$REPO_DIR/$_t" --self-test >/dev/null 2>&1; then
+    record pass "self-test $(basename "$_t")"
+  else
+    record fail "self-test $(basename "$_t")" "run $REPO_DIR/$_t --self-test for the failing assert"
+  fi
+done
 for f in overlay/kali-config/common/includes.chroot/usr/local/sbin/* overlay/kali-config/common/hooks/live/*.hook.chroot; do
   # only shell-shebang files: python CLIs legitimately live in sbin too
   # (kali-live-wg-enroll) and must not be bash -n'd as shell
