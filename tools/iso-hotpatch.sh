@@ -59,7 +59,8 @@ klh_find_iso() { # $1 = build number -> its archived ISO (either flavour;
   # the minimal variant is the default now, and this name-only lookup made
   # every hotpatch of a minimal build die at the door — found 2026-10-26)
   local b="$1" name
-  for name in kali-linux-rolling-live-minimal-amd64.iso kali-linux-rolling-live-amd64.iso; do
+  # any base the adapter can produce (BASE=debian names it kali-linux-trixie-…)
+  for name in kali-linux-rolling-live-minimal-amd64.iso kali-linux-trixie-live-minimal-amd64.iso kali-linux-rolling-live-amd64.iso; do
     if [ -f "$OUT_DIR/iso-build$b/$name" ]; then
       printf '%s\n' "$OUT_DIR/iso-build$b/$name"
       return 0
