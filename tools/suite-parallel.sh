@@ -130,6 +130,15 @@ while IFS= read -r line; do
   fi
 done < "$RUNDIR/STATUS"
 
+# One ledger row per stage run (tools/verdict.sh — the run-level verdict
+# ledger; idempotent per source+verdict, so re-records never double-count).
+if [ -x "$REPO_DIR/tools/verdict.sh" ]; then
+    while IFS= read -r _stline; do
+        _st=$(printf '%s' "$_stline" | awk '{print $2}')
+        "$REPO_DIR/tools/verdict.sh" record "$RUNDIR/$_st.log" "stage:$_st" >/dev/null 2>&1 || true
+    done < "$RUNDIR/STATUS"
+fi
+
 if [ -n "$FAILED_STAGES" ]; then
   echo "VERDICT FAIL stages:$FAILED_STAGES pass=$TOTAL_PASS fail=$TOTAL_FAIL"
   exit 1

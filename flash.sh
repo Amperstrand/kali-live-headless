@@ -370,6 +370,15 @@ if [ "$VERIFY_ONLY" = true ]; then
       klh_die "verify-only: the medium does not carry this ISO's payload (see the classification above)"
     }
   fi
+  # A completed verify-only IS a full verified flash (payload + the
+  # KLHCONFIG append below): record the health verdict so the ledger
+  # reflects it (2026-10-29: a recovered stick stayed 'quarantined' for
+  # hours because only the fresh-write path postflighted).
+  if [ -x "$REPO_DIR/tools/usb-probe.sh" ]; then
+    probe_rc=0
+    "$REPO_DIR/tools/usb-probe.sh" --device "$DEVPATH" --postflight || probe_rc=$?
+    [ "$probe_rc" -eq 0 ] || klh_warn "usb-probe postflight rc=$probe_rc — payload verified, but the medium reported trouble; see above"
+  fi
 else
   # NEVER auto-unmount (owner rule 2026-10-26): the old best-effort
   # `umount` loop silently ripped automounted partitions out from under a
@@ -466,6 +475,7 @@ else
   # vs cable for the human holding the hardware).
   klh_warn "second read-back also mismatched — locating the differing regions"
   first_diff="" diff_chunks=0 chunk_no=0
+  DIFFS=()
   while [ $((chunk_no * 67108864)) -lt "$ISO_SIZE" ]; do
     skip=$((chunk_no * 65536))    # 64M in 1K blocks
     count=$(( (ISO_SIZE - chunk_no * 67108864) < 67108864 ? (ISO_SIZE - chunk_no * 67108864 + 1023) / 1024 : 65536 ))
@@ -473,6 +483,7 @@ else
     h_dev=$(dd if="$DEVPATH" bs=1024 skip="$skip" count="$count" status=none | sha256sum | awk '{print $1}')
     if [ "$h_iso" != "$h_dev" ]; then
       [ -z "$first_diff" ] && first_diff=$((chunk_no * 67108864))
+      DIFFS+=("$((chunk_no * 67108864))")
       diff_chunks=$((diff_chunks + 1))
     fi
     chunk_no=$((chunk_no + 1))
@@ -485,23 +496,63 @@ else
     "$REPO_DIR/tools/usb-probe.sh" --device "$DEVPATH" --verify-region "$ISO" \
       --offset "$first_diff" --length 67108864 || true
   fi
-  if [ -x "$REPO_DIR/tools/usb-probe.sh" ]; then
-    "$REPO_DIR/tools/usb-probe.sh" --device "$DEVPATH" --record \
-      --result quarantined --write-mbs "$DD_RATE" \
-      --note "verify mismatch first=${first_diff:-unknown} chunks=${diff_chunks}/${chunk_no}" || true
+
+  # WEAK-CELL RECOVERY (2026-10-29 case): a "stably corrupt" chunk can be
+  # ONE worn cell that refuses to program under the >=1M write commands dd
+  # uses — acknowledged by the controller, never committed, reads serve the
+  # old bytes forever after. badblocks' 4K passes clear such cells, so a
+  # device reset (FTL re-init) + a 4K-command rewrite of the differing
+  # chunks recovers them. Cheap, harmless on healthy media, and it saved a
+  # stick that failed FIVE verifications over two days. Only attempted for
+  # a few localized chunks — widespread diffs are a dying medium.
+  if [ -x "$REPO_DIR/tools/usb-probe.sh" ] && [ "${#DIFFS[@]}" -gt 0 ] && [ "${#DIFFS[@]}" -le 4 ]; then
+    klh_warn "attempting weak-cell recovery: device reset + 4K rewrite of ${#DIFFS[@]} differing chunk(s)"
+    _newdev=$("$REPO_DIR/tools/usb-probe.sh" --device "$DEVPATH" --reset-device 2>/dev/null | tail -n1) || _newdev=""
+    if [ -n "$_newdev" ] && [ -b "$_newdev" ]; then
+      [ "$_newdev" = "$DEVPATH" ] || klh_warn "device re-enumerated: $DEVPATH -> $_newdev"
+      DEVPATH=$_newdev
+      _recovered=true
+      for _off in "${DIFFS[@]}"; do
+        "$REPO_DIR/tools/usb-probe.sh" --device "$DEVPATH" --repair-region "$ISO" \
+          --offset "$_off" --length 67108864 || _recovered=false
+      done
+      if [ "$_recovered" = true ]; then
+        klh_info "re-verify: hashing the full payload after the repair"
+        echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+        DEV_HASH=$(head -c "$ISO_SIZE" "$DEVPATH" | sha256sum | awk '{print $1}')
+      fi
+    else
+      klh_warn "device reset failed — skipping the recovery attempt"
+    fi
   fi
-  klh_die "verification FAILED — $DEVPATH does not match the ISO.
+  if [ "$ISO_HASH" = "$DEV_HASH" ]; then
+    klh_ok "verified AFTER WEAK-CELL RECOVERY: $DEVPATH matches the ISO (sha256 prefix ${ISO_HASH:0:16}...) — one worn cell, reset + 4K rewrite fixed it"
+    if [ -x "$REPO_DIR/tools/usb-probe.sh" ]; then
+      probe_rc=0
+      "$REPO_DIR/tools/usb-probe.sh" --device "$DEVPATH" --postflight \
+        --write-mbs "$DD_RATE" || probe_rc=$?
+      [ "$probe_rc" -eq 0 ] || klh_warn "usb-probe postflight rc=$probe_rc — payload verified, but the medium reported trouble; see above"
+    fi
+  else
+    if [ -x "$REPO_DIR/tools/usb-probe.sh" ]; then
+      "$REPO_DIR/tools/usb-probe.sh" --device "$DEVPATH" --record \
+        --result quarantined --write-mbs "$DD_RATE" \
+        --note "verify mismatch first=${first_diff:-unknown} chunks=${diff_chunks}/${chunk_no} (recovery attempted)" || true
+    fi
+    klh_die "verification FAILED — $DEVPATH does not match the ISO.
   ISO-side hash was verified BEFORE the write (the .iso on disk is good).
   Differing: ${diff_chunks} of ${chunk_no} 64M chunks, first at byte offset ${first_diff:-unknown}.
   What this means (usb-probe above classified the suspect region):
-    * device re-reads are IDENTICAL but wrong -> stable corruption (bad
-      NAND/controller); a reflash may not remap it — quarantine the stick
+    * device re-reads are IDENTICAL but wrong -> a weak cell (recoverable:
+      flash.sh already tried a device reset + 4K rewrite) or real bad
+      NAND — if the recovery above did not fix it, quarantine stands
     * device re-reads DIFFER -> unstable medium/link; retire the stick
     * widespread diffs -> failing medium or cable; use another stick
   The health ledger now quarantines this serial. A slow write is not proof
   of a USB2 port: usb-probe --preflight printed the negotiated link and
   cache mode. On a 5000M link, under ~15 MB/s means the MEDIUM is the
   bottleneck, not the port — use a different stick, not a different port."
+fi
 fi
 fi
 

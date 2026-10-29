@@ -28,4 +28,13 @@ printf '[%s] %s starting: %s\n' "$(date -Is)" "$tag" "$*" >>"$log"
 "$@"
 rc=$?   # capture on the NEXT line, before any substitution (the whole point)
 printf '[%s] %s rc=%d\n' "$(date -Is)" "$tag" "$rc" >>"$log"
+
+# If the command emitted a machine-readable VERDICT line (test.sh,
+# suite-parallel stages, hw-check), it gets a run-level ledger row at the
+# moment it ends (tools/verdict.sh is a silent no-op for non-gate logs and
+# idempotent for re-records). The BUILDS.md hand-typing era ends here.
+_rldir=$(cd "$(dirname "$0")/.." && pwd)
+if [ -x "$_rldir/tools/verdict.sh" ] && grep -aqE '^VERDICT(: | (PASS|FAIL))' "$log" 2>/dev/null; then
+    "$_rldir/tools/verdict.sh" record "$log" "$tag" >/dev/null 2>&1 || true
+fi
 exit "$rc"
