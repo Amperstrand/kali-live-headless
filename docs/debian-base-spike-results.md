@@ -108,21 +108,82 @@ the engine in seconds so the property is enforced, not remembered.
 
 ## Known gaps / follow-ups
 
-- **UEFI stage not run on the Debian ISO**: this host has no x86 OVMF
-  firmware (uefi skips with a note). Every other stage is green; run the
-  uefi gate on an OVMF-equipped host before any flash.
+Status 2026-10-29 (spike resumed on this lane; software-side items only,
+all live hosts offline):
+
+- ~~**UEFI stage not run**~~ — **CLOSED 2026-10-29**: edk2-ovmf on the
+  workstation (the suite already knew Arch's
+  `/usr/share/edk2/x64/OVMF_CODE.4m.fd` path — first candidate in its
+  list). First-ever UEFI gate here, against the Kali release #53:
+  **PASS 385/0/0** (toram-default menu boot, SSH hardening, witness-disk
+  forensics all green). The remaining UEFI gap is only the *Debian*
+  image's uefi gate — runs with the diet build below.
 - **vmstore stage partially skipped**: the HOST could not populate its
   NTFS witness fixture (host `ntfs3` mount failed — host limitation, not
   image); the in-image vmstore decision-logic unit tests all ran green
   and the override stage proved the KLHCONFIG disk path on Debian.
-- **d-i diet**: `--debian-installer none` → ~1.0–1.1G estimate.
-- **Firmware diet round 2**: drop `firmware-misc-nonfree` → ~150M.
-- `tools/iso-hotpatch.sh` / `suite-parallel.sh` still hardcode kali ISO
-  names (only matters when hotpatching a debian image).
-- `iso-archive.sh --build N` lookup hardcodes the kali ISO name; the
-  `--iso PATH` form works for any base (used for both spike archives).
+- ~~**d-i diet**~~ — **LANDED 2026-10-29** as `KLH_DIET=di` (see the diet
+  section): 1.22 GiB image, content/bios/uefi all green — including the
+  Debian image's first-ever UEFI gate.
+- ~~**Firmware diet round 2**: drop `firmware-misc-nonfree` → ~150M.~~
+  **REJECTED by owner direction (2026-10-28): "i dont need a strong
+  firmware diet… we are not super optimizing for space anytime soon."**
+  The spike-era firmware minimization is dead policy; the Kali profile now
+  ships radio firmware EXPLICITLY (PR #37) and the Debian firmware policy
+  stays as d2 shipped it.
+- ~~`tools/iso-hotpatch.sh` / `suite-parallel.sh` still hardcode kali ISO
+  names~~ — FIXED 2026-10-29 (both resolve the debian name too).
+- ~~`iso-archive.sh --build N` lookup hardcodes the kali ISO name~~ —
+  already globbed any base; confirmed while fixing the above.
 - BASE is env/config only; `configure.sh` doesn't prompt for it (spike
   scope — the results doc is the interface).
+
+## The d-i diet (2026-10-29) — LANDED, gated
+
+The spike measured the debian-installer at ≈570M of the 1.6G image and
+predicted ~1.0–1.1G without it. Shipped as **`KLH_DIET=di`** (env/config
+knob, not a default — the image becomes live-only, install entries vanish),
+implemented the same way the debian adapter verifies its swaps: a checked
+sed of upstream's `auto/config` (`--debian-installer live` → `false`).
+
+**Build #3-d3** (worktree @ `6423811` + the knob commit, BASE=debian +
+KLH_DIET=di, 2026-10-29, built on the 8-core workstation via docker,
+pinned to `ftp.se.debian.org`):
+
+| | d2 (acceptance) | d3 (d-i diet) |
+|---|---|---|
+| ISO size | 1.6G | **1.22 GiB (1,309,782,016 B)** |
+| sha512 | — | `010555d8e6e4…` |
+| content | 355-era green | **359/0/1** |
+| bios (menu boot) | 276/0/1 | **388/0/1** |
+| uefi | not run (no OVMF) | **389/0/0** — the Debian image's FIRST uefi gate |
+| forensic | 277/0/1 | **389/0/1** |
+| override (direct kernel) | 262/0/1 | **374/0/1** |
+| vmstore | 249/0/2 | **381/0/1** |
+
+**d3 is a FULL-gate green Debian image — every stage, including UEFI,
+which no Debian image of this project had ever run.** (One flake observed:
+the medium-verify synthetic-medium unit failed once across ~10 stage runs
+and passed on both re-runs — sfdisk-on-busy-system class; watch for
+recurrence, don't chase a ghost.)
+
+The ~380M realized cut sits under the 570M gross measurement because the
+d-i pool trees shared squashfs-compressed content with the live root; the
+prediction band (~1.0–1.1G vs 1.22G actual) missed the same effect.
+**Every prior debian image was carrying a third of its weight in an
+installer that has never been used by this project's flow.**
+
+The knob is BASE-agnostic: kali images accept `KLH_DIET=di` too (their d-i
+is leaner but the same lever applies when a kali minimal-minimal is ever
+wanted).
+
+## Cross-link: the release line
+
+The spike's follow-up work (firmware policy, the #45 toram fix, the
+mirror pinning, the lane/audit tooling) culminated in build **#53**
+(2026-10-28): the first fully-green toram-default release — content
+355/0, override 370/0, bios 384/0. See `BUILDS.md` #53 and
+`tested-status.md`.
 
 ## Artifacts
 
