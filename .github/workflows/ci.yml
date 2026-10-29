@@ -56,6 +56,8 @@ jobs:
           tools/usb-probe.sh --self-test
           t1=$(date +%s%N)
           echo "bench usb_probe_ms=$(( (t1 - t0) / 1000000 ))"
+      - name: Verdict ledger self-test
+        run: tools/verdict.sh --self-test
       - name: Firewall lab
         run: |
           t0=$(date +%s%N)
@@ -101,6 +103,8 @@ jobs:
           tools/usb-probe.sh --self-test
           t1=$(date +%s%N)
           echo "bench usb_probe_ms=$(( (t1 - t0) / 1000000 ))"
+      - name: Verdict ledger self-test
+        run: tools/verdict.sh --self-test
       - name: Firewall lab
         run: |
           t0=$(date +%s%N)

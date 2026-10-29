@@ -24,6 +24,19 @@
 #       --iso-offset N compares against a different offset in IMAGE (useful
 #       when only the suspect tail was copied to the test host).
 #
+#   usb-probe.sh --device /dev/sdX --repair-region IMAGE --offset N [--length N]
+#       WEAK-CELL RECOVERY (2026-10-29 case): rewrite the region from the
+#       image using 4K write commands, fsync, re-read twice directly. A
+#       worn cell that refuses to program under large (>=1M) commands —
+#       acknowledged, never committed, reads serve the old bytes — commits
+#       fine under small ones. Exit 0 only if it then reads back
+#       byte-identical to the image.
+#
+#   usb-probe.sh --device /dev/sdX --reset-device
+#       Soft power-cycle: deauthorize/re-authorize the USB device (FTL
+#       re-init; root required). Prints the device's possibly-NEW /dev
+#       path on stdout — the kernel letter can change across the reset.
+#
 #   usb-probe.sh --device /dev/sdX --postflight --write-mbs N
 #       After a flash: read benchmark, kernel-error scan, record ok/slow/
 #       quarantined in the ledger.  Read-only.
@@ -73,6 +86,7 @@ while [ $# -gt 0 ]; do
         --preflight)        MODE=preflight; shift ;;
         --postflight)       MODE=postflight; shift ;;
         --verify-region)    MODE=verify-region; ISO=${2:?}; shift 2 ;;
+        --repair-region)    MODE=repair-region; ISO=${2:?}; shift 2 ;;
         --offset)           OFFSET=${2:?}; shift 2 ;;
         --iso-offset)       ISO_OFFSET=${2:?}; shift 2 ;;
         --length)           LENGTH=${2:?}; shift 2 ;;
@@ -90,6 +104,7 @@ while [ $# -gt 0 ]; do
         --size-mb)          SIZE_MB=${2:?}; shift 2 ;;
         --yes-write)        YES_WRITE=true; shift ;;
         --yes-destroy)      YES_DESTROY=true; shift ;;
+        --reset-device)     MODE=reset-device; shift ;;
         --allow-quarantined) ALLOW_QUARANTINED=true; shift ;;
         --self-test)        MODE=self-test; shift ;;
         -h|--help)          usage ;;
@@ -503,6 +518,76 @@ run_postflight() {
     return 0
 }
 
+# ---------------------------------------------------------------- reset
+run_reset_device() {
+    [ "$(id -u)" -eq 0 ] || die "--reset-device needs root (authorized toggle)"
+    probe_device
+    [ -n "$usbport" ] || die "not a USB device — nothing to reset"
+    local sys="/sys/bus/usb/devices/$usbport" newdev="" i
+    [ -w "$sys/authorized" ] || die "$sys/authorized is not writable"
+    warn "deauthorizing $usbport — the device disappears for a few seconds"
+    echo 0 > "$sys/authorized"
+    sleep 3
+    echo 1 > "$sys/authorized"
+    # The block device may come back under a DIFFERENT kernel letter; find
+    # it again by serial (fallback: hope the letter survived).
+    for i in $(seq 1 10); do
+        sleep 1
+        if [ -n "$serial" ]; then
+            newdev=$(lsblk -no NAME,SERIAL 2>/dev/null | awk -v s="$serial" '$2==s{print "/dev/"$1; exit}')
+        else
+            [ -b "$DEV" ] && newdev=$DEV
+        fi
+        [ -n "$newdev" ] && break
+    done
+    [ -n "$newdev" ] || die "device did not come back after the reset — replug it and re-run"
+    say "device is back at $newdev (was $DEV)"
+    printf '%s\n' "$newdev"
+    return 0
+}
+
+# ---------------------------------------------------------------- repair
+run_repair_region() {
+    probe_device
+    [ -f "$ISO" ] || die "--repair-region needs a readable image: $ISO"
+    [ -n "$OFFSET" ] || die "--offset is required (bytes)"
+    case "$OFFSET" in ''|*[!0-9]*) die "--offset must be a byte count" ;; esac
+    local iso_size iso_off len h_iso h1 h2
+    iso_size=$(stat -c '%s' "$ISO")
+    [ "$OFFSET" -lt "$size_bytes" ] || die "--offset $OFFSET is beyond the device ($size_bytes bytes)"
+    len=${LENGTH:-67108864}
+    case "$len" in ''|*[!0-9]*) die "--length must be a byte count" ;; esac
+    iso_off=${ISO_OFFSET:-$OFFSET}
+    case "$iso_off" in ''|*[!0-9]*) die "--iso-offset must be a byte count" ;; esac
+    [ "$iso_off" -lt "$iso_size" ] || die "--iso-offset $iso_off is beyond the image ($iso_size bytes)"
+    [ $((iso_off + len)) -le "$iso_size" ] || len=$((iso_size - iso_off))
+    [ "$len" -gt 0 ] || die "empty region"
+    [ $((OFFSET + len)) -le "$size_bytes" ] || die "--offset+length is beyond the device ($size_bytes bytes)"
+
+    # THE WHOLE POINT: bs=4096 write commands. A weak cell that silently
+    # refuses to program under >=1M commands (acknowledged by the controller,
+    # never committed, reads serve the old bytes — the 2026-10-29 one-byte
+    # case) commits normally under small commands. skip_bytes/seek_bytes keep
+    # the offsets byte-exact without alignment assumptions.
+    say "repairing device [$OFFSET, $((OFFSET+len))) from image [$iso_off, $((iso_off+len))) with 4K commands"
+    dd if="$ISO" of="$DEV" bs=4096 iflag=skip_bytes,count_bytes oflag=seek_bytes \
+        skip="$iso_off" count="$len" seek="$OFFSET" conv=fdatasync status=none \
+        || die "repair write failed (device offline?)"
+    sync; sleep 1
+    h_iso=$(dd if="$ISO" bs=1M iflag=skip_bytes,count_bytes skip="$iso_off" count="$len" status=none | sha256sum | awk '{print $1}')
+    h1=$(dd if="$DEV" bs=1M iflag=skip_bytes,count_bytes,direct skip="$OFFSET" count="$len" status=none 2>/dev/null | sha256sum | awk '{print $1}')
+    h2=$(dd if="$DEV" bs=1M iflag=skip_bytes,count_bytes skip="$OFFSET" count="$len" status=none 2>/dev/null | sha256sum | awk '{print $1}')
+    say "iso=$h_iso dev#1=$h1 dev#2=$h2"
+    if [ "$h1" = "$h_iso" ] && [ "$h2" = "$h_iso" ]; then
+        ok "region repaired — reads back byte-identical to the image (4K rewrite)"
+        record_health "$serial_sha" ok - - 0 "weak-cell repair at $OFFSET (${len}B, 4K commands after device reset)" || true
+        return 0
+    fi
+    warn "4K rewrite did not hold — this is real medium damage, not a weak cell"
+    record_health "$serial_sha" quarantined - - 0 "4K repair FAILED at $OFFSET — retire the stick" || true
+    return 1
+}
+
 # ---------------------------------------------------------------- write test
 run_write_test() {
     [ "$YES_WRITE" = true ] || die "--write-test writes to the device; pass --yes-write (only unallocated tail space is touched)"
@@ -643,12 +728,14 @@ run_self_test() {
 }
 
 case "$MODE" in
-    self-test)    run_self_test ;;
-    preflight)    run_preflight ;;
-    postflight)   run_postflight ;;
-    verify-region) run_verify_region ;;
-    write-test)   run_write_test ;;
-    burn-in)      run_burn_in ;;
-    record)       run_record ;;
-    *)            usage ;;
+    self-test)      run_self_test ;;
+    preflight)      run_preflight ;;
+    postflight)     run_postflight ;;
+    verify-region)  run_verify_region ;;
+    repair-region)  run_repair_region ;;
+    reset-device)   run_reset_device ;;
+    write-test)     run_write_test ;;
+    burn-in)        run_burn_in ;;
+    record)         run_record ;;
+    *)              usage ;;
 esac

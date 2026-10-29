@@ -691,6 +691,8 @@ printf 'pass=%d fail=%d\n' "$PASS" "$FAIL"
 printf 'evidence: %s\nlog     : %s\n' "$EVID" "$LOG"
 if [ "$FAIL" -gt 0 ]; then
   echo "VERDICT: FAIL — attach $EVID/ to the build's INDEX.md verdict"
+  [ -x "$REPO_DIR/tools/verdict.sh" ] && "$REPO_DIR/tools/verdict.sh" record "$LOG" hw-check || true
   exit 1
 fi
 echo "VERDICT: PASS on hardware — record it in BUILDS.md and the ISO's INDEX.md"
+[ -x "$REPO_DIR/tools/verdict.sh" ] && "$REPO_DIR/tools/verdict.sh" record "$LOG" hw-check || true
