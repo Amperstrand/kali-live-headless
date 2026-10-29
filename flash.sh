@@ -591,8 +591,14 @@ make_config_partition() {
 
   # Reuse: a KLHCONFIG partition from a previous flash survives the dd (its
   # sectors sit past the ISO), but the dd RESTORES THE ISO'S OWN PARTITION
-  # TABLE, orphaning it. Detect any surviving label first; if found, use
-  # that partition (fresh fs) instead of appending a second one.
+  # TABLE, orphaning it. The kernel can keep serving the STALE node, which
+  # fools the reuse detection below into "reformatting" a partition that no
+  # longer exists on disk — mkfs.vfat fails and the stick ships with NO
+  # config partition (2026-10-29: exactly this on a recovered stick).
+  # Re-sync the kernel table first so the detection sees post-dd reality
+  # and the honest append path runs instead.
+  partprobe "$DEVPATH" 2>/dev/null || blockdev --rereadpt "$DEVPATH" 2>/dev/null || true
+  sleep 2
   part=$(klh_cfgpart "$DEVPATH")
   if [ -n "$part" ] && [ -b "$part" ]; then
     klh_info "existing KLHCONFIG partition found ($part) — reformatting it"
