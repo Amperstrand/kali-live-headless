@@ -131,10 +131,10 @@ all live hosts offline):
   The spike-era firmware minimization is dead policy; the Kali profile now
   ships radio firmware EXPLICITLY (PR #37) and the Debian firmware policy
   stays as d2 shipped it.
-- `tools/iso-hotpatch.sh` / `suite-parallel.sh` still hardcode kali ISO
-  names (only matters when hotpatching a debian image).
-- `iso-archive.sh --build N` lookup hardcodes the kali ISO name; the
-  `--iso PATH` form works for any base (used for both spike archives).
+- ~~`tools/iso-hotpatch.sh` / `suite-parallel.sh` still hardcode kali ISO
+  names~~ — FIXED 2026-10-29 (both resolve the debian name too).
+- ~~`iso-archive.sh --build N` lookup hardcodes the kali ISO name~~ —
+  already globbed any base; confirmed while fixing the above.
 - BASE is env/config only; `configure.sh` doesn't prompt for it (spike
   scope — the results doc is the interface).
 
