@@ -28,6 +28,11 @@
 #                    host's own uplink; only choose this deliberately).
 #   --restore        re-define and start an existing guest from the domain
 #                    XML kept on the store (survives a live-session reboot).
+#   --avoid-ports L  comma list of external ports already TAKEN elsewhere
+#                    (typically the concentrator's published DNAT ports,
+#                    fetched by tools/vm-deploy.sh and passed down: the hub
+#                    may hold a port for a stale tunnel this host cannot
+#                    see — issue #39). pick_port skips these too.
 #   --fresh          with an existing guest: discard it (vm-rm) and create a
 #                    NEW one instead of resuming. Without this flag a deploy
 #                    that finds the old disk + XML on the store RESUMES them
@@ -93,6 +98,7 @@ $(cat "${2:?}" 2>/dev/null)"; shift 2 ;;
         --restore)       RESTORE=true; shift ;;
         --adopt)         ADOPT=true; shift ;;
         --ephemeral)     EPHEMERAL=true; shift ;;
+        --avoid-ports)  AVOID_PORTS=${2:?}; shift 2 ;;
         --fresh)         FRESH=true; shift ;;
         -h|--help)       usage ;;
         *) echo "kali-live-vm-deploy: unknown option: $1" >&2; usage ;;
@@ -114,10 +120,18 @@ guest_net() { ip -4 route show dev virbr0 scope link 2>/dev/null | awk 'NR==1{pr
 
 # first free external port at or above 22023, judged by the forward registry
 pick_port() {
+    # the union of every port-holder this deploy can know about: LOCAL
+    # forwards (the stick's vm-forward list) and the AVOID list handed down
+    # from the caller — tools/vm-deploy.sh fetches the hub's published DNAT
+    # ports and passes them, because a stale hub unit can hold a port for a
+    # dead tunnel that no local state remembers (#39).
     _p=22023
     _used=$($SBIN/kali-live-vm-forward list 2>/dev/null)
+    _avoid=",${AVOID_PORTS:-},"
     while [ "$_p" -lt 22100 ]; do
-        printf '%s\n' "$_used" | grep -q "ext port $_p on" || { echo "$_p"; return 0; }
+        printf '%s\n' "$_used" | grep -q "ext port $_p on" || {
+            case "$_avoid" in *,"$_p",*) ;; *) echo "$_p"; return 0 ;; esac
+        }
         _p=$((_p + 1))
     done
     return 1
