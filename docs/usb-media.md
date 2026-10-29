@@ -70,7 +70,23 @@ into the product:
 * Diagnostics discipline: chunk-granularity hashing *overstates* damage
   ("38 MB corrupt" was 1 byte) — end any investigation in `cmp -l`, not
   in a hash. And never trust a cached block-device read after writes:
-  `drop_caches` or `iflag=direct`, always. The stick later crashed
+  `drop_caches` or `iflag=direct`, always.
+
+**Epilogue — the cure was the remap.** The 4K repair did not just fix
+the byte: three subsequent full flashes — including one with the cell
+deliberately primed into a wrong value first — all verified clean,
+meaning the small-command write made the FTL remap that LBA to a healthy
+block permanently. The stick now honestly ledgers as `slow` (5 MB/s
+writes) and holds a fully verified image with config partition and
+salt. The same final flash validated a second fix this case surfaced:
+the dd-orphaned KLHCONFIG partition (AGENTS #43) used to fool the reuse
+detection through a stale kernel node and ship sticks with *no* config
+partition — `flash.sh` now re-syncs the partition table before
+detection, and the proof run wrote the config partition and salt
+cleanly. The automatic recovery path itself never fired in situ — its
+trigger was cured by its own cure — but every piece (reset, 4K rewrite,
+double read-back, quarantine bookkeeping) ran for real during the
+manual recovery that produced it. The stick later crashed
 out entirely — a live-booted host running from it left the network
 mid-session.
 
