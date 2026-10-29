@@ -82,11 +82,22 @@ if [ -n "$PORT" ]; then SSH+=(-p "$PORT"); SCP+=(-P "$PORT"); fi
 
 SLUG=${REPO//\//-}
 
+# One directory per runner NAME (not per repo): enrolling a second runner
+# for the same repo used to reuse the first's directory, silently
+# replacing its .runner registration while both services kept running —
+# the 2026-10-29 espidf pair worked only by accident of process memory.
+# The remote install script below resolves per-name dirs with an
+# agentName-aware legacy fallback; verify passes BOTH candidates and the
+# guest picks whichever holds a .runner (the local side cannot stat
+# guest paths).
+verify_dirs_for() { # slug name -> "pername legacy"
+    printf '/home/runner/actions-runner-%s.%s /home/runner/actions-runner-%s' "$1" "$2" "$1"
+}
+
 # --verify is deliberately before token minting: checking a runner must never
 # rotate its registration, and it is safe to run while a CI job is active.
 if [ "$VERIFY" = true ]; then
     UNIT="actions.runner.$SLUG.$NAME.service"
-    DIR="/home/runner/actions-runner-$SLUG"
     printf 'runner-verify: %s @ %s\n' "$NAME" "$REPO"
     STATUS=$(gh api "repos/$REPO/actions/runners" \
         --jq ".runners[] | select(.name==\"$NAME\") | .status" 2>/dev/null || true)
@@ -104,12 +115,18 @@ if [ "$VERIFY" = true ]; then
         esac
     done
     printf 'runner-verify: github online labels=%s\n' "$RLABELS"
-    "${SSH[@]}" "$TARGET" "bash -s -- '$UNIT' '$DIR'" <<'REMOTE' \
+    "${SSH[@]}" "$TARGET" "bash -s -- '$UNIT' $(verify_dirs_for "$SLUG" "$NAME")" <<'REMOTE' \
         || die "guest checks failed (unit/docker/toolchain/registration)"
 set -euo pipefail
-UNIT=$1 DIR=$2
+UNIT=$1
+# $2 = per-name dir, $3 = legacy shared dir (pre-fix fleet); use whichever
+# holds this runner's registration (.runner readable only as runner).
+DIR=""
+for _c in "$2" "$3"; do
+    if sudo -n -u runner test -f "$_c/.runner" 2>/dev/null; then DIR="$_c"; break; fi
+done
+[ -n "$DIR" ] || { echo "no runner dir with .runner (tried: $2, $3)" >&2; exit 1; }
 systemctl is-active --quiet "$UNIT"
-sudo -n -u runner test -f "$DIR/.runner"
 sudo -n -u runner docker version --format '{{.Server.Version}}' >/dev/null
 for t in shellcheck yamllint ansible-playbook docker jq git; do
     command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 1; }
@@ -158,7 +175,19 @@ if [ "$DOCKER" = true ]; then
     sudo -n systemctl enable --now docker >/dev/null 2>&1 || true
 fi
 
-DIR="/home/runner/actions-runner-$SLUG"
+# One directory per runner NAME (a second runner for the same repo used
+# to reuse the first's directory, silently replacing its .runner
+# registration — the 2026-10-29 espidf pair worked only by accident).
+# Legacy shared dirs (pre-fix fleet) are honored only when the .runner
+# inside carries THIS name.
+DIR="/home/runner/actions-runner-$SLUG.$NAME"
+if [ ! -d "$DIR" ]; then
+    _legacy="/home/runner/actions-runner-$SLUG"
+    if [ -d "$_legacy" ] \
+       && sudo -n sed -n 's/.*"agentName" *: *"\([^"]*\)".*/\1/p' "$_legacy/.runner" 2>/dev/null | grep -qx "$NAME"; then
+        DIR="$_legacy"
+    fi
+fi
 sudo -n install -d -o runner -g runner "$DIR"
 if [ -x "$DIR/bin/Runner.Listener" ]; then
     echo "runner binaries already present — skipping download"
