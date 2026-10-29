@@ -13,9 +13,11 @@ CI lanes and, where physical, by `vm-check`/`hw-check`.
    and exercise real rendezvous/round-trip. The last skipped check in the
    49-pass postflight and the last unproven README claim.
    → [#40](https://github.com/Amperstrand/kali-live-headless/issues/40)
-2. **Hub-aware port allocation** — deploy consults
-   `hub-vm-forward.sh list`; the registry carries the hub port column;
-   stale DNATs and dead volumes stop surviving tunnel churn.
+2. ~~**Hub-aware port allocation**~~ — LANDED 2026-10-29 (`ac48e24`):
+   `tools/vm-port-pick.sh` merges local forwards + hub publish units +
+   registry ports; `vm-deploy.sh` pins the pick on the create path.
+   Self-tested in stage-a + CI (248/0 static). Live deploy validation
+   folded into the next hardware session.
    → [#39](https://github.com/Amperstrand/kali-live-headless/issues/39)
 
 ## Phase 2 — media and release hygiene
