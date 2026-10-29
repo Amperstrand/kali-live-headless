@@ -171,9 +171,23 @@ elif $ADOPT; then REMOTE_ARGS+=(--adopt)
 else REMOTE_ARGS+=(--cores "$CORES" --ram-gb "$RAM_GB" --disk-gb "$DISK_GB"); fi
 $NO_EGRESS && REMOTE_ARGS+=(--no-egress)
 
+# HUB-AWARE PORT ALLOCATION (#39): the hub may already publish a port for a
+# stale tunnel this host cannot see (dead volume, re-addressed wg). Fetch the
+# hub's live DNAT ports and hand them to the deploy as --avoid-ports, so
+# pick_port's choice is free on BOTH sides. hub-vm-forward.sh list prints one
+# line per published unit: "<name>  <ext> -> <ip>:<gport>  [state]".
+HUB_TAKEN=""
+if ! $NO_HUB && ! $VERIFY_ONLY; then
+    HUB_TAKEN=$(ssh "${SSH_OPTS[@]}" "$HUB" 'sh -s -- list' < "$HERE/hub-vm-forward.sh" 2>/dev/null) || HUB_TAKEN=""
+    HUB_TAKEN=$(printf '%s\n' "$HUB_TAKEN" | sed -n 's/^.*[^0-9]\([0-9][0-9][0-9][0-9][0-9]\) -> .*/\1/p' | sort -u | paste -sd, -)
+    [ -n "$HUB_TAKEN" ] && printf '  hub holds ports: %s (avoiding)\n' "$HUB_TAKEN"
+fi
+AVOID_ARGS=()
+[ -n "$HUB_TAKEN" ] && AVOID_ARGS=(--avoid-ports "$HUB_TAKEN")
+
 step "provisioning $NAME on the VM host"
 ssh "${SSH_OPTS[@]}" "$STICK" \
-    "sudo -n /usr/local/sbin/kali-live-vm-deploy $(printf '%q ' "${REMOTE_ARGS[@]}"); rm -f /tmp/klh-vm-keys.$$" \
+    "sudo -n /usr/local/sbin/kali-live-vm-deploy $(printf '%q ' "${REMOTE_ARGS[@]}") $(printf '%q ' "${AVOID_ARGS[@]}"); rm -f /tmp/klh-vm-keys.$$" \
     || die "kali-live-vm-deploy failed on $STICK"
 
 STATE=$(ssh "${SSH_OPTS[@]}" "$STICK" "sudo -n cat /run/kali-live-headless/vm-$NAME.env" 2>/dev/null) \
@@ -205,6 +219,16 @@ else
     [ -n "$HUB_TUNIP" ] || die "hub did not return a tunnel address"
     ssh "${SSH_OPTS[@]}" "$HUB" "sh -s -- add $NAME $EXT_PORT $HUB_TUNIP $EXT_PORT" < "$HERE/hub-vm-forward.sh" \
         || die "could not publish port $EXT_PORT on the hub"
+    # record the HUB side in the deploy state (#39): the registry's hub_port
+    # column and any later stale-DNAT sweep read it from here. Best effort —
+    # a missing row degrades to "-", never blocks a deploy.
+    ssh "${SSH_OPTS[@]}" "$STICK" "sudo -n env NAME=$NAME HUB_TUNIP=$HUB_TUNIP HUB_PORT=$EXT_PORT sh -s" <<'HUBREC' 2>/dev/null || true
+for f in /run/kali-live-headless/vm-$NAME.env /mnt/klh-vmstore/vms/$NAME.deploy; do
+    [ -f "$f" ] || continue
+    sed -i '/^HUB_TUNIP=/d;/^HUB_PORT=/d' "$f"
+    printf 'HUB_TUNIP=%s\nHUB_PORT=%s\n' "$HUB_TUNIP" "$HUB_PORT" >> "$f"
+done
+HUBREC
     HUB_HOST=${HUB#*@}
     HUB_PUB=$(ssh "${SSH_OPTS[@]}" "$HUB" 'curl -sS -m 10 https://ifconfig.me' || true)
     printf '  hub public address: %s\n' "${HUB_PUB:-unknown}"

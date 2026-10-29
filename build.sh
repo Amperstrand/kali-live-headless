@@ -567,6 +567,24 @@ else
   klh_info "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH (inherited from the environment)"
 fi
 
+# KLH_DIET (optional, env/config, comma list): size cuts that change the
+# image surface enough to deserve their own knob rather than a silent
+# default. Current value:
+#   di   drop the debian-installer from the image (~570M on BASE=debian,
+#        less on kali) — the install boot entries vanish; this is a LIVE-ONLY
+#        image. Measured + predicted in docs/debian-base-spike-results.md.
+KLH_DIET=${KLH_DIET:-}
+if [ "${KLH_DIET#*di}" != "$KLH_DIET" ] && [ "${KLH_DIET#*none}" = "$KLH_DIET" ]; then
+  _ac="$UPSTREAM_DIR/auto/config"
+  [ -f "$_ac" ] || klh_die "KLH_DIET=di: no auto/config at $_ac (upstream tree missing?)"
+  # upstream sets --debian-installer live for amd64 inside lb_opts; false
+  # removes the installer AND its pool/install trees from the ISO
+  sed -i 's|lb_opts+=(--debian-installer live)|lb_opts+=(--debian-installer false)|' "$_ac"
+  grep -q -- '--debian-installer false' "$_ac" \
+    || klh_die "KLH_DIET=di: the d-i sed did not apply (auto/config drifted from pin $KALI_LIVE_REF?)"
+  klh_info "KLH_DIET=di: debian-installer dropped — live-only image (no install entries)"
+fi
+
 # Build identity for the archive + ledger: what was built, not when.
 # Untracked files are ignored on purpose — the build stages trees under
 # build/ and output/ that are never part of the source identity.
