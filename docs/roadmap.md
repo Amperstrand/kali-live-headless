@@ -59,8 +59,12 @@ CI lanes and, where physical, by `vm-check`/`hw-check`.
   DO-NOT-FLASH.
 - ~~Auto-pick `KLH_TEST_PORT`~~ — LANDED (stage-cde auto-picks an ephemeral
   port when unset; an explicit pin still wins).
-- A run-level verdict ledger for boot gates that never reach
-  `iso-archive` (archive-time capture exists; the gates write logs only).
+- ~~A run-level verdict ledger for boot gates~~ — LANDED 2026-10-29:
+  `tools/verdict.sh` (+ `--self-test` in CI) append-only ledgers every
+  gate run at the moment it ends; wired into `tools/run-logged.sh` (any
+  log carrying a VERDICT line is ledgered automatically),
+  `tools/suite-parallel.sh` (per stage) and `tools/hw-check.sh`;
+  `iso-archive.sh` still captures the archive-time row.
 
 ## Cross-links added 2026-10-28
 

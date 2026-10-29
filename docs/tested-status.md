@@ -7,7 +7,7 @@ hygiene gates, everything below is system-level.
 | Capability | Status | Evidence |
 |---|---|---|
 | Reproducible build + archive | ✅ proven | `output/iso-build<N>/` manifests, `BUILDS.md` ledger, reproducible-builds.md (same-commit rebuilds byte-compare on payload) |
-| USB media health gate | ✅ proven (live catch) | DataTraveler 3.0 14.4G: USB3 5000M link, 5–6 MB/s writes, **stable** wrong region at 2415919104 (3/3 identical reads ≠ ISO), kernel `device offline` during read-back → quarantined by serial; preflight exit 2 / `--allow-quarantined` exit 0 reproduced on the live host |
+| USB media health gate | ✅ proven (live catch + recovery) | DataTraveler 3.0 14.4G: five verify failures traced to **one weak cell** (would not program under ≥1M write commands; 4K commands commit) — flash.sh now auto-recovers (device reset + 4K rewrite + re-verify); stick ended byte-verified, quarantine lifted on evidence. Full arc in [`usb-media.md`](usb-media.md) |
 | Flash + KLHCONFIG + medium verify | ✅ proven | `medium-verify.sh` payload-region contract; Stage A suite; the failed-flash stick booted toram but was *rejected* by the gate — the system worked |
 | Live boot (BIOS + UEFI) | ✅ proven | QEMU suite stages + hardware boots: Legion 20-core host, two x280 class machines (8c16 live test host, operator box) |
 | Key-only SSH | ✅ asserted per boot | `post.ssh.auth_methods` (publickey only), `post.ssh.wrong_key`, `post.ssh.keys_count`, `post.ssh.root_login` |

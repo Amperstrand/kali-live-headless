@@ -34,15 +34,43 @@ and the operator accepts a corrupt boot medium.
 power-cycle (unplug/replug), the exact bad window accepted and held a
 fresh 38 MB pattern across three direct reads. A third full flash
 followed immediately — and the verify served the *original* stale bytes
-again (`8ed02360…`, fourth consecutive failure at the same offset). The
-stick's FTL serves isolated writes from a healthy block and resurrects
-the stale mapping under a sustained full-image write; the controller
-reports every write as successful throughout. Two lessons were welded in
-permanently: (1) **an isolated-window write test is not evidence a full
-image will hold** — `--write-test` can no longer lift a quarantine; only
-a fully verified flash (`--postflight`) clears one; (2) a power cycle
-can make a failing FTL look briefly healthy — never conclude "fixed"
-without the real workload passing. The stick later crashed
+again (`8ed02360…`, fourth consecutive failure at the same offset). An
+isolated-window write is clearly not evidence a full image will hold —
+`--write-test` can no longer lift a quarantine; only a fully verified
+flash (`--postflight`) clears one.
+
+**Resolution — it was one byte (2026-10-29).** A destructive
+`badblocks -w` run (four patterns, full surface, 2h43m) came back
+**clean** — and the fifth flash *still* failed identically. That
+contradiction broke the "dying medium" theory open. A software reset
+(deauthorize/re-authorize the USB device — no replug needed) restored
+the window's writability, but only for some contents: random data
+committed, the ISO's bytes did not. `cmp -l` ended the mystery: of
+38,350,848 bytes in the "corrupt" window, **exactly one differed** —
+ISO `0x00` vs device `0x01` at offset 2449473573. One worn cell that
+refuses to program its LSB under the ≥1M write commands `dd` issues —
+acknowledged by the controller, never committed, served stale forever
+after — while committing perfectly under 4K commands (exactly why
+badblocks' 4K passes were clean). Rewriting its 4K block by hand made
+the **full payload verify byte-identical**; the config partition and
+salt were appended, the postflight recorded `ok`, and the quarantine
+lifted on the evidence it exists for.
+
+Three days, five verification failures, one byte. What the case welded
+into the product:
+
+* `flash.sh` now attempts **weak-cell recovery automatically** before
+  dying: USB device reset + 4K-command rewrite of the differing chunks +
+  full re-verify (only for a few localized chunks; widespread diffs are
+  still a dying medium).
+* `usb-probe --reset-device` (soft power-cycle; prints the possibly-new
+  device path) and `--repair-region` (4K rewrite + double read-back).
+* A completed `--verify-only` records a postflight — a recovered stick
+  no longer stays quarantined because only the fresh-write path recorded.
+* Diagnostics discipline: chunk-granularity hashing *overstates* damage
+  ("38 MB corrupt" was 1 byte) — end any investigation in `cmp -l`, not
+  in a hash. And never trust a cached block-device read after writes:
+  `drop_caches` or `iflag=direct`, always. The stick later crashed
 out entirely — a live-booted host running from it left the network
 mid-session.
 
@@ -125,7 +153,7 @@ printed**. Schema and update rules live in the probe's header. Notes:
 
 | model | link | write MB/s | read MB/s | ledger verdict | notes |
 |---|---|---|---|---|---|
-| Kingston DataTraveler 3.0 14.4G | 5000M | 5–6 | 55–60 | **quarantined** (2026-10-28) | stable bad region @2.3 GiB; offline under sustained read |
+| Kingston DataTraveler 3.0 14.4G | 5000M | 5–8 | 55–80 | **recovered** (2026-10-29) | one weak cell @2449473573 (would not program under ≥1M commands); reset+4K rewrite, payload verified, quarantine lifted — slow, watch it |
 | — | | | | | |
 
 Buying guidance implied by the matrix: sustained *write* rate is the
