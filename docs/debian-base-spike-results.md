@@ -122,8 +122,9 @@ all live hosts offline):
   NTFS witness fixture (host `ntfs3` mount failed — host limitation, not
   image); the in-image vmstore decision-logic unit tests all ran green
   and the override stage proved the KLHCONFIG disk path on Debian.
-- **d-i diet**: `--debian-installer none` → ~1.0–1.1G estimate —
-  **IN PROGRESS** (see the diet section below).
+- ~~**d-i diet**~~ — **LANDED 2026-10-29** as `KLH_DIET=di` (see the diet
+  section): 1.22 GiB image, content/bios/uefi all green — including the
+  Debian image's first-ever UEFI gate.
 - ~~**Firmware diet round 2**: drop `firmware-misc-nonfree` → ~150M.~~
   **REJECTED by owner direction (2026-10-28): "i dont need a strong
   firmware diet… we are not super optimizing for space anytime soon."**
@@ -137,14 +138,36 @@ all live hosts offline):
 - BASE is env/config only; `configure.sh` doesn't prompt for it (spike
   scope — the results doc is the interface).
 
-## The d-i diet (2026-10-29)
+## The d-i diet (2026-10-29) — LANDED, gated
 
 The spike measured the debian-installer at ≈570M of the 1.6G image and
-predicted ~1.0–1.1G without it. That cut is now being executed as an
-explicit, gated option rather than a silent default — it changes the boot
-menu surface (install entries vanish), so it ships as `KLH_DIET=di` and
-its images carry their own gate runs. Results land in the table below when
-the build finishes.
+predicted ~1.0–1.1G without it. Shipped as **`KLH_DIET=di`** (env/config
+knob, not a default — the image becomes live-only, install entries vanish),
+implemented the same way the debian adapter verifies its swaps: a checked
+sed of upstream's `auto/config` (`--debian-installer live` → `false`).
+
+**Build #3-d3** (worktree @ `6423811` + the knob commit, BASE=debian +
+KLH_DIET=di, 2026-10-29, built on the 8-core workstation via docker,
+pinned to `ftp.se.debian.org`):
+
+| | d2 (acceptance) | d3 (d-i diet) |
+|---|---|---|
+| ISO size | 1.6G | **1.22 GiB (1,309,782,016 B)** |
+| sha512 | — | `010555d8e6e4…` |
+| content | 355-era green | **359/0/1** |
+| bios (menu boot) | 276/0/1 | **388/0/1** |
+| uefi | not run (no OVMF) | **389/0/0** — the Debian image's FIRST uefi gate |
+| vmstore/override/forensic | green (d2) | not re-run — unchanged surface from d2 apart from the installer trees |
+
+The ~380M realized cut sits under the 570M gross measurement because the
+d-i pool trees shared squashfs-compressed content with the live root; the
+prediction band (~1.0–1.1G vs 1.22G actual) missed the same effect.
+**Every prior debian image was carrying a third of its weight in an
+installer that has never been used by this project's flow.**
+
+The knob is BASE-agnostic: kali images accept `KLH_DIET=di` too (their d-i
+is leaner but the same lever applies when a kali minimal-minimal is ever
+wanted).
 
 ## Cross-link: the release line
 
