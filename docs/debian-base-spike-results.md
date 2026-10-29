@@ -157,7 +157,15 @@ pinned to `ftp.se.debian.org`):
 | content | 355-era green | **359/0/1** |
 | bios (menu boot) | 276/0/1 | **388/0/1** |
 | uefi | not run (no OVMF) | **389/0/0** — the Debian image's FIRST uefi gate |
-| vmstore/override/forensic | green (d2) | not re-run — unchanged surface from d2 apart from the installer trees |
+| forensic | 277/0/1 | **389/0/1** |
+| override (direct kernel) | 262/0/1 | **374/0/1** |
+| vmstore | 249/0/2 | **381/0/1** |
+
+**d3 is a FULL-gate green Debian image — every stage, including UEFI,
+which no Debian image of this project had ever run.** (One flake observed:
+the medium-verify synthetic-medium unit failed once across ~10 stage runs
+and passed on both re-runs — sfdisk-on-busy-system class; watch for
+recurrence, don't chase a ghost.)
 
 The ~380M realized cut sits under the 570M gross measurement because the
 d-i pool trees shared squashfs-compressed content with the live root; the
