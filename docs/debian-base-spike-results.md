@@ -111,10 +111,13 @@ the engine in seconds so the property is enforced, not remembered.
 Status 2026-10-29 (spike resumed on this lane; software-side items only,
 all live hosts offline):
 
-- **UEFI stage not run on the Debian ISO**: this host had no x86 OVMF
-  firmware (uefi skipped with a note) — **being fixed**: edk2-ovmf installed
-  on the workstation, so the uefi gate now runs here against both the Kali
-  release (#53) and the Debian image. See the UEFI section below.
+- ~~**UEFI stage not run**~~ — **CLOSED 2026-10-29**: edk2-ovmf on the
+  workstation (the suite already knew Arch's
+  `/usr/share/edk2/x64/OVMF_CODE.4m.fd` path — first candidate in its
+  list). First-ever UEFI gate here, against the Kali release #53:
+  **PASS 385/0/0** (toram-default menu boot, SSH hardening, witness-disk
+  forensics all green). The remaining UEFI gap is only the *Debian*
+  image's uefi gate — runs with the diet build below.
 - **vmstore stage partially skipped**: the HOST could not populate its
   NTFS witness fixture (host `ntfs3` mount failed — host limitation, not
   image); the in-image vmstore decision-logic unit tests all ran green
