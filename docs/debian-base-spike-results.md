@@ -108,21 +108,48 @@ the engine in seconds so the property is enforced, not remembered.
 
 ## Known gaps / follow-ups
 
-- **UEFI stage not run on the Debian ISO**: this host has no x86 OVMF
-  firmware (uefi skips with a note). Every other stage is green; run the
-  uefi gate on an OVMF-equipped host before any flash.
+Status 2026-10-29 (spike resumed on this lane; software-side items only,
+all live hosts offline):
+
+- **UEFI stage not run on the Debian ISO**: this host had no x86 OVMF
+  firmware (uefi skipped with a note) — **being fixed**: edk2-ovmf installed
+  on the workstation, so the uefi gate now runs here against both the Kali
+  release (#53) and the Debian image. See the UEFI section below.
 - **vmstore stage partially skipped**: the HOST could not populate its
   NTFS witness fixture (host `ntfs3` mount failed — host limitation, not
   image); the in-image vmstore decision-logic unit tests all ran green
   and the override stage proved the KLHCONFIG disk path on Debian.
-- **d-i diet**: `--debian-installer none` → ~1.0–1.1G estimate.
-- **Firmware diet round 2**: drop `firmware-misc-nonfree` → ~150M.
+- **d-i diet**: `--debian-installer none` → ~1.0–1.1G estimate —
+  **IN PROGRESS** (see the diet section below).
+- ~~**Firmware diet round 2**: drop `firmware-misc-nonfree` → ~150M.~~
+  **REJECTED by owner direction (2026-10-28): "i dont need a strong
+  firmware diet… we are not super optimizing for space anytime soon."**
+  The spike-era firmware minimization is dead policy; the Kali profile now
+  ships radio firmware EXPLICITLY (PR #37) and the Debian firmware policy
+  stays as d2 shipped it.
 - `tools/iso-hotpatch.sh` / `suite-parallel.sh` still hardcode kali ISO
   names (only matters when hotpatching a debian image).
 - `iso-archive.sh --build N` lookup hardcodes the kali ISO name; the
   `--iso PATH` form works for any base (used for both spike archives).
 - BASE is env/config only; `configure.sh` doesn't prompt for it (spike
   scope — the results doc is the interface).
+
+## The d-i diet (2026-10-29)
+
+The spike measured the debian-installer at ≈570M of the 1.6G image and
+predicted ~1.0–1.1G without it. That cut is now being executed as an
+explicit, gated option rather than a silent default — it changes the boot
+menu surface (install entries vanish), so it ships as `KLH_DIET=di` and
+its images carry their own gate runs. Results land in the table below when
+the build finishes.
+
+## Cross-link: the release line
+
+The spike's follow-up work (firmware policy, the #45 toram fix, the
+mirror pinning, the lane/audit tooling) culminated in build **#53**
+(2026-10-28): the first fully-green toram-default release — content
+355/0, override 370/0, bios 384/0. See `BUILDS.md` #53 and
+`tested-status.md`.
 
 ## Artifacts
 
