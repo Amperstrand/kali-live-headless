@@ -36,7 +36,8 @@ done
 if [ -z "$ISO_ARG" ]; then
   newest=$(find output -maxdepth 1 -type d -name 'iso-build*' 2>/dev/null \
     | sed 's/.*iso-build//' | grep -E '^[0-9]+$' | sort -n | tail -1)
-  for name in kali-linux-rolling-live-minimal-amd64.iso kali-linux-rolling-live-amd64.iso; do
+  # any base the adapter can produce (BASE=debian names it kali-linux-trixie-…)
+  for name in kali-linux-rolling-live-minimal-amd64.iso kali-linux-trixie-live-minimal-amd64.iso kali-linux-rolling-live-amd64.iso; do
     [ -f "output/iso-build$newest/$name" ] && ISO_ARG="--iso output/iso-build$newest/$name" && break
   done
 fi
