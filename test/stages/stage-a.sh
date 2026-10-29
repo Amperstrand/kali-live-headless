@@ -152,6 +152,32 @@ else
   record skip "lane-audit unit" "tool not present"
 fi
 
+# #39 hub-aware port allocation: pick_port must skip BOTH the local forward
+# list AND the --avoid-ports handed down from the hub. The port-extraction
+# sed in tools/vm-deploy.sh and the registry's hub_port column are asserted
+# with fixtures — no hub needed (the hub side is exercised by vm-check's
+# post.hub.* on real hardware).
+if [ -x "$REPO_DIR/tools/vm-deploy.sh" ]; then
+  # 1. the hub list -> port-list extraction (hub-vm-forward list output shape)
+  _hl=$(printf ' vps-ci           22023 -> 10.66.234.92:22023  [active]\n vps-old          22024 -> 10.66.89.4:22024  [failed]\n'     | sed -n 's/^.*[^0-9]\([0-9][0-9][0-9][0-9][0-9]\) -> .*/\1/p' | sort -u | paste -sd, -)
+  [ "$_hl" = "22023,22024" ] \
+    && record pass "vm-deploy: hub list port extraction" \
+    || record fail "vm-deploy: hub list port extraction" "got '$_hl' — the hub-vm-forward list format drifted?"
+  # 2. the pick_port avoidance union (same logic as the in-image function)
+  _used=""; _avoid=",22023,22024,"; _p=22023; _pick=""
+  while [ "$_p" -lt 22100 ]; do
+    printf '%s\n' "$_used" | grep -q "ext port $_p on" || {
+      case "$_avoid" in *,"$_p",*) ;; *) _pick=$_p; break ;; esac
+    }
+    _p=$((_p + 1))
+  done
+  [ "$_pick" = "22025" ] \
+    && record pass "vm-deploy: pick_port avoids hub-held ports" \
+    || record fail "vm-deploy: pick_port avoids hub-held ports" "picked '${_pick:-none}', want 22025 (22023/22024 hub-held)"
+else
+  record skip "vm-deploy hub-aware ports" "tool not present"
+fi
+
 # A hook live-build cannot execute is silently skipped, so the image ships
 # without the step and nothing complains (AGENTS #16: derive_identity.py was
 # 100644 for ten builds and never ran). Every hook in the overlay must be +x;

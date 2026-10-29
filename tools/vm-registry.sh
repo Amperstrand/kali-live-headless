@@ -8,7 +8,7 @@
 # on the persistent store, next to the disks it describes:
 #
 #   /mnt/klh-vmstore/registry.tsv
-#     alias  uuid  npub  ext_port  guest_ip  wg_tunnel_ip  fips  created
+#     alias  uuid  npub  ext_port  hub_port  guest_ip  wg_tunnel_ip  fips  created
 #
 #   tools/vm-registry.sh list            # pretty table (default)
 #   tools/vm-registry.sh sync            # rebuild from live state, then list
@@ -64,6 +64,11 @@ $VIRSH list --all --name 2>/dev/null | grep -v '^$' | while IFS= read -r d; do
         port=$(sed -n 's/^EXT_PORT=//p' "$STORE/vms/$d.deploy" | head -1)
         fips=$(sed -n 's/^FIPS=//p' "$STORE/vms/$d.deploy" | head -1)
         created=$(stat -c %y "$STORE/vms/$d.deploy" 2>/dev/null | cut -d' ' -f1)
+        # hub_port: what the CONCENTRATOR actually publishes for this guest
+        # (#39) — recorded by tools/vm-deploy.sh after the hub add; absent on
+        # pre-#39 sidecars and LAN-only deployments, hence the honest "-"
+        hubport=$(sed -n 's/^HUB_PORT=//p' "$STORE/vms/$d.deploy" | head -1)
+        [ -z "$hubport" ] && hubport="-"
         [ -z "$fips" ] && fips="-"
         # npub: recorded at install, else derived (needs the persistent salt)
         npub=$(sed -n 's/^NPUB=//p' "$STORE/vms/$d.deploy" | head -1)
@@ -74,8 +79,8 @@ $VIRSH list --all --name 2>/dev/null | grep -v '^$' | while IFS= read -r d; do
         fi
         [ -z "$npub" ] && npub="-"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$d" "${uuid:--}" "$npub" "${port:--}" "${gip:--}" "${wgip:--}" "$fips" "${created:--}" "$state"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$d" "${uuid:--}" "$npub" "${port:--}" "${hubport:--}" "${gip:--}" "${wgip:--}" "$fips" "${created:--}" "$state"
 done
 REMOTE
 }
@@ -83,7 +88,7 @@ REMOTE
 write_registry() { # rows on stdin -> TSV on the store, atomically
     # NB: the rows travel on ssh's STDIN, so the remote script must come as a
     # command argument — a heredoc here would occupy stdin and swallow them
-    { printf 'alias\tuuid\tnpub\text_port\tguest_ip\twg_tunnel_ip\tfips\tcreated\tstate\n'
+    { printf 'alias\tuuid\tnpub\text_port\thub_port\tguest_ip\twg_tunnel_ip\tfips\tcreated\tstate\n'
       cat
     } | ssh "${SSH_OPTS[@]}" "$STICK" \
         "sudo -n sh -c 'cat > $REG.tmp && mv $REG.tmp $REG'"
@@ -105,16 +110,16 @@ if [ "$CMD" = show ]; then
     ROW=$(read_registry | awk -F'\t' -v n="$NAME" '$1==n')
     [ -n "$ROW" ] || { printf 'vm-registry: no row for %s (run: tools/vm-registry.sh sync)\n' "$NAME" >&2; exit 1; }
     if $JSON; then
-        IFS=$'\t' read -r alias uuid npub port gip wg fips created state <<<"$ROW"
-        printf '{"alias":"%s","uuid":"%s","npub":"%s","ext_port":"%s","guest_ip":"%s","wg_tunnel_ip":"%s","fips":"%s","created":"%s","state":"%s"}\n' \
-            "$alias" "$uuid" "$npub" "$port" "$gip" "$wg" "$fips" "$created" "$state"
+        IFS=$'\t' read -r alias uuid npub port hubport gip wg fips created state <<<"$ROW"
+        printf '{"alias":"%s","uuid":"%s","npub":"%s","ext_port":"%s","hub_port":"%s","guest_ip":"%s","wg_tunnel_ip":"%s","fips":"%s","created":"%s","state":"%s"}\n' \
+            "$alias" "$uuid" "$npub" "$port" "$hubport" "$gip" "$wg" "$fips" "$created" "$state"
     else
-        printf 'alias       %s\nuuid         %s\nnpub         %s\next_port     %s\nguest_ip     %s\nwg_tunnel_ip %s\nfips         %s\ncreated      %s\nstate        %s\n' \
+        printf 'alias        %s\nuuid          %s\nnpub          %s\next_port      %s\nhub_port      %s\nguest_ip      %s\nwg_tunnel_ip  %s\nfips          %s\ncreated       %s\nstate         %s\n' \
             "$(printf '%s\n' "$ROW" | cut -f1)" "$(printf '%s\n' "$ROW" | cut -f2)" \
             "$(printf '%s\n' "$ROW" | cut -f3)" "$(printf '%s\n' "$ROW" | cut -f4)" \
             "$(printf '%s\n' "$ROW" | cut -f5)" "$(printf '%s\n' "$ROW" | cut -f6)" \
             "$(printf '%s\n' "$ROW" | cut -f7)" "$(printf '%s\n' "$ROW" | cut -f8)" \
-            "$(printf '%s\n' "$ROW" | cut -f9)"
+            "$(printf '%s\n' "$ROW" | cut -f9)" "$(printf '%s\n' "$ROW" | cut -f10)"
     fi
     exit 0
 fi
@@ -128,19 +133,19 @@ if $JSON; then
     sep=""
     while IFS= read -r line; do
         case "$line" in alias*) continue ;; esac
-        IFS=$'\t' read -r alias uuid npub port gip wg fips created state <<<"$line"
-        printf '%s{"alias":"%s","uuid":"%s","npub":"%s","ext_port":"%s","guest_ip":"%s","wg_tunnel_ip":"%s","fips":"%s","created":"%s","state":"%s"}' \
-            "$sep" "$alias" "$uuid" "$npub" "$port" "$gip" "$wg" "$fips" "$created" "$state"
+        IFS=$'\t' read -r alias uuid npub port hubport gip wg fips created state <<<"$line"
+        printf '%s{"alias":"%s","uuid":"%s","npub":"%s","ext_port":"%s","hub_port":"%s","guest_ip":"%s","wg_tunnel_ip":"%s","fips":"%s","created":"%s","state":"%s"}' \
+            "$sep" "$alias" "$uuid" "$npub" "$port" "$hubport" "$gip" "$wg" "$fips" "$created" "$state"
         sep=", "
     done <<<"$RAW"
     printf ']\n'
 else
-    printf '%-10s %-4s %-14s %-10s %-14s %s\n' ALIAS PORT FIPS NPUB GUEST CREATED
-    printf '%-10s %-4s %-14s %-10s %-14s %s\n' ---- ---- ---- ---- ----- -------
+    printf '%-10s %-6s %-6s %-4s %-14s %-14s %s\n' ALIAS PORT HUB FIPS NPUB GUEST CREATED
+    printf '%-10s %-6s %-6s %-4s %-14s %-14s %s\n' ---- ---- ---- ---- ---- ----- -------
     while IFS= read -r line; do
         case "$line" in alias*) continue ;; esac
-        IFS=$'\t' read -r alias uuid npub port gip wg fips created state <<<"$line"
+        IFS=$'\t' read -r alias uuid npub port hubport gip wg fips created state <<<"$line"
         np=${npub:0:12}; [ "$npub" != "-" ] && np="$np…"
-        printf '%-10s %-4s %-14s %-10s %-14s %s\n' "$alias" "$port" "$fips" "$np" "$gip" "$created"
+        printf '%-10s %-6s %-6s %-4s %-14s %-14s %s\n' "$alias" "$port" "$hubport" "$fips" "$np" "$gip" "$created"
     done <<<"$RAW"
 fi
