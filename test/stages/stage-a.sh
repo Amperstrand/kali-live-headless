@@ -23,7 +23,7 @@ done
 # Tool self-tests that need no hardware: the media probe's classifier/
 # ledger/placement math and the verdict-ledger parser. CI runs the same
 # two on both lanes — this keeps a local `--level static` equivalent.
-for _t in tools/usb-probe.sh tools/verdict.sh; do
+for _t in tools/usb-probe.sh tools/verdict.sh tools/vm-port-pick.sh; do
   if "$REPO_DIR/$_t" --self-test >/dev/null 2>&1; then
     record pass "self-test $(basename "$_t")"
   else
