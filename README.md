@@ -30,6 +30,26 @@ GitHub Actions runners — proven live and asserted after every boot.
 | navigate every document | [`docs/INDEX.md`](docs/INDEX.md) |
 | see how it compares to prior art | [`docs/prior-art.md`](docs/prior-art.md) |
 
+## In this README
+
+[How it works](#how-it-works) ·
+[Threat model](#threat-model--read-this-before-use) ·
+[Quickstart](#quickstart) ·
+[Configuration reference](#configuration-reference-config-from-configexample) ·
+[Hostnames](#hostnames-hardware-derived-by-default) ·
+[Host-role mesh identity (FIPS)](#host-role-mesh-identity-fips) ·
+[Deterministic per-machine identities](#deterministic-per-machine-identities-master-salt--hkdf) ·
+[Forwarding one port into a VM](#forwarding-one-port-into-a-vm-kali-live-vm-forward) ·
+[WireGuard access](#wireguard-access-ssh-over-wireguard) ·
+[KVM](#kvm) ·
+[Security notes](#security-notes-audit) ·
+[Testing](#testing) ·
+[Rescue channel](#rescue-channel-v20-opt-in) ·
+[Related projects](#related-projects) ·
+[Repository layout](#repository-layout) ·
+[Troubleshooting](#troubleshooting) ·
+[Rebuilding / long runs](#rebuilding--long-runs)
+
 ---
 
 ## How it works
