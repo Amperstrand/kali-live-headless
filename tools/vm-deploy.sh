@@ -123,6 +123,26 @@ else
 
 # ---- 1. make sure the VM host carries the deploy tool ----------------------
 step "VM host: $STICK"
+
+# Hub-aware port allocation (#39): the stick-side pick_port sees only LOCAL
+# forwards — the hub's stale publish units and the registry's remembered
+# ports are invisible to it, and hub-vm-forward add DELETES any stale rule
+# for the port first (AGENTS #24), so a collision silently steals the port
+# from the older guest (the vps1/22023 incident). When --port was not
+# given and we are creating (not restoring/verifying), consult all three
+# views from here — the operator side is the only place that can see them
+# all — and pin the choice explicitly.
+if [ -z "$PORT" ] && ! $RESTORE && ! $VERIFY_ONLY; then
+    _pp_args=(--live --stick "$STICK")
+    $NO_HUB || _pp_args+=(--hub "$HUB")
+    if _pp=$("$HERE/vm-port-pick.sh" "${_pp_args[@]}" 2>/dev/null); then
+        PORT=$_pp
+        echo "  auto-picked hub-aware port $PORT (local forwards + hub units + registry consulted)"
+    else
+        echo "  hub-aware port pick unavailable — falling back to the stick-side picker"
+    fi
+fi
+
 if ! ssh "${SSH_OPTS[@]}" "$STICK" 'command -v /usr/local/sbin/kali-live-vm-deploy >/dev/null'; then
     echo "  installing kali-live-vm-deploy on the VM host (not in this image yet)"
     scp -q -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
