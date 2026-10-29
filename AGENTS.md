@@ -470,6 +470,25 @@ drift is absorbed by bumping the pin, nothing else.
     workflow `startup_failure` (e.g. a caller racing a shared-workflow
     input change) is **not retryable** — it self-heals on the next event.
 
+42. **A "stably corrupt region" can be ONE weak cell — end every
+    medium postmortem in `cmp -l`, not in a hash** (2026-10-29, the
+    DataTraveler finale): five verification failures, a quarantine, and a
+    clean 2h43m `badblocks -w` pass all coexisted because ONE cell at
+    offset 2449473573 would not program `0x00` under ≥1M write commands
+    (controller ACKs, never commits, reads serve the old byte forever)
+    while committing fine under 4K commands — chunk-granularity hashing
+    reported the whole 38 MB window "corrupt". Recovery: USB
+    deauthorize/re-authorize (soft FTL reset; device letter may change)
+    + 4K-command rewrite of the differing chunks — now AUTOMATIC in
+    flash.sh, with `usb-probe --reset-device` / `--repair-region`.
+    Corollaries: badblocks-clean ≠ flashable (different command sizes
+    exercise different programming paths on weak media); cached
+    block-device reads can serve pre-write pages even after
+    `blockdev --flushbufs` — `drop_caches` or `iflag=direct` before any
+    conclusion; and a completed `--verify-only` is a full verified flash
+    and must postflight (a recovered stick stayed quarantined for hours
+    because it didn't).
+
 ## Public-repo hygiene
 
 The repo is **public**. Nothing private may land here, ever: no PSKs, SSIDs,
