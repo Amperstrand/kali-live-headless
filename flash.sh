@@ -654,13 +654,31 @@ make_config_partition() {
       return 0
     fi
   fi
-  if command -v mkfs.vfat >/dev/null 2>&1; then
-    mkfs.vfat -n KLHCONFIG "$newpart" >/dev/null 2>&1 || { klh_warn "mkfs.vfat failed — skipping config partition"; return 0; }
-  elif command -v mke2fs >/dev/null 2>&1; then
-    klh_warn "mkfs.vfat missing — using ext4 (editable on Linux only)"
-    mke2fs -F -L KLHCONFIG "$newpart" >/dev/null 2>&1 || { klh_warn "mke2fs failed — skipping config partition"; return 0; }
-  else
-    klh_warn "no mkfs tool found — skipping config partition"
+  # DESKTOP AUTOMOUNTER RACE (2026-10-30 flash of #53): udisks watches the
+  # re-read table and mounts the just-appended KLHCONFIG partition the moment
+  # its node appears — mkfs then refuses ("contains a mounted filesystem")
+  # and the stick ships with NO config partition despite a green flash. The
+  # never-auto-unmount rule above is about OTHER people's mounts made BEFORE
+  # the flash decision; this is udisks racing OUR OWN mkfs of OUR OWN fresh
+  # partition, so unmounting it is not that rule's concern. Retry: beat udisks
+  # by unmounting immediately before each attempt (bounded, same shape as the
+  # EBUSY-rereadpt retry above).
+  _mkfs_ok=""
+  for i in $(seq 1 10); do
+    umount "$newpart" 2>/dev/null || true
+    if command -v mkfs.vfat >/dev/null 2>&1; then
+      mkfs.vfat -n KLHCONFIG "$newpart" >/dev/null 2>&1 && { _mkfs_ok=vfat; break; }
+    elif command -v mke2fs >/dev/null 2>&1; then
+      [ "$i" = 1 ] && klh_warn "mkfs.vfat missing — using ext4 (editable on Linux only)"
+      mke2fs -F -L KLHCONFIG "$newpart" >/dev/null 2>&1 && { _mkfs_ok=ext4; break; }
+    else
+      klh_warn "no mkfs tool found — skipping config partition"
+      return 0
+    fi
+    sleep 1
+  done
+  if [ -z "$_mkfs_ok" ]; then
+    klh_warn "mkfs failed after 10 tries (automounter fighting us? unmount $newpart and re-run with --verify-only) — skipping config partition"
     return 0
   fi
   mnt=$(mktemp -d)
