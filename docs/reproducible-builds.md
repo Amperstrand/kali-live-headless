@@ -274,6 +274,44 @@ the pin for. One more fetch to cover then: `installer_debian-installer:715`
 pulls `dists/<suite>/main/debian-installer/binary-<arch>/Release` from the
 *chroot* mirror for the udeb indices.
 
+## Caching — MEASURED 2026-10-31 (the :8000 experiment landed)
+
+The carry finally works. Three same-parameter builds (KLH_DIET=di,
+accum.se pinned, 8-core laptop, docker):
+
+| run | wall clock | proxy | notes |
+|---|---|---|---|
+| d4 | **17m31s** | none | baseline |
+| d6e | **14m55s** | COLD | cache fills (135M / 144 reqs) |
+| d7 | **13m53s** | WARM | 28 TCP_HITs of 278 reqs |
+
+**~21% faster warm, ~15% faster cold** (the cold run's win is apt
+connection reuse through the proxy, not caching). The downloads are
+~half of a 10-minute build on the 20-core box — this is the top remaining
+speed lever after zstd.
+
+### The three-part trap that kept it broken
+
+1. **Mirror pinning silently disabled caching**: upstream's auto-detection
+   only fires when `BUILD_MIRROR == DEFAULT && ! http_proxy` — our
+   pool-skew fix (`-m accum.se`) turned the proxy off as a side effect.
+2. **`http_proxy` does not cross the chroot boundary**: live-build's apt
+   runs inside a chroot where the env var is invisible. Upstream's own
+   detection mechanism has the same hole (it exports `http_proxy` at the
+   top of its build.sh — works for the container phase, dead for the
+   chroot phases). The fix is an `apt.conf.d` drop-in:
+   `Acquire::http::Proxy "http://127.0.0.1:8000"`.
+3. **The drop-in must stage AFTER the provenance guard**: it is a
+   build-time-only file (never ships — `rootfs/excludes` keeps it out of
+   the squashfs), written into the upstream tree, not our git-tracked
+   overlay. The guard correctly flagged it when staged as an overlay file.
+
+All three are now wired in `build.sh` (`KLH_HTTP_PROXY` capture →
+post-guard drop-in → excludes). The squid container:
+`docker run -d --name squid-deb -p 8000:3129 -v squid-deb-cache:/var/spool/squid ubuntu/squid:latest`
+with a squid.conf that caches `.deb/.udeb/.dsc/.tar.*` from the kali and
+debian domains.
+
 ## Caching (asked 2026-10-26)
 
 
