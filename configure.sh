@@ -88,6 +88,8 @@ EOF
     --bitlocker-unlock) OPT_BITLOCKER=${2:?}; shift 2 ;;
     -v|--variant)        OPT_VARIANT=${2:?}; shift 2 ;;
     --toram-entry)       OPT_TORAM=${2:?}; shift 2 ;;
+    --base)             OPT_BASE=${2:?}; shift 2 ;;
+    --diet)             OPT_DIET=${2:?}; shift 2 ;;
     --wg-enroll-hub)     OPT_WG_ENROLL_HUB=${2:?}; shift 2 ;;
     --wg-enroll-relays)  OPT_WG_ENROLL_RELAYS=${2:?}; shift 2 ;;
     -y|--assume-yes)     ASSUME_YES=true; shift ;;
@@ -134,6 +136,29 @@ EOF
   prompt_choice HOSTNAME_SCHEME "Choose" "hardware" hardware static
 fi
 case "$HOSTNAME_SCHEME" in hardware|static) ;; *) klh_die "hostname scheme must be hardware or static" ;; esac
+
+# Distro base: the adapter layer (lib/distro/) — kali is the historical
+# flow; debian (trixie) runs the same headless stack on a smaller image
+# (docs/debian-base-spike-results.md). This is the knob the spike left
+# env-only; making it a first-class prompt question.
+BASE=${OPT_BASE:-}
+if [ -z "$BASE" ]; then
+  cat >&2 <<'EOF'
+Distro base:
+  1. kali     the historical flow (default; rolling)
+  2. debian   trixie, same headless stack, smaller image
+EOF
+  prompt_choice BASE "Choose" "kali" kali debian
+fi
+case "$BASE" in kali|debian) ;; *) klh_die "base must be kali or debian" ;; esac
+
+# Optional size cuts (comma list; 'di' drops the installer — live-only image)
+KLH_DIET=${OPT_DIET:-}
+if [ -z "$KLH_DIET" ]; then
+  prompt_default KLH_DIET "Size diet (none|di — di drops the installer, live-only, -650M on kali)" ""
+fi
+case "$KLH_DIET" in ""|none|di|di,none|none,di) ;; *) klh_die "KLH_DIET must be empty, 'none' or 'di'" ;; esac
+[ "$KLH_DIET" = none ] && KLH_DIET=""
 
 WIFI_SSID=${OPT_SSID:-}
 if [ -z "$WIFI_SSID" ]; then read -r -p "Wi-Fi SSID (network name): " WIFI_SSID || klh_die "stdin closed"; fi
@@ -222,7 +247,10 @@ klh_validate_password_mode "$LIVE_PASSWORD_MODE" || klh_die "password mode must 
 WITH_KVM=${OPT_KVM:-}
 if [ -z "$WITH_KVM" ]; then prompt_choice WITH_KVM "Bake in the KVM/libvirt stack?" "true" true false; fi
 VARIANT=${VARIANT:-minimal}
-[ -z "$TORAM_ENTRY" ] && TORAM_ENTRY=true
+# set -u + late assignment (OPT_TORAM is read further down): a fresh
+# interactive run without --toram-entry hit "TORAM_ENTRY: unbound variable"
+# here — initialize early, the OPT_ value still overrides below
+TORAM_ENTRY=${TORAM_ENTRY:-true}
 klh_validate_bool "$WITH_KVM" || klh_die "--with-kvm must be true or false"
 
 # WireGuard access channel (non-interactive only: flags or environment; all
@@ -266,6 +294,8 @@ TMP=$(mktemp)
   printf 'WG_TUNNET=%q\n' "$WG_TUNNET"
   printf 'WG_PORT=%q\n' "$WG_PORT"
   printf 'VMSTORE_BITLOCKER=%q\n' "$VMSTORE_BITLOCKER"
+  printf 'BASE=%q\n' "$BASE"
+  printf 'KLH_DIET=%q\n' "$KLH_DIET"
   printf 'VARIANT=%q\n' "$VARIANT"
   printf 'TORAM_ENTRY=%q\n' "$TORAM_ENTRY"
   printf 'WG_HUB_ADDR=%q\n' "$WG_HUB_ADDR"
