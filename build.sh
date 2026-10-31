@@ -259,6 +259,17 @@ if [ -f "$DF" ] && ! grep -q "debian-cd/kali-rolling" "$DF"; then
   klh_info "Dockerfile: baked the kali-rolling debian-cd symlink"
 fi
 
+# apt cache proxy: live-build's chroot phases run INSIDE a chroot where the
+# http_proxy env var does NOT cross the boundary. Upstream's auto-detection is
+# also skipped when a mirror is pinned (pool-skew immunity disables caching).
+# Capture the proxy here, the drop-in below makes it chroot-visible.
+if [ -n "${http_proxy:-}" ]; then
+  KLH_HTTP_PROXY=$http_proxy
+  klh_info "apt cache proxy: $KLH_HTTP_PROXY (drop-in will make it chroot-visible)"
+fi
+
+# apt proxy drop-in: when KLH_HTTP_PROXY is set, apt inside the chroot uses
+# it (the env var cannot cross the chroot boundary; this drop-in can)
 # The deb-pool hook copies ~900MB of .deb files inside the chroot, so it is
 # staged only for pooled builds. The rootfs/excludes entry that keeps that copy
 # out of the squashfs is always staged (a no-op path when pooling is off).
@@ -290,6 +301,22 @@ if git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
     klh_die "staged files with NO git source (uncommitted overlay leftovers?): $mystery"
   fi
   klh_ok "overlay provenance: every staged file is git-tracked"
+
+# apt proxy drop-in (AFTER the provenance guard — this file is BUILD-TIME
+# ONLY, written into the upstream staged tree, not our overlay; the guard
+# would correctly flag an untracked overlay file). The chroot's apt cannot
+# see the http_proxy env var (chroot boundary); this conf makes it visible.
+# The rootfs/excludes entry keeps it OUT of the shipped image.
+if [ -n "${KLH_HTTP_PROXY:-}" ] && [ -d "$UPSTREAM_DIR/kali-config/common" ]; then
+  _acdir="$UPSTREAM_DIR/kali-config/common/includes.chroot/etc/apt/apt.conf.d"
+  mkdir -p "$_acdir"
+  printf 'Acquire::http::Proxy "%s";\nAcquire::https::Proxy "%s";\n' \
+    "$KLH_HTTP_PROXY" "$KLH_HTTP_PROXY" > "$_acdir/99klh-build-proxy.conf"
+  _excl="$REPO_DIR/overlay/kali-config/common/rootfs/excludes"
+  grep -q "99klh-build-proxy" "$_excl" 2>/dev/null || \
+    echo "etc/apt/apt.conf.d/99klh-build-proxy.conf" >> "$_excl"
+  klh_info "apt proxy drop-in staged into the upstream tree: $KLH_HTTP_PROXY"
+fi
 fi
 
 # KVM stack: package list written only for WITH_KVM builds; the unit
@@ -573,6 +600,12 @@ fi
 #   di   drop the debian-installer from the image (~570M on BASE=debian,
 #        less on kali) — the install boot entries vanish; this is a LIVE-ONLY
 #        image. Measured + predicted in docs/debian-base-spike-results.md.
+# apt cache proxy: live-build's chroot phases (debootstrap, apt) run INSIDE a
+# chroot where http_proxy env does NOT cross the boundary — the env var alone
+# is invisible to apt. lb config's --apt-http-proxy writes it into the chroot's
+# apt.conf instead (the supported path). Upstream's auto-detection is skipped
+# when a mirror is pinned, so pinning for skew-immunity silently disabled
+# caching; this restores both at once.
 KLH_DIET=${KLH_DIET:-}
 if [ "${KLH_DIET#*di}" != "$KLH_DIET" ] && [ "${KLH_DIET#*none}" = "$KLH_DIET" ]; then
   _ac="$UPSTREAM_DIR/auto/config"
