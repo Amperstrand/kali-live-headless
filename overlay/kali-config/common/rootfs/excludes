@@ -25,3 +25,4 @@ var/cache/apt/pkgcache.bin
 var/cache/apt/srcpkgcache.bin
 var/lib/command-not-found/commands.db
 var/lib/command-not-found/commands.db.metadata
+etc/apt/apt.conf.d/99klh-build-proxy.conf
