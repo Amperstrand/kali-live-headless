@@ -173,9 +173,14 @@ prediction band (~1.0–1.1G vs 1.22G actual) missed the same effect.
 **Every prior debian image was carrying a third of its weight in an
 installer that has never been used by this project's flow.**
 
-The knob is BASE-agnostic: kali images accept `KLH_DIET=di` too (their d-i
-is leaner but the same lever applies when a kali minimal-minimal is ever
-wanted).
+The knob is BASE-agnostic — **PROVEN on kali** (2026-10-30, #4-d4:
+worktree @ `99a5fca0` + KLH_DIET=di, mirror accum.se pinned): the kali image
+drops **2.29 GiB → 1.64 GiB** (−650M — kali's d-i trees are fatter than the
+debian measurement suggested, the realized cut is *larger*), gates:
+content **364/0/1**, bios **393/0/1**, uefi **394/0/0**. sha512
+`634d5681c83c…`. For scale-sensitive deployments this is now the
+best size-per-feature point in the project: sub-1.7G, toram-default,
+full headless stack.
 
 ## Cross-link: the release line
 

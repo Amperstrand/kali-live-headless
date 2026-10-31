@@ -59,6 +59,11 @@ WITH_KVM=true
 # Distro base for the image: kali (default — the historical flow) or debian
 # (trixie, same headless stack, SELECTIVE firmware; see lib/distro/).
 #BASE=kali
+# Optional size cuts (comma list; see docs/debian-base-spike-results.md):
+#   di — drop the debian-installer (~380M realized on debian, less on kali);
+#        the image becomes LIVE-ONLY (no install boot entries). Gates clean
+#        on both bases (d3 acceptance build: FULL gate green at 1.22 GiB).
+#KLH_DIET=
 # Pinned upstream kali-live commit — reproducible builds.
 KALI_LIVE_REF=adb2e38941662f105b57134e0155ec468da294ad
 VARIANT=default
