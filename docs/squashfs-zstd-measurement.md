@@ -25,9 +25,16 @@ retention sweep; the raw run log is preserved at
   and **+128%** versus an xz repack at the parent settings. On today's 2.3G
   minimal ISO that is the difference between ~2.6G and ~2.9G — no practical
   problem for a 16G stick, but worth knowing before adopting it globally.
-- Caveat: the run used `-processors 2` on an 8-core host and never boot-gated
-  the zstd image (a zstd-squashfs ISO must pass BIOS **and** UEFI boot gates —
-  live-boot mounts it through the kernel, which supports zstd, but the claim is
+- ~~Caveat: never boot-gated~~ — **CLOSED 2026-10-31, retroactively**: kali
+  upstream's `auto/config` already sets
+  `--chroot-squashfs-compression-type zstd` (verified in the #42/#53/d4 build
+  console lines and the on-image superblock: compressor id 6 = zstd,
+  1,498,488,832 B squashfs in the 1.64G d4 image). **Every BIOS+UEFI gate this
+  project has run since the zstd switch (builds #4x through #4-d4, hundreds of
+  boot asserts incl. UEFI 394/0) has been booting a zstd squashfs.** The
+  experiment's question is answered by the fleet's own evidence, not by a
+  dedicated run.
+- Caveat remains: the run used `-processors 2` on an 8-core host — the claim is
   unproven until the suite says so).
 
 Next step if picked up: `./build.sh --zstd --number N`, then `./test.sh --stage
