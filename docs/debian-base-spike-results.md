@@ -5,12 +5,19 @@ Brief: `SPIKE-BRIEF.md`. Prediction under test: `docs/vmhost-base-os-research.md
 
 ## Verdict
 
-**ACCEPTED.** `BASE=debian ./build.sh` produces a bootable Debian trixie
-live ISO with the full headless stack. **Full gate minus uefi, ALL GREEN**:
-bios **276/0/1**, override **262/0/1**, forensic **277/0/1**, vmstore
-**249/0/2** (logs `output/test-run-b2*.log`; uefi not run — no x86 OVMF on
-this host). BASE=kali is regression-free (static 144/0 = baseline 136/0 +
-8 new adapter asserts).
+**ACCEPTED — and the acceptance surface has since grown.** `BASE=debian
+./build.sh` produces a bootable Debian trixie live ISO with the full
+headless stack, and every follow-up from the original acceptance run has
+closed:
+
+| build | what it proved | gates |
+|---|---|---|
+| d2 (acceptance, 2026-10-26) | the adapter layer works | bios 276/0/1, override 262/0/1, forensic 277/0/1, vmstore 249/0/2 (uefi: no OVMF on that host) |
+| d3 (d-i diet, 2026-10-29) | `KLH_DIET=di` ships safely | **FULL gate** — content 359/0, bios 388/0, **uefi 389/0/0** (the first Debian UEFI gate), forensic 389/0, override 374/0, vmstore 381/0 |
+| d4 (kali+diet, 2026-10-31) | the diet knob is BASE-agnostic | content 364/0, bios 393/0, uefi 394/0/0; **2.29G→1.64G** |
+
+BASE=kali is regression-free (static 144/0 = baseline 136/0 + 8 adapter
+asserts; the suite is now 250+ across both bases).
 
 ## What was built
 

@@ -51,15 +51,21 @@ CI lanes and, where physical, by `vm-check`/`hw-check`.
 
 ## Carried from the old backlog (audited 2026-10-28)
 
-- ~~Hot-chroot lane~~ still open; **:8000 HTTP apt cache — LANDED 2026-10-31
-  (PR #53)**: measured same-parameter builds 17m31s no-proxy → 14m55s
-  cold → 13m53s warm (21% faster); the squid container (`squid-deb`)
-  persists on the build host. The landing survived a three-part trap —
-  mirror pinning silently disabled upstream proxy auto-detection,
-  `http_proxy` does not cross the chroot boundary (apt.conf.d drop-in
-  is the fix), and the drop-in must stage AFTER the provenance guard
-  (build-time-only; rootfs/excludes keep it out of the image). See
-  `docs/reproducible-builds.md`.
+- ~~The `:8000` HTTP apt cache~~ — **LANDED 2026-10-31** (PR #53): measured
+  same-parameter builds 17m31s no-proxy → 14m55s cold → 13m53s warm (21%
+  faster); the squid container (`squid-deb`) persists on the build host.
+  The landing survived a three-part trap — mirror pinning silently disabled
+  upstream proxy auto-detection, `http_proxy` does not cross the chroot
+  boundary (apt.conf.d drop-in is the fix), and the drop-in must stage
+  AFTER the provenance guard (build-time-only; rootfs/excludes keep it out
+  of the image). See `docs/reproducible-builds.md`.
+- **Hot-chroot lane** (preserve `chroot/` across iteration builds) — still
+  open, but the value shrank: the apt cache already removes the download
+  half of a rebuild. A hot-chroot lane saves maybe 4-5 min per iteration
+  build at the cost of a non-clean provenance story (the build tree
+  persists BETWEEN builds, exactly what AGENTS #13 warns about).
+  **Assessment 2026-11-05: NOT worth doing unless iteration builds become
+  the daily workflow.** Release builds stay cold-clean regardless.
 - ~~Mechanical verdict capture~~ — LANDED and hardened 2026-10-28:
   `test.sh` emits `VERDICT …` and `iso-archive.sh` consumes it
   mechanically; the MECHANICAL verdict now outranks a hand `--verdict`

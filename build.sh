@@ -80,8 +80,7 @@ Options:
       --pool           Freeze this build's .deb set into the content-addressed
                        pool (tools/deb-pool.sh) so a later build can be
                        reproduced offline. Implies --keep-artifacts. Pool
-                       location: $KLH_DEB_POOL or
-                       ~/.local/share/kali-live-headless/deb-pool
+                       location: \${KLH_DEB_POOL:-~/.local/share/kali-live-headless/deb-pool}
       --number N       Archive this build as output/iso-buildN/
                        (default: next free number)
       --no-archive     Leave the ISO in the output dir, do not archive it
