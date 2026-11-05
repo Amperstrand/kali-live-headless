@@ -1,0 +1,114 @@
+# Wi-Fi boot stick (option 3: PSK on the stick) — proven 2026-11-05
+
+The Wi-Fi variant of the minimal boot stick: a UKI (kernel + Wi-Fi-capable
+initramfs + cmdline in one UEFI executable) boots from the stick's ESP,
+Linux brings up Wi-Fi using credentials from the same ESP, then the
+unchanged bboot flow streams the rootfs from Blossom. **No iPXE, no wired
+network needed.** The stick is ~512 MB; the secret on it is exactly one
+Wi-Fi PSK (same exposure class as our KLHCONFIG partition).
+
+## Architecture
+
+```
+USB stick (one FAT ESP, label BBOOT)
+├── EFI/BOOT/BOOTX64.EFI   the UKI: stub + kernel + initrd + cmdline
+└── wifi.conf              wpa_supplicant format — THE ONLY secret
+```
+
+Boot flow: UEFI firmware → systemd-stub (inside the UKI) → kernel+initrd →
+`scripts/init-premount/bboot-wifi` (our overlay) → mount the stick's own
+ESP, read `wifi.conf`, load radios + crypto, `wpa_supplicant`, wait for
+association → Seedling's `configure_networking` DHCPs on the linked wlan →
+bbootd fetches the hash-pinned manifest, QR unlock, chunks, erofs → login.
+
+Fails open: no config, no radio, or association timeout → the wired path
+proceeds unchanged (Ethernet, USB dongle, phone tether all still work).
+
+## The overlay (consume/contribute, no fork)
+
+Seedling's tree is untouched. Everything lives in `wifi-overlay/` in the
+M1 workspace and post-processes their artifacts:
+
+| file | role |
+|---|---|
+| `hook-bboot-wifi` | initramfs-tools hook: wpa_supplicant + iw + hostapd + all installed firmware + wireless modules + **vfat/nls** (mount the ESP) + **CCMP/AES crypto** |
+| `script-bboot-wifi` | init-premount: find `wifi.conf` (cmdline `bb.wifi=` or `LABEL=BBOOT:/wifi.conf`), associate, fail open; `bb.nowifi` disables |
+| `inject-wifi.sh` | container-side: apt-installs Wi-Fi packages into Seedling's chroot, installs hook+script, rebuilds **only the initramfs** |
+| `make-uki.sh` | ukify/objcopy assembly of the UKI |
+| `make-wifi-stick.sh` | UKI + wifi.conf → GPT stick image |
+| `write-wifi-conf.sh` | operator tool: prompts SSID/PSK (hidden), writes wifi.conf to a flashed stick; secret never in argv/logs/repo |
+| `verify-wifi-initrd.sh` | asserts initrd contents (binaries, firmware, modules, our files) |
+
+Key property: `rootfs.erofs` is deliberately NOT rebuilt — manifest hash,
+chunks, and uploads stay identical to the M1 image. The Wi-Fi stick differs
+from the 64 MB iPXE stick **only by its initrd** (38 MB → 113 MB: firmware).
+
+## Three defects found by the QEMU proofs (and fixed in the hook)
+
+1. **`MODULES=most` does not include vfat** — the ESP mounted "silently
+   failed" and the script reported `no wifi.conf`. Now explicit:
+   `fat vfat nls_cp437 nls_iso8859_1 nls_ascii` + storage transports
+   (`usb-storage uas xhci_pci ehci_pci virtio_blk`).
+2. **WPA2 data-path crypto missing** — the kernel rejected key installation
+   (`nl80211: key addition failed`) until `arc4 ecb cbc ccm cmac gcm
+   aes_x86_64 aes_generic` were loaded. This would have broken REAL
+   hardware identically — the hwsim test caught a production bug.
+3. **hostapd takes its config as a positional arg** (`interface=` inside),
+   not `-c`/`-i` — those are wpa_supplicant's flags.
+
+## Proven in QEMU (2026-11-05)
+
+**Self-contained Wi-Fi proof (`bb.wifi.hwsim=1`):** two virtual radios via
+`mac80211_hwsim`, hostapd as a WPA2-PSK AP on one, wpa_supplicant using the
+STICK'S OWN wifi.conf on the other — real 4-way handshake over the air,
+busybox udhcpd hands out the lease:
+
+```
+bboot-wifi: config found
+bboot-wifi: hwsim: AP on wlan0, station on wlan1
+bboot-wifi: hwsim: AP is up; associating the station over the air
+bboot-wifi: associating wlan1 (timeout 90s)
+bboot-wifi: associated; DHCP will run on wlan1
+bboot: image "m1": 293 MiB in 74 chunks (erofs)
+... QR unlock ... login prompt
+```
+
+Also proven: no-radio fallback (logs `no radio appeared; staying wired`,
+boots on), and the whole chain re-verified after the testenv CA rotation.
+
+## LAN dogfood setup (live on the workstation)
+
+- testenv now listens on `*:8443` with a cert covering the workstation's
+  LAN address; uploads restricted to the test npub; UFW allows the bench
+  subnet to 8443/tcp for the dogfood window.
+- 154 blobs survived the PKI rotation (content-addressed store) — no
+  re-upload needed; only the initrd's baked CA changed.
+- The flashed stick carries the LAN cmdline. `write-wifi-conf.sh` writes
+  real credentials onto it.
+
+## Dogfood procedure (any UEFI laptop with Intel/ath/rtw WiFi)
+
+1. Workstation: confirm the server — `ss -ltn | grep 8443`.
+2. Put real Wi-Fi creds on the stick (on the workstation, stick inserted):
+   `~/src/seedling-m1/wifi-overlay/write-wifi-conf.sh /dev/sdb1`
+   (the WiFi network must be able to route to the workstation's LAN IP).
+3. Boot the target from USB (firmware boot menu; disable Secure Boot).
+4. Watch it associate, fetch, and display the QR code.
+5. Unlock with any Nostr signer that handles nostrconnect: scan the QR in
+   Amber/nsec.app with the test nsec imported (it's a test key on a
+   testenv; read it with `cat ~/src/seedling-m1/.m1-nsec`), or copy the
+   `nostrconnect://` URI from the screen and run bboot-testsigner on the
+   workstation with `SSL_CERT_FILE` set to the new CA.
+6. Login: root / m1test on console, or ssh once the machine has an address.
+
+## Security notes
+
+- The stick carries exactly one secret (the PSK) — theft of the stick
+  compromises the WiFi network exactly as a KLHCONFIG stick does today.
+  A dedicated bootstrap SSID remains the mitigation if that matters.
+- No keys, no nsec, no manifest-signing material on the stick — unchanged.
+- The UKI is unsigned (no Secure Boot) — same as every stick we ship;
+  physical possession = kernel integrity, manifest hash = rootfs integrity.
+  Signing with our own SB keys is the natural hardening next step.
+- The SSID/PSK never enter any repo, archive, or log: `write-wifi-conf.sh`
+  reads them hidden and writes via mtools.

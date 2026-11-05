@@ -639,7 +639,7 @@ network. Stick stays keyless; no firmware, no dongle.
 |---|---|---|---|---|
 | **1. USB tether from phone** | 64 MB | **none** | **none — proven** | phone is network + signer; needs cable + owner present |
 | 2. USB-Ethernet dongle | 64 MB | none | none | `ax88179` etc. already in the initrd; needs dongle |
-| 3. UKI stage-1 + wpa_supplicant in initramfs, PSK on stick | ~150-250 MB | Wi-Fi PSK (same exposure class as our KLHCONFIG partition today) | initramfs hook: `wpasupplicant` + wireless modules + `firmware-iwlwifi/atheros/realtek/brcm80211` | true Wi-Fi anywhere; mitigate with a dedicated bootstrap SSID; SSID/PSK never in the repo |
+| 3. UKI stage-1 + wpa_supplicant in initramfs, PSK on stick | 512 MB (built) | Wi-Fi PSK (same exposure class as our KLHCONFIG partition today) | **BUILT + PROVEN 2026-11-05** — see [seedling-wifi-boot.md](seedling-wifi-boot.md): overlay hook+script, hwsim WPA2 association proof in QEMU, stick flashed | true Wi-Fi anywhere; mitigate with a dedicated bootstrap SSID; SSID/PSK never in the repo |
 | 4. Open/isolated bootstrap SSID + UKI stage-1 | ~150-250 MB | none (SSID name only — still never in the repo) | same hook work as 3, minus PSK; AP config | integrity is hash-pinned so an evil twin = DoS + metadata only; needs an AP with an isolated open SSID |
 | 5. iPXE-native Wi-Fi | 64 MB | PSK extractable from the .efi | high | **does not work on modern cards — dismissed** |
 
