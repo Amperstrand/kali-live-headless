@@ -132,6 +132,92 @@ and built-in rollback by keeping the old pointer.
 - Suite discipline (their `make test-boot` covers the happy path; our
   multi-stage gates + fixtures are the edge-case model)
 
+## Deeper borrow patterns (2026-11-05, after reading the initramfs, Go source, and microfips)
+
+### FIPS in the initramfs — what it actually buys you
+
+Seedling's implementation (verified from `cmd/bbootd/fips_test.go` + `initramfs/scripts/bboot`):
+a FIPS node starts in the initramfs **before the root filesystem is mounted**,
+with an ephemeral keypair (`persistent: false`), outbound-only transports,
+and its own TUN device (`fipsb0`) separate from the system's daemon. The
+root filesystem chunks are then served from a Blossom server **at its FIPS
+address** — no internet required after the mesh join.
+
+**For us, the use cases are:**
+
+| use case | how FIPS-in-initramfs helps |
+|---|---|
+| **LUKS unlock over the mesh** | the encrypted-drive key arrives from a FIPS peer *before* the root mounts — no typed passphrase, no physical access to the machine. The key-holder can be another stick, a hub, or a phone |
+| **Rescue access on a broken OS** | if the main system is broken but the initramfs is intact, the FIPS node is a maintenance channel — you can reach the machine, inspect state, and repair |
+| **Network identity before the filesystem** | the machine has an npub-addressable IPv6 before it has a hostname or SSH keys — useful for asset tracking, mDNS-free discovery, and the router fleet |
+| **Root-on-network** | Seedling proves the pattern: root filesystem served over the mesh via a content-addressed block device. For a fleet of machines sharing one image, this is the "one stick, many machines" model |
+
+**What we'd need to add**: the FIPS binary in the initramfs (their
+`build-rootfs.sh FIPS_BIN=` mechanism), a mesh-unlock script that asks a
+named peer for the LUKS key, and the key-derivation from the stick's salt
+(we already have this — `derive_identity.py`). This is a concrete,
+testable extension of our current FIPS work.
+
+### The erofs + NBD pattern
+
+They use **erofs** (with lz4hc) + the kernel's **NBD** driver + an
+in-process NBD server (`cmd/bbootd/nbd.go` — no `nbd-client` needed, they
+drive the ioctls directly). The chunk store presents as `/dev/nbd0`, the
+kernel reads it like a block device, and each 4 MiB chunk is fetched,
+hash-checked, decrypted, and cached on demand.
+
+**Why this matters for us**: our `deb-pool` is content-addressed storage
+for .deb files. The *general* form is: any content-addressed store can be
+presented as a block device via NBD, with per-chunk verification and
+caching. If we ever need a shared root image across machines (the router
+fleet, a lab of identical machines), this is the architecture — and
+Seedling's Go source is a working reference implementation of the
+hard parts (the NBD ioctl dance, the GCM chunk authentication, the
+prefetch logic).
+
+### microfips: the "smallest useful image" discipline
+
+`build-microfips.sh` produces a **549 MB** image that boots into Tor
+Browser with FIPS and Tor underneath, entirely from RAM, from a 160 MB USB
+stick. The discipline: `EXCLUDE` regexes in `build-rootfs.sh` drop kernel
+modules by dependency analysis (`build-rootfs: EXCLUDE keeps modules that
+kept modules depend on`). Our `KLH_DIET=di` is the same idea at the
+installer level; theirs goes deeper (module-level dependency pruning).
+
+**For the router/constrained fleet**: their `EXCLUDE` mechanism is
+directly applicable to any project that needs minimal images with
+correct module dependencies. The one-liner insight is that `depmod`'s
+`modules.dep` gives you the dependency graph for free.
+
+### The signed-pointer update model (expanded)
+
+For firmware updates on the router fleet, the model is:
+
+```
+build a reproducible image → content-addressed chunks → publish a signed pointer
+    → device polls the pointer (or a FIPS peer tells it)
+    → fetches + verifies each chunk against its hash
+    → writes the new image to the inactive partition
+    → reboots into it (A/B)
+    → publishes an attestation ("I am now running hash H") back to the mesh
+```
+
+No signing server (the pointer IS the signature), no CDN (any Blossom
+server or FIPS peer serves the chunks), built-in rollback (the old
+pointer is still valid), and the attestation closes the audit loop. For
+OpenWrt-class devices, the chunks are smaller (the whole firmware is
+~10-50 MB = 3-13 chunks of 4 MiB).
+
+### Other patterns worth borrowing
+
+| pattern | from | for |
+|---|---|---|
+| **Single-file distribution** (BBOOT.md) | the whole project as one extractable Markdown | firmware + tools + docs for MCUs — hand the entire firmware to another agent in one file |
+| **Testenv** (`make test-boot`) | throwaway Blossom + relay + signer on localhost | router bench: fake FIPS peers, fake Blossom, fake relays — all local, all CI-runnable |
+| **UKI (Unified Kernel Image)** | kernel + initramfs + cmdline in one EFI binary | Secure Boot-enrollable boot media: one file to sign, one file to verify |
+| **NIP-46 remote signing** | the QR unlock | any "human approval needed" step in our infrastructure: firmware flashes, key rotations, config changes |
+| **Availability math** (the P = (1-(1-p)^k)^n formula) | the whitepaper | fleet sizing: how many mirrors do we need for a given uptime target |
+
 ## Bottom line
 
 Seedling is a **boot infrastructure** project; we are a **live system**
