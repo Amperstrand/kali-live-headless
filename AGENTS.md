@@ -193,10 +193,15 @@ drift is absorbed by bumping the pin, nothing else.
   warm caching now belongs to a URL-keyed HTTP cache outside the tree
   (`squid-deb-proxy` :8000, auto-detected upstream; apt-cacher-ng stays banned
   by the 2026-10-22 wrong-bytes postmortem). See docs/reproducible-builds.md.
-  On a 20-core box downloads are ~half of a 10-minute build, so this is now
-  the top speed lever, ahead of zstd. Still open, in order:
-  1. **HTTP cache on :8000** (replaces the dead lb-cache attempt above).
-  2. **hot-chroot lane** — preserve chroot/ across builds (skip debootstrap
+  **LANDED 2026-10-31 (PR #53)**: the URL-keyed HTTP cache is a squid
+  container (`squid-deb`, :8000, 10G cache volume) on the build host —
+  measured 17m31s → 13m53s warm (21%). Three-part trap on the way in:
+  `-m` mirror pinning silently disabled upstream's proxy auto-detection
+  (pass the proxy explicitly); `http_proxy` does not cross the chroot
+  boundary (an apt.conf.d drop-in inside the chroot is the fix); and the
+  drop-in must stage AFTER the provenance guard (build-time only — the
+  rootfs/excludes lists keep it out of the image).
+- **hot-chroot lane** — preserve chroot/ across builds (skip debootstrap
      for iteration builds; upstream's unconditional wipe means this needs
      either an upstream flag or our own `lb build` invocation on a preserved
      tree — MUST stay a separate experimental path; release builds stay

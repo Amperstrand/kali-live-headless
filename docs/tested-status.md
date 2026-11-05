@@ -23,10 +23,10 @@ hygiene gates, everything below is system-level.
 | FIPS *wire* (peers) | ❌ untested | no peer exists; identity-without-wire is deliberate — [#40](https://github.com/Amperstrand/kali-live-headless/issues/40) |
 | Cross-VM isolation (guest↔guest) | ❌ untested | `post.iso.peer` needs a second guest — [#40](https://github.com/Amperstrand/kali-live-headless/issues/40) |
 | Hub port allocation | ✅ fixed, awaiting hardware confirm | [#39 closed by PR #50](https://github.com/Amperstrand/kali-live-headless/pull/50): pick_port takes `--avoid-ports` from the hub's published DNAT list; registry carries `hub_port`; `post.hub.*` confirmation rides the next vm-check on a live host |
-| Stick image freshness | ✅ **FLASHED** | **build #53** (2026-10-28, `bd287d2`): every hot-patch baked, fully gated — content 355/0, override 370/0, bios 384/0, **uefi 385/0/0** (first-ever UEFI gate, 2026-10-29). **Flashed 2026-10-30** to `datatraveler-16g-primary`: medium-verify clean pass, identity preserved, postflight OK |
-| Debian base (the spike) | ✅ proven + diet | `docs/debian-base-spike-results.md`: d2 acceptance, d3 FULL gate incl. first Debian UEFI (389/0/0), d4 kali+diet 1.64G (393/0+394/0) |
+| Stick image freshness | ✅ flashed & running | **#53 FLASHED 2026-10-30** to `datatraveler-16g-primary` (the weak-cell-recovered stick): write verified, **medium-verify PASS** (first clean production run of the region-aware verifier), identity preserved (salt == registry, no rotation); the KLHCONFIG automounter race it surfaced is FIXED (PR #51). Fully gated — content 355/0, override 370/0, bios 384/0, **uefi 385/0/0** (first-ever UEFI gate, 2026-10-29) |
+| Debian base (the spike) | ✅ proven + diet | `docs/debian-base-spike-results.md`: d2 acceptance, d3 FULL gate incl. first Debian UEFI (389/0/0), d4 kali+diet **1.64 GiB** FULL-gate green |
 | Apt cache proxy | ✅ measured | `docs/reproducible-builds.md` §Caching: 17m31s→13m53s warm (21%); three-part trap documented; squid-deb container standing on the workstation |
-| toram default | ✅ fixed + proven both tiers | [#45](https://github.com/Amperstrand/kali-live-headless/issues/45) closed: 9990-main.sh honors the refusal; 4G=medium boot ✓, 8G=RAM boot ✓, fleet-gated (#53 override 370/0) |
+| toram default | ✅ fixed + proven both tiers | [#45 closed](https://github.com/Amperstrand/kali-live-headless/issues/45): 9990-main.sh honors the refusal; 4G=medium boot ✓, 8G=RAM boot ✓, fleet-gated (#53 override 370/0) |
 | Actions on OpenTollGate org | ❌ blocked externally | org-level disable: `workflow run` → HTTP 422 despite repo permission `enabled: true`; needs an org owner |
 
 Hardware matrix so far: Legion 7 (20c/32G, VM host + runners), ThinkPad
