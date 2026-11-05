@@ -51,9 +51,15 @@ CI lanes and, where physical, by `vm-check`/`hw-check`.
 
 ## Carried from the old backlog (audited 2026-10-28)
 
-- Hot-chroot lane (preserve `chroot/` across iteration builds) and the
-  `:8000` HTTP apt cache — build-time levers; release builds stay
-  cold-clean. See `docs/reproducible-builds.md`.
+- ~~Hot-chroot lane~~ still open; **:8000 HTTP apt cache — LANDED 2026-10-31
+  (PR #53)**: measured same-parameter builds 17m31s no-proxy → 14m55s
+  cold → 13m53s warm (21% faster); the squid container (`squid-deb`)
+  persists on the build host. The landing survived a three-part trap —
+  mirror pinning silently disabled upstream proxy auto-detection,
+  `http_proxy` does not cross the chroot boundary (apt.conf.d drop-in
+  is the fix), and the drop-in must stage AFTER the provenance guard
+  (build-time-only; rootfs/excludes keep it out of the image). See
+  `docs/reproducible-builds.md`.
 - ~~Mechanical verdict capture~~ — LANDED and hardened 2026-10-28:
   `test.sh` emits `VERDICT …` and `iso-archive.sh` consumes it
   mechanically; the MECHANICAL verdict now outranks a hand `--verdict`
