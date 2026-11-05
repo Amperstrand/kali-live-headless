@@ -319,6 +319,156 @@ reachable at its FIPS address (or on the LAN).
   uptime — those are in the running system for the owner to SSH in
   and check)
 
+## Privacy and safety analysis (the "are we broadcasting everything?" question)
+
+**Short answer: yes, if we use public relays — and no, if we design it right.**
+This section is the design that makes it safe.
+
+### What Seedling's default model broadcasts (and we must NOT)
+
+| event | goes to | what leaks | who learns it |
+|---|---|---|---|
+| **pointer** (kind-30078) | public relays | owner's npub ↔ current image hash ↔ server list | anyone watching a relay |
+| **birth** (our addition) | public relays | hardware serial ↔ machine npub ↔ boot timestamp | anyone watching |
+| **claim** | public relays | owner npub ↔ machine npub (the fleet map!) | anyone watching |
+| **attest** | public relays | machine npub ↔ running hash ↔ boot/off times (live activity feed) | anyone watching |
+| **NIP-46 unlock** | relays | machine's IP ↔ npub ↔ the signer handshake pattern | relay operator |
+| **Blossom fetch** | Blossom server | machine's IP ↔ which chunks ↔ when (image fingerprint) | server operator |
+| **FIPS mesh** | mesh peers | only the mesh address (npub-derived, not real IP) | bootstrap peer only |
+
+**The default model gives an adversary with relay access a complete, live
+map of the fleet: who owns what, what each machine runs, when each machine
+boots. That is not acceptable for our threat model.**
+
+### The private design: five layers
+
+#### Layer 1: Private relays only
+
+All fleet events (pointer, birth, claim, attest) go to **our relay** —
+run on our infrastructure (the hub, the gateway, or the LAN), never to
+public relays.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  OUR INFRASTRUCTURE (private)                                  │
+│                                                                 │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐               │
+│  │  relay   │    │  Blossom │    │  gateway │               │
+│  │ (Nostr)  │    │  server  │    │  (FIPS)  │               │
+│  └────┬─────┘    └────┬─────┘    └────┬─────┘               │
+│       │               │               │                      │
+│       └───── mesh or LAN only ────────┘                      │
+│                 │                                              │
+└─────────────────┼──────────────────────────────────────────────┘
+                  │ (no public internet)
+        ┌─────────▼─────────┐
+        │  the machine      │
+        │  (FIPS node →     │
+        │   our gateway)    │
+        └───────────────────┘
+```
+
+- The relay is a single Go binary (~50 lines with
+  [nostr-relay](https://github.com/nbd-wtf/nostr-relay)) — run it on
+  the hub alongside Blossom
+- No public relay knows anything about our fleet
+- **What the public sees: nothing.** Not even that our machines exist.
+
+#### Layer 2: FIPS delivery (real IP never exposed)
+
+The machine joins the mesh outbound to **our gateway only**
+(`inr2.cashu.exchange:443/tcp`, our existing exit policy). All traffic —
+relay, Blossom, everything — routes through the mesh.
+
+- The Blossom server sees only the mesh address (npub-derived)
+- The relay sees only the mesh address
+- The machine's real IP is known only to the gateway (us)
+- **No server on the internet learns the machine's real IP**
+
+#### Layer 3: Encrypted event content
+
+Even on a private relay, encrypt the sensitive fields (NIP-44 to the
+owner's npub):
+
+| field | public | encrypted (NIP-44 to owner) |
+|---|---|---|
+| event kind + author (machine npub) | ✅ public | — (the machine's identity IS its npub; hiding it breaks the model) |
+| hardware serial | ❌ | ✅ encrypted — the owner decrypts; a relay compromise reveals nothing |
+| running image hash | ❌ | ✅ encrypted — or omit entirely (owner can SSH in and check) |
+| boot timestamp | event timestamp (set by relay, not controllable) | — (rate-limit instead) |
+| owner npub (in claim events) | ❌ | ✅ encrypted — the fleet mapping is private |
+
+**What a relay operator (or a relay compromise) sees without the
+decryption key**: "some machine with npub X published event Y at time Z."
+No serial, no hash, no owner mapping. Metadata only.
+
+#### Layer 4: Ephemeral attest keys (high-paranoia mode, optional)
+
+For deployments where even the machine's npub should not be trackable
+across boots:
+
+- The machine derives a per-boot attest key:
+  `HKDF(master_key, "attest-<epoch>")` → a fresh npub per epoch
+- The owner knows the master key and can verify the chain
+- An observer sees unrelated events from different npubs — no linkability
+- **This is the "private by design" option** — more complex, but available
+
+#### Layer 5: Private Blossom servers
+
+Fleet images live on Blossom servers **we run** (on the hub/LAN), not
+public servers. Public Blossom is only for public images (microfips,
+tutorials). The fleet's images are private:
+
+- The server requires authenticated uploads (our npub signs the PUT)
+- The chunks are encrypted (AES-256-GCM) — the server holds ciphertext
+- Access is mesh-only (FIPS address, not internet)
+- **Public Blossom servers never see our fleet's data or access patterns**
+
+### What the machine vs. the network knows (after all five layers)
+
+| actor | knows the machine's... | knows the owner's... | knows the fleet... |
+|---|---|---|---|
+| private relay operator (us) | npub + event timestamps | npub (from encrypted events they can decrypt — they ARE us) | everything (they run the infrastructure) |
+| private Blossom operator (us) | mesh address + chunk access | nothing | which images exist (by hash) |
+| FIPS gateway (us) | real IP + mesh address | nothing | which machines are on the mesh |
+| public relay | **nothing** (not used) | **nothing** | **nothing** |
+| public Blossom | **nothing** (not used) | **nothing** | **nothing** |
+| ISP / network observer | the machine talks to one peer (the gateway) | nothing | nothing |
+| machine compromise | its own keys only | the owner's PUBLIC key only | nothing (the machine doesn't know about other machines) |
+
+### Threat model summary
+
+| threat | mitigated by |
+|---|---|
+| adversary maps the fleet (who runs what) | private relays (L1) + encrypted events (L3) |
+| adversary tracks boot/off times | private relays (L1) + rate-limited attest |
+| adversary fingerprints the image (which chunks) | private Blossom (L5) + prefetch (uniform access) |
+| adversary correlates machine ↔ real IP | FIPS delivery (L2) |
+| relay compromise exposes the fleet | encrypted events (L3) — ciphertext only |
+| Blossom compromise exposes the image | chunks are encrypted (AES-256-GCM) — ciphertext only |
+| machine compromise exposes the owner | the machine holds only the owner's PUBLIC key |
+| gateway compromise exposes real IPs | the gateway is our own infrastructure (inr2) |
+
+### What this costs vs. the public model
+
+| | public (Seedling default) | private (our design) |
+|---|---|---|
+| setup effort | use any public relay | run our own relay + Blossom |
+| availability | any relay works | our relay is a dependency (mitigate: 2-3 private relays) |
+| censorship resistance | high (can't take down all relays) | lower (our relay = our dependency) |
+| privacy | **zero** (everything public) | **maximal** (everything private) |
+| suitable for | public images, tutorials, microfips | **our fleet, production** |
+
+### Design rule
+
+**Public infrastructure for public things. Private infrastructure for
+fleet things. The two never mix.**
+
+- microfips, tutorials, open-source releases → public relays + public
+  Blossom (censorship-resistant, shareable)
+- our machines, our images, our fleet → private relays + private
+  Blossom + FIPS delivery (private, controlled)
+
 ## Milestones
 
 ### M1: Prove the medium (Seedling boot of our image)
