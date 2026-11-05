@@ -15,8 +15,13 @@ first; the Wi-Fi passphrase is plaintext on the medium by design.
 ## 1. Build the image
 
 ```sh
-./build.sh                 # ~2-3 h cold; minimal profile by default
+./build.sh                 # ~2-3 h cold; ~14 min warm with the :8000 apt cache
 ```
+
+Flavours via `config` / environment (also prompted by `./configure.sh`):
+`BASE=kali|debian` and `KLH_DIET=di` (drops the d-i installer — kali
+2.29G→1.64G, debian→1.22 GiB; see `docs/debian-base-spike-results.md`
+and the `#3-d3`/`#4-d4` rows in BUILDS.md for the gated evidence).
 
 The result is archived self-describing under `output/iso-build<N>/`
 (BUILD-MANIFEST, INDEX.md, SHA256SUMS). Always flash **from the archive**,

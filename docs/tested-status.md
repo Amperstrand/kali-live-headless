@@ -23,7 +23,7 @@ hygiene gates, everything below is system-level.
 | FIPS *wire* (peers) | ❌ untested | no peer exists; identity-without-wire is deliberate — [#40](https://github.com/Amperstrand/kali-live-headless/issues/40) |
 | Cross-VM isolation (guest↔guest) | ❌ untested | `post.iso.peer` needs a second guest — [#40](https://github.com/Amperstrand/kali-live-headless/issues/40) |
 | Hub port allocation | ⚠️ known gap | stale DNAT 22024 → removed tunnel; pick_port is tmpfs-only — [#39](https://github.com/Amperstrand/kali-live-headless/issues/39) |
-| Stick image freshness | ✅ image ready | **build #53** (2026-10-28, `bd287d2`): every hot-patch baked (toram #45 fix, bech32 derive, WG PostUp, MSS clamp, pre-commit shebang era), fully gated — content 355/0, override 370/0, bios 384/0; first fully-green toram-default build. Reflash pending: all live-booted hosts currently offline |
+| Stick image freshness | ✅ flashed & running | **#53 FLASHED 2026-10-30** to `datatraveler-16g-primary` (the weak-cell-recovered stick): write verified, **medium-verify PASS** (first clean production run of the region-aware verifier), identity preserved (salt == registry, no rotation); the KLHCONFIG automounter race it surfaced is FIXED (`0e9b320`, PR #51). Diet lane: `#3-d3` Debian 1.22 GiB and `#4-d4` kali 1.64 GiB, both FULL-gate green incl. first-ever UEFI gates |
 | Actions on OpenTollGate org | ❌ blocked externally | org-level disable: `workflow run` → HTTP 422 despite repo permission `enabled: true`; needs an org owner |
 
 Hardware matrix so far: Legion 7 (20c/32G, VM host + runners), ThinkPad
