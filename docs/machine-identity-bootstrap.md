@@ -471,13 +471,36 @@ fleet things. The two never mix.**
 
 ## Milestones
 
-### M1: Prove the medium (Seedling boot of our image)
-- Run a Blossom server locally
-- Use Seedling's `build-live-iso.sh` on our #53 ISO
-- Boot in QEMU: verify our provision stack (hostname, SSH, Wi-Fi)
-  runs inside a Seedling-served image
-- **Deliverable**: a working 64-160 MB stick + a Blossom server + a QEMU
-  boot log showing our services
+### M1: Prove the medium — **COMPLETE 2026-11-05** ✅
+
+Proven end-to-end in QEMU on the workstation:
+
+| step | result |
+|---|---|
+| 64 MB USB stick boots iPXE | ✓ UEFI (OVMF), embedded script with hashes |
+| kernel + initrd from Blossom | ✓ HTTPS fetch, SHA-256 verified |
+| kernel boots with `boot=bboot` | ✓ all bb.* params on the cmdline |
+| bbootd starts in initramfs | ✓ network configured, manifest fetched |
+| manifest verified | ✓ 293 MiB erofs, 74 chunks, hash-checked |
+| QR unlock | ✓ bboot-testsigner released the image key via NIP-44 |
+| chunks stream from Blossom | ✓ encrypted, hash-checked, cached in RAM |
+| NBD device created | ✓ /dev/nbd0, 601584 sectors |
+| erofs mounted + overlay | ✓ read-only root + tmpfs overlay |
+| systemd starts | ✓ 81 services OK, sshd running |
+| login prompt | ✓ "Debian GNU/Linux 13 seedling ttyS0" |
+
+**Three gotchas found and fixed** (documented in workspace-state):
+1. `boot=bboot` on the kernel cmdline — without it, initramfs-tools doesn't
+   source the bboot script (the boot method must match the script name)
+2. The testenv CA must be in BOTH iPXE (`IPXE_TRUST=`) AND the initrd
+   (`EXTRA_CA=` during the build — which must happen in a container with
+   the CA mounted, not on the host)
+3. The test-signer reads `BBOOT_NSEC` from env, needs `SSL_CERT_FILE` for
+   the testenv CA, and takes the `nostrconnect://` URI from the serial log
+   (with `10.0.2.2` replaced by `127.0.0.1` for host-side relay access)
+
+Artifacts preserved at `/home/user/src/seedling-m1/` (64 MB stick image,
+encrypted chunks, Blossom testenv, test key).
 
 ### M2: Birth event (the machine announces)
 - Add a `machine-birth` script to our overlay: on first boot with no
