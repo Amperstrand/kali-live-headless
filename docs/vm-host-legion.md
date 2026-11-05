@@ -351,7 +351,28 @@ PR #478 in ccid-firmware-rs,
 [`prior-art.md`](prior-art.md#1-self-hosted-ci-runners); extension to
 more lanes is [#42](https://github.com/Amperstrand/kali-live-headless/issues/42).
 
-### Fleet operations (multi-host state, 2026-10-28 evening)
+### Fleet operations (multi-host state; updated 2026-11-05)
+
+**Runner crash-loop = check disk first.** At 0 bytes free the runner's
+.NET listener cannot create its diag log and every `actions.runner.*`
+unit flaps with a `HostTraceListener` stack trace that looks like a
+runner bug. It is a full filesystem (2026-11-05: ai-legion `/root` at
+410G). `df -h /` before any runner debugging. Related red herring:
+`lsof +L1` shows `Runner.Listener` holding multi-TB "deleted" files —
+those are .NET **memfds** (GC mappings), memory not disk; killing them
+reclaims nothing.
+
+**Deliberately-stopped runners vs drift.** A runner unit that exits
+cleanly (`Result=success, Restart=no`) stays down, but a repo whose own
+legs ran <24h ago still routes self-hosted to it → the next nightly
+queues forever. `klh-runner-doctor` (systemd timer on the box) restarts
+*enabled-but-inactive* units every 10 min; taking a runner down
+deliberately is `systemctl disable --now` — the doctor never fights
+that.
+
+**Monitoring:** `~/backups/hygiene-reports/disk-status.txt` on each box
+(disk-watch every 30 min; installable units + the lane-closeout
+checklist live in the ops repo).
 
 The `legion-vm` label is the **machine class**; members live on more than
 one host. Current fleet:
