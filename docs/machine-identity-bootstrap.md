@@ -580,6 +580,90 @@ This is the Phase 2 path. The key insight: **the peer address on the
 stick is like a DNS server address — public routing information, not a
 credential**. The stick still holds no secrets.
 
+## Booting over Wi-Fi: the analysis (2026-11-05)
+
+**Short answer: yes, the fleet wants Wi-Fi boot (the x280 and T480s have no
+Ethernet port) — but the credential problem of pre-rootfs Wi-Fi is universal,
+and there is one zero-work answer that works today: USB tethering from the
+phone that already scans the QR.**
+
+### What Seedling does (from their source, not docs alone)
+
+- `initramfs/scripts/bboot` calls initramfs-tools' `configure_networking`
+  (DHCP on any interface, wired only) — their `docs/kali.md` states it
+  plainly: *"A Seedling machine boots over wired Ethernet, so Wi-Fi isn't
+  needed. If you set `WIFI_SSID`/`WIFI_PSK` anyway, the passphrase ends up
+  in the image... anyone who can unlock it can read the passphrase."*
+- Their initrd carries **no wireless firmware and no wpa_supplicant** (it
+  does carry `cdc_ether`/`cdc_ncm`/`rndis_host` — see the tether proof below).
+- The NIP-46 unlock cannot deliver Wi-Fi credentials for the first hop: the
+  handshake itself needs network + relay, so credentials must exist
+  *before* the unlock. (For later boots the `WrappedKey` payload is just a
+  NIP-44 string — it *could* carry `{"key":…,"wifi":…}` — but the first
+  connection always needs another path.)
+
+### What the industry does
+
+| pattern | evidence | applies to us? |
+|---|---|---|
+| **iPXE-native Wi-Fi** | dead end: no USB Wi-Fi support at all (ipxe/ipxe#1536, Oct 2025: "iPXE does not have any native driver support for any USB WiFi device"); PCI support = 3-4 experimental chipsets a decade old; modern Intel AX cards unsupported | **no** |
+| **Raspberry Pi** | Pi 4/5 EEPROM netboot is wired-only; older Pis can Wi-Fi-boot via GPU firmware reading credentials **from the SD card** — the "credentials on the boot medium" pattern | only if we target Pis |
+| **wpa_supplicant in the initramfs** | well-trodden genre: initramfs-tools/drácut hooks (m4dm4x1337/initramfs-wifi, remote-LUKS-unlock-over-WiFi guides) | yes — this is the Linux-side building block |
+| **USB tethering** | Android exposes RNDIS, iPhone exposes NCM — both are plain USB Ethernet DHCP | **proven below, zero work** |
+
+### Proven 2026-11-05: the M1 stick boots over a phone-tether link
+
+QEMU run with the **only** NIC being `usb-net` (QEMU's emulation of an
+RNDIS tether device — what Android USB tethering presents):
+
+```
+bboot: network boot from Blossom
+Configuring (net0 52:54:00:xx:xx:xx)..... ok     <- iPXE DHCP over RNDIS
+bboot: kernel and initramfs verified
+[  kernel boots, initramfs DHCP over cdc_ether/rndis_host  ]
+bboot: image "m1": 293 MiB in 74 chunks (erofs)   <- manifest over RNDIS
+signer: released image key                          <- QR unlock via relay
+Debian GNU/Linux 13 seedling ttyS0
+seedling login:                                     <- full boot, USB-only network
+```
+
+Both stages (iPXE's fetch AND the initramfs relay fetch) ran over the one
+USB network device. On real hardware this equals: **plug the stick, plug
+the phone's USB cable, enable tethering, scan the QR with the same phone.**
+The phone is already required for the unlock — here it also carries the
+network. Stick stays keyless; no firmware, no dongle.
+
+### The Wi-Fi-boot option menu
+
+| option | stick size | secrets on stick | work | notes |
+|---|---|---|---|---|
+| **1. USB tether from phone** | 64 MB | **none** | **none — proven** | phone is network + signer; needs cable + owner present |
+| 2. USB-Ethernet dongle | 64 MB | none | none | `ax88179` etc. already in the initrd; needs dongle |
+| 3. UKI stage-1 + wpa_supplicant in initramfs, PSK on stick | ~150-250 MB | Wi-Fi PSK (same exposure class as our KLHCONFIG partition today) | initramfs hook: `wpasupplicant` + wireless modules + `firmware-iwlwifi/atheros/realtek/brcm80211` | true Wi-Fi anywhere; mitigate with a dedicated bootstrap SSID; SSID/PSK never in the repo |
+| 4. Open/isolated bootstrap SSID + UKI stage-1 | ~150-250 MB | none (SSID name only — still never in the repo) | same hook work as 3, minus PSK; AP config | integrity is hash-pinned so an evil twin = DoS + metadata only; needs an AP with an isolated open SSID |
+| 5. iPXE-native Wi-Fi | 64 MB | PSK extractable from the .efi | high | **does not work on modern cards — dismissed** |
+
+Key insight for options 3/4: **skipping iPXE for Wi-Fi machines is the
+move** — put kernel+initrd on the stick as a UKI (boot needs no network at
+all in stage 1), let Linux do the networking (Ethernet → tether → Wi-Fi →
+open SSID, in that order), then run the unchanged bboot flow (Blossom
+fetch, hash verify, QR unlock, NBD, erofs). We lose nothing: kernel/initrd
+integrity is enforced by possession + the same hashes, and the stick grows
+to ~150-250 MB — still 20-35x smaller than our 5.4 GB ISO.
+
+### Recommendation
+
+- **Now (M1 flash is already this)**: tether-first. Real-hardware test =
+  stick + phone cable + tethering + QR scan. No code, no secrets.
+- **M2 addition**: dual-mode stick — iPXE path (Ethernet/tether, 64 MB
+  behavior unchanged) *plus* a UKI boot entry with the Wi-Fi hook above,
+  credentials from a `BBOOTCFG` partition (same handling as KLHCONFIG:
+  never committed, scrubbed from archives). This makes Wi-Fi-only laptops
+  first-class.
+- **Upstream contribution candidate** (fits our consume/contribute line):
+  a generic initramfs-tools Wi-Fi hook for bbootd — Seedling's documented
+  gap, useful to any of their users with dongle-less laptops.
+
 ## Milestones
 
 ### M1: Prove the medium — **COMPLETE 2026-11-05** ✅
