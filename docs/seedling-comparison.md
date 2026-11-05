@@ -274,6 +274,92 @@ Before importing anything from Seedling, ask:
   devices, we *call* `bbootd` (or write our own in our own language),
   credit theirs as the working reference. We don't vendor their `nbd.go`.
 
+## The minimal-boot-stick architecture (what "using Seedling" looks like for us)
+
+Yes — that is exactly the idea. Seedling's model, applied to our project:
+
+```
+CURRENT (2.3-2.9 GB stick)                    SEEDLING-ADAPTED (64-160 MB stick)
+┌──────────────────────────┐                  ┌────────────────────────────────┐
+│ isolinux/grub            │                  │ iPXE or UKI (~1.2-160 MB)     │
+│ kernel + initramfs       │                  │   embedded: kernel/initrd     │
+│ squashfs (the whole OS)  │                  │   SHA-256 hashes              │
+│ KLHCONFIG partition      │                  │   server list                 │
+└──────────────────────────┘                  └───────────┬────────────────────┘
+                                                          │ HTTPS or FIPS
+                                                          ▼
+                                              ┌────────────────────────────────┐
+                                              │ Blossom servers               │
+                                              │   kernel (by sha256)          │
+                                              │   initramfs (by sha256)       │
+                                              │   root fs: encrypted chunks   │
+                                              │   (4 MiB, AES-256-GCM)       │
+                                              │   manifest (by sha256)       │
+                                              └───────────┬────────────────────┘
+                                                          │ signed pointer (kind-30078)
+                                                          ▼
+                                              ┌────────────────────────────────┐
+                                              │ Nostr relays                  │
+                                              │   "the current release is X"  │
+                                              │   signed by our npub          │
+                                              └────────────────────────────────┘
+```
+
+**The stick never needs rewriting.** An update = build a new image (our
+reproducible build), encrypt + chunk it (`bboot pack`), upload to Blossom
+(`bboot upload`), publish a new pointer (`bboot publish`). The next boot
+fetches the new chunks. The old pointer remains valid (rollback).
+
+### What we already have (and what each piece contributes)
+
+| we have | how it fits |
+|---|---|
+| **Reproducible builds** (same commit+SDE → identical payload) | the chunk hashes are deterministic — mirrors can cache by hash, no cache invalidation ever |
+| **The deb-pool** (content-addressed .deb objects) | the proto-form of the chunk model; the generalization is what Blossom serves |
+| **FIPS networking** | the mesh delivery path — the stick boots from a FIPS peer, no internet needed after the mesh join |
+| **Salt-based identity derivation** (`derive_identity.py`) | the headless-unlock replacement for Seedling's QR code (our contribution) |
+| **The full provisioning stack** (hostname, SSH, Wi-Fi, VM hosting, CI) | runs unchanged inside the streamed image — Seedling's test already proved this |
+| **A working relationship** (their `build-live-iso.sh` consumes our ISO) | the converter exists; we just need to run it in our pipeline |
+
+### What we'd need to add
+
+1. **A Blossom server** (or two) — a simple HTTP server with `GET /<sha256>`
+   and `PUT /upload` (signed). The [blossom
+   spec](https://github.com/hzrd149/blossom) is minimal; a Go or Caddy
+   implementation is ~100 lines. Run one on the hub (inr2), one on the LAN.
+2. **The Seedling tooling** as a build dependency: `bboot pack/upload/publish`
+   (their Go binaries, MIT, used as tools — not vendored)
+3. **The headless-unlock variant**: instead of the QR code, the image key is
+   derived from the stick's salt (HKDF like our npub derivation). This is our
+   contribution: unattended boot on Seedling's verified-boot infrastructure.
+4. **A Nostr key** for signing pointers — one per fleet, or one per stick
+
+### Three deployment modes
+
+| mode | stick size | unlock | network | use case |
+|---|---|---|---|---|
+| **Full stick** (current) | 2.3-2.9 GB | none needed | none after boot | standalone rigs, air-gapped |
+| **Seedling stick + QR** | 64-160 MB | phone scan | internet or FIPS | owned machines, high security |
+| **Seedling stick + salt** | 64-160 MB | derived from stick salt | FIPS mesh or LAN Blossom | fleets, routers, unattended |
+
+All three run the same image — the stick format changes, the OS doesn't.
+
+### The fleet update loop (the payoff)
+
+```
+./build.sh --number N       # reproducible, ~14 min warm with the apt cache
+bboot pack/upload/publish   # ~10 min for a 2.3G image (encrypt+chunk+upload)
+                              # every machine on the next boot:
+                              #   fetches the new pointer
+                              #   downloads the changed chunks (content-addressed:
+                              #     unchanged chunks are already in the local cache)
+                              #   boots the new image
+```
+
+No stick flashing. No USB handling. No medium-verify. The signed pointer IS
+the verification. For the router fleet, the same loop with 10-50 MB firmware
+images: publish → devices fetch → reboot → attestation.
+
 ## Bottom line
 
 Seedling is a **boot infrastructure** project; we are a **live system**
