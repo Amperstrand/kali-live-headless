@@ -218,6 +218,62 @@ OpenWrt-class devices, the chunks are smaller (the whole firmware is
 | **NIP-46 remote signing** | the QR unlock | any "human approval needed" step in our infrastructure: firmware flashes, key rotations, config changes |
 | **Availability math** (the P = (1-(1-p)^k)^n formula) | the whitepaper | fleet sizing: how many mirrors do we need for a given uptime target |
 
+## The ethics line: consume, contribute, don't absorb
+
+**License**: MIT (Teddy Ruxpin, 2026). This *permits* use, modification,
+sublicensing, and incorporation with copyright notice. But license ≠ ethics —
+here is our line, stated as rules we can check ourselves against:
+
+### What we DO
+
+| practice | rule |
+|---|---|
+| **Depend, don't vendor** | their tools (`bboot`, `bbootd`) are external dependencies, like xorriso or QEMU — install them, call them, never copy their source into our repo |
+| **Credit patterns** | every time we adopt an idea from Seedling, the code comment or doc says "inspired by / pattern from Seedling" with a link. No silent borrowing |
+| **Contribute upstream** | fixes we find in their code go to their repo first (the KLH_DEB_POOL crash fix is the model: we fixed OUR side, their docs can drop the workaround). We don't carry a private patch of their code |
+| **Keep the relationship symmetric** | they already consume our ISOs (their `docs/kali.md` turns our output into a Seedling image); we don't need to absorb their project to benefit. "They boot our images" and "we study their patterns" is a healthy cycle, not a takeover |
+| **Complement, don't compete** | we build VM hosting, CI runners, and provisioning — things Seedling doesn't do. They build verified boot from untrusted storage — things we don't do. The overlap (their `build-live-iso.sh` consuming our ISO) is the seam, not the conflict |
+| **Communicate** | if we adopt a pattern in a way that changes our architecture, we tell them (open an issue: "we're using your X pattern for Y — here's what we learned"). No surprises for the maintainer |
+
+### What we DON'T do
+
+| anti-pattern | why |
+|---|---|
+| **Fork their repo** into Amperstrand | creates a competing identity, splits the contributor pool, signals "we're taking this" |
+| **Vendor their Go source** into our tree | even with the MIT notice, it's a silent fork — the code drifts from upstream and they get nothing back |
+| **Reimplement their tools** under our name | competing with a one-person project is the worst form of "use" |
+| **Absorb their niche** | if we ever build "boot from Blossom", it should be *by depending on Seedling*, not by replacing it |
+| **Treat MIT as permission to erase attribution** | the license requires the copyright notice; the ethics require naming the source in our docs even when the license doesn't |
+
+### The practical test
+
+Before importing anything from Seedling, ask:
+
+1. **Is this a tool we call, or code we copy?** Tool = depend. Code = contribute
+   upstream first, then depend on the fix.
+2. **Would Teddy recognize our use as collaboration?** If he read our repo,
+   would he see "they're using my stuff and crediting it" or "they took my
+   stuff"?
+3. **Are we making his project better by using it?** If the answer is
+   "no change for him", we're at least neutral. If it's "he has to compete
+   with us now", we've crossed the line.
+
+### What this means concretely
+
+- **FIPS-in-initramfs**: we implement the *pattern* in our own scripts,
+  with a comment linking to their implementation as the reference. We
+  don't copy their Go source.
+- **Signed-pointer updates for routers**: we adopt the *model* (a signed
+  event naming the current release), implement it in our own tooling,
+  credit the whitepaper. If we need a Blossom server or a FIPS daemon,
+  we use *their* binaries or the upstream FIPS project's, not a fork.
+- **Their `build-live-iso.sh`**: already the right relationship — they
+  consume our output. We keep our ISOs Seedling-friendly (nothing in our
+  build breaks their converter) and that's a contribution in itself.
+- **Their NBD implementation**: if we need content-addressed block
+  devices, we *call* `bbootd` (or write our own in our own language),
+  credit theirs as the working reference. We don't vendor their `nbd.go`.
+
 ## Bottom line
 
 Seedling is a **boot infrastructure** project; we are a **live system**
