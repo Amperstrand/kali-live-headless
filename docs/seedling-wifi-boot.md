@@ -101,6 +101,42 @@ boots on), and the whole chain re-verified after the testenv CA rotation.
    workstation with `SSL_CERT_FILE` set to the new CA.
 6. Login: root / m1test on console, or ssh once the machine has an address.
 
+## The first real-hardware boot: black screen post-mortem (2026-11-05)
+
+Symptom: black screen with a cursor on a Legion-class laptop. **The machine
+was almost certainly booting fine** — the QEMU-oriented cmdline said
+`console=ttyS0,115200` ONLY, so every message (association logs, the QR
+code, the login prompt) went to the serial port nothing was plugged into.
+The display showed the firmware's last cursor state. Black.
+
+Fixes shipped in stick v3, each QEMU-proven:
+
+1. **`console=ttyS0,115200 console=tty0 loglevel=7`** on the hardware
+   cmdline — the display becomes `/dev/console` (QR + login visible),
+   serial still carries kernel messages for a serial-cable debug session.
+   Proven end-to-end headless: QEMU screendump → the QR code **decoded
+   with zbar from a screenshot of the screen** (the exact thing Amber does
+   with a phone camera) → signer approved → second screendump shows
+   `Debian GNU/Linux 13 seedling tty1` / `seedling login:` ON THE SCREEN.
+2. **Driver coverage was a hand list, and it had a hole**: ai-legion's
+   Intel CNVi (AX201) was covered (`iwlwifi`), but ai-legion-small's
+   Realtek RTL8852AE was NOT — `rtw89_8852ae` was never named and
+   `MODULES=most` does not include drivers/net/wireless *at all*. The hook
+   now adds the **entire wireless driver tree** (151 driver modules,
+   ~26 MB) + `firmware-mediatek`, so every radio the Debian 6.12 kernel
+   supports is present. Verified present: iwlwifi, rtw89_8852{a,b,c}e,
+   mt7921e, mt7925e, ath10k/11k, brcmfmac, rtw88 family.
+3. **Diagnostics when things go wrong** (the "why is my screen black"
+   toolkit, all printed to the display):
+   - no radio → the machine's PCI network controllers are listed as
+     `vendor:device` ids (so a missing driver *names itself*) + filtered
+     kernel wireless/firmware messages
+   - rfkill soft-block is unblocked (busybox rfkill) before associating
+   - wpa_supplicant logs to a file; on exit/timeout its last lines, the
+     link state, and a **scan listing visible SSIDs** are printed
+   - the USB enumeration wait for the BBOOT ESP went 10s → 30s
+   - every step announces itself (`wi-fi boot stick v3 ... starting`)
+
 ## Security notes
 
 - The stick carries exactly one secret (the PSK) — theft of the stick
