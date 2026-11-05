@@ -22,11 +22,16 @@ CI lanes and, where physical, by `vm-check`/`hw-check`.
 
 ## Phase 2 — media and release hygiene
 
-3. **f3 burn-in + known-good medium matrix** — close the DataTraveler
-   case file, stop buying sticks by luck. → [#38](https://github.com/Amperstrand/kali-live-headless/issues/38)
-4. **Release rebuild** — bake the hot-patches (bech32 derive, WG PostUp,
-   MSS clamp, pre-commit shebang) into an image, reflash a probe-green
-   stick, run every gate, update BUILDS.md. → [#41](https://github.com/Amperstrand/kali-live-headless/issues/41)
+3. **f3 burn-in + known-good medium matrix** — the matrix has its first
+   recovered row (the DataTraveler runs release #53 since 2026-10-30);
+   the burn-in remains open and is **owner-gated**: the retired stick is
+   now the release medium, destroying it needs explicit sign-off.
+   → [#38](https://github.com/Amperstrand/kali-live-headless/issues/38)
+4. ~~**Release rebuild**~~ — LANDED 2026-10-30: #53 (every hot-patch
+   baked) FLASHED to `datatraveler-16g-primary` — medium-verify PASS,
+   identity preserved; the automounter race it surfaced is fixed (PR
+   #51). Diet lane: Debian 1.22 GiB + kali 1.64 GiB, full-gate green.
+   → [#41](https://github.com/Amperstrand/kali-live-headless/issues/41)
 
 ## Phase 3 — the runner fleet
 
@@ -36,11 +41,24 @@ CI lanes and, where physical, by `vm-check`/`hw-check`.
    class entirely. Decide with evidence, not vibes (note: a PAT in the
    guest would weaken the model — document why-not if rejected).
    → [#42](https://github.com/Amperstrand/kali-live-headless/issues/42)
-6. **Extend the optimistic lane** — the `pick-runner` pattern (ccid
-   `fuzz-nightly`, PR #478) is reusable as-is; after a streak of green
-   nightlies, route ccid `ci.yml` push legs (and other Amperstrand repos)
-   preferentially to the VM. Capacity = more runner services on the VM
-   (one job per service). → [#42](https://github.com/Amperstrand/kali-live-headless/issues/42)
+6. ~~**Extend the optimistic lane**~~ — **DONE, and hardened twice**:
+   ccid + micronuts fuzz nightlies green 4+ consecutive nights on the
+   fleet; the probe survived two real failure classes (dead-label queues
+   → own-repo signal + dark-detection, Oct 31; stopped-runner queues →
+   the fleet canary + `klh-runner-doctor`, Nov 5). The pattern is
+   documented in ops#43; two more orgs adopted the fleet unprompted
+   (androidpay, foundry). Remaining want: routing push legs, which
+   stays gated on owner appetite for public-repo push coverage.
+   → [#42](https://github.com/Amperstrand/kali-live-headless/issues/42)
+
+## Phase 4 — fleet operations (new, 2026-11-05)
+
+7. **Disk-watch + closeout discipline** — both 2026-11-05 emergencies
+   (x280 98%, ai-legion 0-bytes-free) were silent for days. Landed: the
+   installable units in the ops repo (`systemd/user/`, live on both
+   boxes) and the lane-closeout checklist (`ops/docs/lane-closeout.md`)
+   with the mandatory root-lane block. Open: the root-lane owners must
+   actually run it — the checklist is 48h old and unproven in practice.
 
 ## External / blocked
 
