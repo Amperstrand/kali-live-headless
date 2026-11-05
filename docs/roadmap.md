@@ -51,9 +51,18 @@ CI lanes and, where physical, by `vm-check`/`hw-check`.
 
 ## Carried from the old backlog (audited 2026-10-28)
 
-- Hot-chroot lane (preserve `chroot/` across iteration builds) and the
-  `:8000` HTTP apt cache — build-time levers; release builds stay
-  cold-clean. See `docs/reproducible-builds.md`.
+- ~~The `:8000` HTTP apt cache~~ — **LANDED 2026-11-01** (PR #53): 21%
+  faster warm builds, three-part trap documented in
+  `docs/reproducible-builds.md` (mirror-pin disables detection; env vars
+  don't cross the chroot boundary; the drop-in stages post-provenance).
+- **Hot-chroot lane** (preserve `chroot/` across iteration builds) — still
+  open, but the value shrank: the apt cache already removes the download
+  half of a rebuild; the remaining half is debootstrap+install (~6 min
+  warm). A hot-chroot lane saves maybe 4-5 min per iteration build at the
+  cost of a non-clean provenance story (the build tree persists BETWEEN
+  builds, exactly what AGENTS #13 warns about). **Assessment 2026-11-05:
+  NOT worth doing unless iteration builds become the daily workflow.**
+  Release builds stay cold-clean regardless.
 - ~~Mechanical verdict capture~~ — LANDED and hardened 2026-10-28:
   `test.sh` emits `VERDICT …` and `iso-archive.sh` consumes it
   mechanically; the MECHANICAL verdict now outranks a hand `--verdict`
