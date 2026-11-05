@@ -3,7 +3,11 @@
 How does a machine establish identity and ownership — safely, at fleet
 scale, without private keys transiting Nostr? This is the open research
 question between our provisioning stack and Seedling's verified-boot
-infrastructure.
+infrastructure. (Companion evidence: the full Seedling source review and
+collaboration map live in [`research/seedling-comparison.md`](research/seedling-comparison.md)
+on the `research/seedling-comparison` branch — including the discovery
+that Seedling already boots our ISO from Blossom and their
+fresh-identity-per-clone pattern that motivated this document.)
 
 ## The problem
 
