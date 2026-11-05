@@ -102,6 +102,36 @@ our image with the hostname/SSH/banner services intact.
   firewall-lab does this for iptables; the same pattern applies to a
   mesh/relay testenv if #40 (FIPS peer proof) lands.
 
+## Ongoing watch angles (issue #54 stays open)
+
+**Trusted boot / boot-chain authentication.** Seedling's design is a working
+reference for verified boot without a TPM: every stage (iPXE → kernel+initrd
+→ manifest → chunks) verifies SHA-256 against values compiled into the
+*previous* stage, plus a signed pointer as the root of trust. Our chain
+(firmware → isolinux → kernel → squashfs) verifies nothing after the
+firmware. The patterns to study: hash-chaining (embed the squashfs hash in
+the initramfs; verify before mounting), the signed pointer (a
+rollback-protected update primitive we lack), and chunk-index
+authentication (GCM with the index in the additional data — prevents valid
+blocks being reordered).
+
+**Router fleet reuse.** Routers are exactly the "boot from untrusted
+storage, verify everything" problem Seedling solves. Their
+`build-pi-clone.sh` is one adaptation away from a router equivalent. The
+chunked encrypted-update model (publish a new pointer, the device fetches
+and verifies) is a firmware-update channel with no signing server, no CDN,
+and built-in rollback by keeping the old pointer.
+
+**What we could contribute:**
+- Headless/unattended boot (their QR unlock needs the phone at every boot;
+  our provision path is the pattern for deterministic key derivation from
+  a stored salt)
+- Build reproducibility discipline (SDE pinning + non-determinism cleanup
+  would make their chunks content-stable across rebuilds — mirrors become
+  trivially cacheable)
+- Suite discipline (their `make test-boot` covers the happy path; our
+  multi-stage gates + fixtures are the edge-case model)
+
 ## Bottom line
 
 Seedling is a **boot infrastructure** project; we are a **live system**
