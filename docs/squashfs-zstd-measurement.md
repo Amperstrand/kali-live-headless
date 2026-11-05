@@ -16,6 +16,14 @@ retention sweep; the raw run log is preserved at
 | `mksquashfs -comp xz -b 131072` (parent's settings) | **~3420 s** (started 05:18, output closed 06:15) | 2.51 GB |
 | shipped parent squashfs | — | 4.83 GB |
 
+## The fleet datapoint (2026-10-31)
+
+d4 (kali + KLH_DIET=di, the 1.64G image): zstd squashfs = **1,498,488,832 B
+(1.40 GiB)** — 86% of the total ISO, in an image that BIOS+UEFI boot-gated
+green (393/0 + 394/0). The ratio confirms the measurement above: zstd is
+larger on disk, and for this project (16G sticks, 2.3-2.9G images) the
++18.6% is invisible while the build-speed win is the entire squashfs phase.
+
 ## Reading
 
 - zstd level 3 is **≈11× faster** than xz at the same core count (312 s vs
