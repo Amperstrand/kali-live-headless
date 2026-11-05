@@ -214,6 +214,111 @@ The owner's key is used for:
 These are separate concerns with separate keys — but the same Nostr
 infrastructure serves both.
 
+## Security implications (the pre-flight, before M1)
+
+### What the network sees (per phase)
+
+| phase | who connects to what | what leaks |
+|---|---|---|
+| **Blossom fetch** (image download) | the machine → Blossom server | the machine's IP, which chunks it reads (timing), the image size. NOT the contents (encrypted chunks) |
+| **Birth event** | the machine → Nostr relay | the machine's IP (to the relay), its fresh npub, its hardware serial, its boot timestamp |
+| **Claim event** | the owner → Nostr relay | the owner's IP (to the relay), their npub, which machine they're claiming |
+| **Attestation** | the machine → Nostr relay | same as birth, plus the running hash (proves which image) |
+| **FIPS delivery** | the machine → FIPS peer | the machine's FIPS address (derived from npub, not IP), which peers it routes through |
+
+### IP exposure analysis
+
+**Without FIPS** (direct internet):
+- The Blossom server sees the machine's real IP and which chunks it
+  requests (a fingerprint of the image contents)
+- The Nostr relay sees the machine's real IP correlated with its npub
+  → an observer with relay access can map npub ↔ IP for the entire fleet
+- This is the same exposure as any HTTPS download; not a new leak, but
+  worth stating: **a Blossom server + relay colluding can identify every
+  machine and its owner**
+
+**With FIPS** (mesh delivery):
+- The machine's real IP is only visible to its bootstrap peers (the
+  peers it directly connects to)
+- The Blossom server sees only the FIPS address (fd00::/8, derived from
+  npub), NOT the machine's real IP
+- The relay (if also on the mesh) sees only the FIPS address
+- **Rule**: we only exit to whitelisted gateways (`inr2.cashu.exchange`).
+  This means the machine's FIPS node connects outbound to the gateway,
+  and all Blossom/relay traffic goes through the mesh. The real IP is
+  known only to the gateway operator (us) and the bootstrap peers.
+
+**Threat model for IP leakage**:
+
+| adversary | what they learn without FIPS | with FIPS |
+|---|---|---|
+| Blossom server operator | machine IP, chunk access pattern | FIPS address only |
+| Nostr relay operator | machine IP ↔ npub correlation | FIPS address only (if relay is on mesh) |
+| passive network observer (ISP) | the machine is downloading from Blossom | the machine is talking to one peer (the gateway) |
+| active adversary running a malicious relay | machine IP + npub + serial | FIPS address (no real IP) |
+
+### Key handling rules (non-negotiable)
+
+1. **SSH**: key-only, always. `PasswordAuthentication no`,
+   `PermitRootLogin no`, `KbdInteractiveAuthentication no` — already
+   enforced by provision + asserted by every boot gate
+2. **Machine identity key**: generated on the machine, never copied,
+   never backed up (it IS the machine). If the machine is re-imaged,
+   it re-births with a new key (the old one becomes an orphan)
+3. **Owner key**: lives on the owner's device (hardware wallet or
+   air-gapped signer), never on any server, never on any machine
+4. **Image decryption key**: arrives via Seedling's NIP-44 unlock (QR
+   scan or salt-derivation), is used in RAM, never written to disk
+5. **No passwords, no blank defaults, no shared secrets** — every
+   channel is either key-authenticated or key-derived
+
+### FIPS exit policy (our existing rule, applied)
+
+The existing rule — **egress only via whitelisted gateways
+(`inr2.cashu.exchange`)** — extends to the Seedling-boot model:
+
+```
+machine boots → FIPS node joins mesh (outbound to gateway) →
+  all Blossom fetches go through the mesh →
+  all relay connections go through the mesh →
+  the machine never contacts the internet directly
+```
+
+This means:
+- The machine's real IP is known only to the FIPS gateway (which we
+  control)
+- Blossom servers see only the mesh address
+- Relays see only the mesh address
+- If we run Blossom + relay ON the gateway (or mesh-reachable from it),
+  the machine's traffic never leaves our infrastructure
+
+**What we need to verify in M1**: that the FIPS-in-initramfs path works
+with our gateway policy — the bootstrap peer should be
+`inr2.cashu.exchange:443/tcp`, and the Blossom server should be
+reachable at its FIPS address (or on the LAN).
+
+### What Seedling's model exposes that we need to close
+
+| gap | Seedling's behavior | our fix |
+|---|---|---|
+| Birth event is public on relays | anyone can see all machines | encrypt the serial with NIP-44 to the owner's npub (the owner can decrypt; observers see ciphertext) |
+| Owner's claim is public | anyone can see the fleet map | same: encrypt the claim to the machine's npub |
+| Attestation hash is public | anyone can see what image each machine runs | acceptable (the hash is already public in the repo) — but we should rate-limit to avoid a live map for adversaries |
+| Relay can correlate machine npub ↔ owner npub | the claim event links them | publish the claim via FIPS (the relay sees only mesh addresses) |
+| Image chunks fingerprint the contents | which chunks are read reveals what's in the image | prefetch the whole image (bb.prefetch=1) — then the access pattern is uniform |
+
+### Rate limiting + privacy hardening
+
+- Birth/attest events: once per boot + once per hour maximum
+- The hardware serial in the birth event: truncated hash
+  (`sha256(serial)[0:16]`) instead of the raw serial — the owner can
+  match it against their known serials, observers can't enumerate
+- The machine's model/hostname: NOT in the birth event (it's in the
+  image; anyone with the image already has it)
+- Attestation content: hash + timestamp only (no kernel version, no
+  uptime — those are in the running system for the owner to SSH in
+  and check)
+
 ## Milestones
 
 ### M1: Prove the medium (Seedling boot of our image)
