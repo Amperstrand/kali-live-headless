@@ -169,7 +169,7 @@ printed**. Schema and update rules live in the probe's header. Notes:
 
 | model | link | write MB/s | read MB/s | ledger verdict | notes |
 |---|---|---|---|---|---|
-| Kingston DataTraveler 3.0 14.4G | 5000M | 5–8 | 55–80 | **recovered** (2026-10-29) | one weak cell @2449473573 (would not program under ≥1M commands); reset+4K rewrite, payload verified, quarantine lifted — slow, watch it |
+| Kingston DataTraveler 3.0 14.4G | 5000M | 5–8 | 55–80 | **recovered** (2026-10-29) | one weak cell @2449473573 (would not program under ≥1M commands); reset+4K rewrite, payload verified, quarantine lifted — **running release #53 since 2026-10-30** (flashed clean, medium-verify PASS; the recovered cell held) |
 | — | | | | | |
 
 Buying guidance implied by the matrix: sustained *write* rate is the
