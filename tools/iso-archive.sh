@@ -280,6 +280,12 @@ if "_not yet recorded_" in s:
 open(path, "w").write(s)
 PY
     klh_ok "verdict captured from $(basename "$_lg")"
+    # The run-level ledger gains its row at archive time too — plain
+    # `./test.sh > log` runs never pass through run-logged.sh, so
+    # archive-time is the one join point every build's suite log hits.
+    if [ -x "$REPO_DIR/tools/verdict.sh" ]; then
+        "$REPO_DIR/tools/verdict.sh" record "$_lg" "suite:b$BUILD" >/dev/null 2>&1 || true
+    fi
     break
   fi
 done
