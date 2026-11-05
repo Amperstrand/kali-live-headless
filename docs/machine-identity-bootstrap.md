@@ -469,6 +469,117 @@ fleet things. The two never mix.**
 - our machines, our images, our fleet → private relays + private
   Blossom + FIPS delivery (private, controlled)
 
+## Real deployment: how the booting machine reaches the server
+
+The M1 proof used a testenv on localhost (QEMU's user-mode networking maps
+it to 10.0.2.2). For a real boot on physical hardware, the machine needs
+to reach a Blossom server and a Nostr relay. Here are the options, ranked
+by safety and simplicity:
+
+### The network question
+
+| option | how it works | WiFi needed? | real IP exposed? | complexity |
+|---|---|---|---|---|
+| **A. Ethernet + LAN Blossom** | wired Ethernet, Blossom on a local machine | no | only to the LAN | lowest |
+| **B. FIPS mesh delivery** | boot node joins mesh, Blossom at a FIPS address | no | **never** (mesh only) | medium |
+| **C. Internet Blossom (gateway)** | Blossom on inr2, booting machine connects via internet | no (wired) | to the gateway (we control it) | medium |
+| **D. WiFi boot** | WiFi drivers in initramfs + wpa_supplicant | **yes** | to the LAN | highest, and see below |
+
+### The WiFi credential question
+
+**WiFi credentials never need to be on the stick.** Here's why:
+
+1. **The boot chain uses Ethernet** (iPXE → kernel → initramfs all work
+   over wired Ethernet). No WiFi is needed until the full OS is running.
+2. **WiFi is a post-boot concern.** Once the system is up, our existing
+   provision stack joins WiFi using credentials from:
+   - **Inside the encrypted image** — the erofs rootfs contains the
+     NetworkManager profile with the PSK. The image is AES-256-GCM
+     encrypted on Blossom. The PSK never appears on the stick, in the
+     iPXE script, or in the initramfs. (This is what Seedling's
+     `build-live-iso.sh` does — `WIFI_SSID`/`WIFI_PSK` go into the
+     rootfs, which goes into the encrypted chunks.)
+   - **Or delivered post-boot** — the birth/claim model: after the
+     machine identifies itself, the owner sends the WiFi config over
+     the FIPS mesh (or SSH). The machine starts on Ethernet, then
+     joins WiFi once it has credentials.
+3. **The stick stays keyless** — it contains only: iPXE code, kernel
+   and initrd SHA-256 hashes, and server addresses. All public data.
+
+### Recommended deployment path
+
+**Phase 1 — prove on real hardware (safe, simple):**
+- Run Blossom + relay on **this laptop** or on a LAN machine, listening
+  on the LAN IP (192.168.x.x)
+- The booting machine uses **wired Ethernet** (no WiFi in the boot path)
+- Boot the 64MB stick on any UEFI machine with Ethernet
+- All traffic stays on the LAN — nothing touches the internet
+- After boot, the provision stack joins WiFi via the image-baked profile
+
+**Phase 2 — FIPS delivery (private, no LAN dependency):**
+- Run Blossom on the FIPS gateway (inr2), reachable at its mesh address
+- The booting machine joins the mesh via one peer (the gateway's address,
+  which is public info — like a DNS server, not a secret)
+- All traffic routes through the mesh — the machine's real IP is never
+  exposed to any server
+- Works from anywhere (not just the LAN)
+
+**Phase 3 — production fleet:**
+- Blossom on inr2 (primary) + on a LAN Pi (fallback)
+- The iPXE script lists both servers, tries each in turn
+- Availability follows the P = (1-(1-p)^k)^n formula from the Seedling
+  whitepaper (three servers ≈ 96% per-chunk, five ≈ 99.96%)
+
+### How to run Blossom on this laptop for Phase 1
+
+The testenv is already the right tool — it just needs to listen on the
+LAN instead of localhost:
+
+```bash
+# 1. Find the laptop's LAN IP:
+ip -4 addr show | grep "192.168" | head -1
+
+# 2. Start the testenv listening on all interfaces (or the specific IP):
+cd /home/user/src/seedling-m1
+BBOOT_NSEC=$(cat .m1-nsec) ./bin/bboot-testenv   -listen 0.0.0.0:8443   -hosts "$(hostname -I | awk '{print $1}'),10.0.2.2,127.0.0.1"   -dir ./testenv-lan
+
+# 3. The testenv generates a CA for those hostnames. The iPXE script and
+# the initramfs must be rebuilt with this CA (same EXTRA_CA + IPXE_TRUST
+# flow as M1).
+
+# 4. Upload the blobs to the LAN testenv:
+BBOOT_NSEC=$(cat .m1-nsec) SSL_CERT_FILE=... ./bin/bboot upload   -servers https://<LAN-IP>:8443 ...
+
+# 5. Build the stick with the LAN IP as the server:
+./scripts/make-ipxe-script.sh "$KERNEL_SHA" "$INITRD_SHA"   "https://<LAN-IP>:8443"   "boot=bboot root=/dev/nbd0 ..." > boot-lan.ipxe
+IPXE_TRUST=... ./scripts/build-ipxe.sh boot-lan.ipxe lan-stick.efi
+./scripts/make-usb.sh lan-stick.efi lan-stick.img
+```
+
+**Safety notes for Phase 1:**
+- The testenv accepts uploads from anyone with the nsec — keep the nsec
+  off the network (it's in `.m1-nsec`, already 0600)
+- The testenv's CA is self-signed — the stick and the initramfs trust
+  ONLY this CA (not the system bundle), so a MITM with a real cert still
+  fails (hash verification catches it, and the CA pinning is a second
+  line of defense)
+- All traffic is on the LAN — nothing leaves the building
+- The stick has no secrets — losing it reveals server addresses and
+  hashes only
+
+**What about running Blossom on FIPS?**
+
+Seedling already proved this (docs/fips.md — measured 3.5 MB/s through
+one public peer, a 1.4 GB image prefetches in ~7 min). The requirements:
+- A FIPS daemon binary in the initramfs (`FIPS_BIN=` during the build)
+- A public FIPS peer address on the stick (the gateway's address)
+- The Blossom server must be reachable at its FIPS address (run the
+  FIPS daemon on the Blossom server host)
+
+This is the Phase 2 path. The key insight: **the peer address on the
+stick is like a DNS server address — public routing information, not a
+credential**. The stick still holds no secrets.
+
 ## Milestones
 
 ### M1: Prove the medium — **COMPLETE 2026-11-05** ✅
