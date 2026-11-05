@@ -84,8 +84,9 @@ else
     # different ISO makes 'accept-new' refuse the *changed* key, so every stage
     # reports "did not boot to SSH" even though the guest booted (2026-10-22:
     # the whole C-E section false-failed exactly this way against a healthy
-    # guest). Real host-key drift is asserted explicitly in common_guest_checks
-    # against the baked fingerprint, so the transport must not gate on it.
+    # guest). Host keys are per-boot by design (image ships keyless;
+    # provision regenerates), so the transport must never gate on them —
+    # the live key's self-consistency is asserted in common_guest_checks.
     rm -f "$SCRATCH/known_hosts"
     # ServerAlive*: ConnectTimeout only covers connection SETUP — a guest
     # command that blocks forever (e.g. virsh on a never-activating libvirtd

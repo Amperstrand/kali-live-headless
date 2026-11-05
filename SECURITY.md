@@ -17,7 +17,7 @@ Last reviewed: 2026-10-25 (identity unification + stick registry + blackbox fore
 | Root login rejected | suite + hw-check: `PermitRootLogin no`, live `root@` attempt refused | |
 | The console password is randomized each boot | suite + hw-check: `kali`'s shadow hash ≠ Kali's stock hash | `LIVE_PASSWORD_MODE=kali` builds deliberately skip this — the check honors the baked mode |
 | `~/.ssh` and `authorized_keys` are tight (0700/0600, owned by `kali`) | suite + hw-check `stat` assertions | |
-| Host key is baked per-build and cannot drift unnoticed | suite extracts the baked fingerprint from the squashfs and compares it to the live key each boot stage; the SSH transport itself is `StrictHostKeyChecking=no` *because* drift is asserted explicitly | |
+| No SSH host key is baked into the image (each boot gets fresh keys) | suite Stage B fails if any `ssh_host_*` file ships in the squashfs; boot stages assert a live key exists and is self-consistent; the SSH transport itself is `StrictHostKeyChecking=no` *because* the identity is per-boot by design | clients must expect a new host identity each boot — key auth + no strict checking, or read the session fingerprint from the console banner |
 | Passwordless sudo for the live user | suite + hw-check `sudo -n true` | accepted risk, see below |
 
 ## Secrets

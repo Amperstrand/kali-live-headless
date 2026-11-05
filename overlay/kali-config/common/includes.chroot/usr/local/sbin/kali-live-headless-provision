@@ -462,9 +462,13 @@ if [ -e /etc/ssh/sshd_config ] && [ ! -f /etc/ssh/sshd_config.d/0000-kali-live-h
 fi
 
 # --------------------------------------------------------------- host keys
-# Host keys are baked per-build at ISO build time (openssh-server postinst).
-# Regenerate only if they somehow vanished, otherwise the fingerprint of
-# every boot would change and clients would complain.
+# The image ships WITHOUT host keys (zzz-klh-nondeterminism deletes them
+# at build end: shared keys across sticks are a security problem and a
+# rebuild blocker; Stage B fails the build if one ships). Generate them
+# here on every boot — /etc on a live system is RAM-backed, so each boot
+# gets a fresh identity by design. Clients automate with key auth and no
+# strict host checking (suite approach); humans read the session
+# fingerprint from the console banner.
 if [ ! -s /etc/ssh/ssh_host_ed25519_key ]; then
     log "SSH host keys missing — generating fresh ones"
     ssh-keygen -A > /dev/null 2>&1 || true
