@@ -65,7 +65,7 @@ done through supported upstream customization points:
 | Wi-Fi autoconnect | NetworkManager keyfile profile generated at build time from `templates/headless-wifi.nmconnection.in`, shipped in `/etc/NetworkManager/system-connections/` (mode 0600, `autoconnect=true`, infinite retries, no interface-name pinning) |
 | SSH hardening | `/etc/ssh/sshd_config.d/0000-kali-live-headless.conf` (drops in first ⇒ wins): `PasswordAuthentication no`, `PermitRootLogin no`, `PubkeyAuthentication yes` |
 | Your public key | staged to `/etc/kali-live-headless/authorized_keys` + `/etc/skel/.ssh/authorized_keys` — Kali's live-config creates the live user `kali` (uid 1000) from `/etc/skel` on **every boot**, so the key lands in `/home/kali/.ssh/` without any console interaction |
-| SSH host keys | generated once per ISO build inside the live-build chroot (unique per build, stable across boots of the same stick), plus a runtime fallback that regenerates them only if missing |
+| SSH host keys | **none in the image** — the reproducibility hook deletes them (shared keys across sticks would be both a security and a rebuild problem); `kali-live-headless-provision` generates fresh ones at every boot. Consequence: clients see a new host identity each boot — automate with key auth + `StrictHostKeyChecking=no` (what the suite does), or read the session's fingerprint off the console banner. Stage B *fails the build* if a host key ships |
 | Services at boot | `hooks/live/zz-headless-configure.hook.chroot` enables `ssh`, `NetworkManager`, `avahi-daemon` and the three custom units below |
 | Hostname | **hardware-derived by default** (`HOSTNAME_SCHEME=hardware`): a boot-time oneshot names the machine after itself — `<model>-<cores>c<ram>r<disk>d`, e.g. `x280-8c16r256d`; a second oneshot appends `-2`/`-3` when an identical machine already answers on the LAN (mDNS). Fixes the `hostname=kali` of hard-coded boot entries too. `HOSTNAME_SCHEME=static` restores the old one-name behaviour |
 | Console help | `kali-live-console-banner.service` prints IPv4 addresses and the SSH host-key fingerprints on the console and the login prompt |
@@ -113,10 +113,13 @@ otherwise:
 
 Other honest notes:
 
-* **SSH host keys are unique per ISO build** (not per stick, not per boot).
-  Two sticks flashed from the same ISO share host keys. Rebuild
-  (`./build.sh`) to get fresh keys. The ED25519 fingerprint is printed on
-  the console banner so you can verify it.
+* **SSH host keys are unique per boot** (not per stick, not per build):
+  the image ships without any (Stage B fails the build otherwise), and
+  provision generates fresh ones each boot. No two sticks — in fact no
+  two *boots* — share host keys. The trade-off: SSH clients see a new
+  host identity every boot, so automation uses key auth without strict
+  host checking (the suite's approach), and humans can read the
+  session's ED25519 fingerprint off the console banner.
 * The live user `kali` still has its standard Kali live console password
   (`kali`) for physical-console logins. Physical access to a live system
   is game over anyway — the threat model for SSH hardening is *network*
