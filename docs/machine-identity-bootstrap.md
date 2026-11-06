@@ -701,7 +701,27 @@ Proven end-to-end in QEMU on the workstation:
 Artifacts preserved at `/home/user/src/seedling-m1/` (64 MB stick image,
 encrypted chunks, Blossom testenv, test key).
 
-### M2: Birth event (the machine announces)
+### M2: Machine birth — **PROVEN IN QEMU 2026-11-06** ✅
+
+`bbirth` (cmd/bbirth in the Seedling module) publishes a signed kind-30078
+event at init-bottom, as soon as the boot network is up:
+
+- **stable identity**: key = SHA-256("bboot/birth/v1/" + hardware serial)
+  — same machine → same npub across boots, no key at rest; the derivation
+  moves under HKDF(stick salt) for production (the KLH vm-fips model)
+- **content**: serial, hostname, kernel version; tags `d=birth`,
+  `machine=<serial>`
+- **fails open**: a birth failure never blocks the boot
+- **trust anchor**: the relay's testenv CA, same as bbootd (mirrored
+  `cmd/bboot`'s TLS-root loader)
+
+The e2e `birth` stage boots with a unique `-smbios type=1,serial=…`, listens
+on the relay with a stdlib-only client that verifies every event id
+(sha256 of the canonical serialization), and asserts the event arrives
+with the right serial — **twice**, proving the same serial → the same
+pubkey. Remaining for real hardware: plug in a stick and read the event.
+
+Original plan (kept for reference):: Birth event (the machine announces)
 - Add a `machine-birth` script to our overlay: on first boot with no
   pinned owner, generate a keypair + read hardware serial + publish
 - Test: boot the image, see the birth event on a local relay
