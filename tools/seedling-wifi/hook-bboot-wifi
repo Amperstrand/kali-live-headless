@@ -17,6 +17,7 @@ for b in /sbin/iw /usr/sbin/iw; do
 	[ -x "$b" ] && copy_exec "$b"
 done
 [ -x /usr/sbin/hostapd ] && copy_exec /usr/sbin/hostapd
+[ -x /usr/local/sbin/bbirth ] && copy_exec /usr/local/sbin/bbirth
 
 # regulatory database + every installed firmware blob (the rootfs carries only
 # the Wi-Fi firmware packages, so this is bounded by that set)
