@@ -85,9 +85,11 @@ T=$(mktemp -d)
 export MANIFEST=aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111
 export NPUB=npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
 for v in qemu hwsim nowifi isolated fallback pointer; do
-	if bash "$here/render-cmdline.sh" "$v" "$T/$v.txt" >/dev/null 2>&1 &&
-		grep -q "bb.manifest=$MANIFEST" "$T/$v.txt"; then
-		ok "render $v"
+	if bash "$here/render-cmdline.sh" "$v" "$T/$v.txt" >/dev/null 2>&1; then
+		case $v in
+		pointer) grep -q "bb.manifest=" "$T/$v.txt" && bad "pointer variant must not pin a manifest" || ok "render pointer (relay-resolved)" ;;
+		*) grep -q "bb.manifest=$MANIFEST" "$T/$v.txt" && ok "render $v" || bad "render $v" ;;
+		esac
 	else
 		bad "render $v"
 	fi
@@ -104,7 +106,6 @@ done
 ! grep -q 'tty0' "$T/qemu.txt" && ok "qemu variant stays serial-only" ||
 	bad "qemu variant stays serial-only"
 MANIFEST=$(MANIFEST=$MANIFEST) bash -c 'true'
-grep -q 'bb.manifest=' "$T/pointer.txt" && bad "pointer variant must not pin a manifest" || ok "pointer variant resolves via relay"
 grep -q '9999,.*8443' "$T/fallback.txt" && ok "fallback variant lists the dead server first" || bad "fallback variant lists the dead server first"
 RELAY_HOST=10.99.0.5 RELAY_PORT=9443 bash "$here/render-cmdline.sh" hw "$T/hw.txt" >/dev/null 2>&1
 grep -q 'console=ttyS0,115200 console=tty0' "$T/hw.txt" &&
