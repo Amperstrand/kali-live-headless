@@ -16,6 +16,7 @@ navigating the 30+ docs that accreted around it.
 - [`remote-build.md`](remote-build.md) — building on a remote host
 
 ## VM hosting & the runner fleet
+- [`runner-ephemerality-decision.md`](runner-ephemerality-decision.md) — why the fleet stays persistent (#42: the evidence)
 - [`vm-host-legion.md`](vm-host-legion.md) — the operator runbook: host, store, network, security table, runners, ops
 - [`vm-checklist.md`](vm-checklist.md) — the id→property contract `vm-check` asserts after every boot
 - [`vm-deploy.md`](vm-deploy.md), [`vmhost-first-guest-bringup.md`](vmhost-first-guest-bringup.md) — deploying guests
