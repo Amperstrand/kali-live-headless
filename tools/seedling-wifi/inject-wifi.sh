@@ -34,6 +34,11 @@ fi
 
 install -D -m 0755 "$SRC/hook-bboot-wifi" \
 	"$ROOT/etc/initramfs-tools/hooks/bboot-wifi"
+# bbirth (machine birth event, M2) — built from the Seedling module in the
+# container: go build -buildvcs=false -o bin/bbirth ./cmd/bbirth
+if [ -x /src/bin/bbirth ]; then
+	install -D -m 0755 /src/bin/bbirth "$ROOT/usr/local/sbin/bbirth"
+fi
 install -D -m 0755 "$SRC/script-bboot-wifi" \
 	"$ROOT/etc/initramfs-tools/scripts/init-premount/bboot-wifi"
 

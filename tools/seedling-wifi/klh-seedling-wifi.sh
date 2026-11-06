@@ -71,6 +71,41 @@ build-stick)
 		"$SEEDLING_DIR/e2e/stick-$variant.img" 768
 	;;
 
+sign-uki)
+	# sign a UKI with the workspace Secure-Boot key (generated if missing).
+	# Keys NEVER live in this repo.
+	variant=qemu
+	[ "${1:-}" = "--variant" ] && variant=${2:?variant name}
+	src="$SEEDLING_DIR/out/bboot-wifi-$variant.efi"
+	[ -s "$src" ] || { echo "missing $src (build-uki first)" >&2; exit 1; }
+	SBKEY=$SEEDLING_DIR/sb-keys/db.key
+	SBCERT=$SEEDLING_DIR/sb-keys/db.crt
+	if [ ! -f "$SBKEY" ]; then
+		mkdir -p "$SEEDLING_DIR/sb-keys"
+		chmod 700 "$SEEDLING_DIR/sb-keys"
+		openssl req -newkey rsa:2048 -nodes -keyout "$SBKEY" -new -x509 \
+			-days 3650 -subj "/CN=klh-seedling-boot/" -out "$SBCERT"
+		echo "generated new Secure-Boot key pair in $SEEDLING_DIR/sb-keys/"
+	fi
+	sbsign --key "$SBKEY" --cert "$SBCERT" \
+		--out "$SEEDLING_DIR/out/bboot-wifi-$variant-signed.efi" "$src"
+	echo "signed -> $SEEDLING_DIR/out/bboot-wifi-$variant-signed.efi"
+	;;
+
+make-sb-vars)
+	# enroll our cert into an OVMF vars file (db+KEK+PK, SB on, no MS).
+	# NOTE: --enroll-cert --no-microsoft skips db — added explicitly (a
+	# missing db rejects EVERYTHING, found 2026-11-06).
+	command -v virt-fw-vars >/dev/null || { echo "need virt-firmware" >&2; exit 1; }
+	SBCERT=${SBCERT:-$SEEDLING_DIR/sb-keys/db.crt}
+	[ -f "$SBCERT" ] || { echo "missing $SBCERT (sign-uki generates it)" >&2; exit 1; }
+	out=${1:-$SEEDLING_DIR/qemu-m1/vars-sb.fd}
+	virt-fw-vars -i /usr/share/edk2/x64/OVMF_VARS.4m.fd -o "$out" \
+		--enroll-cert "$SBCERT" --no-microsoft --sb \
+		--add-db bedf0f4b-1f66-4b2c-a5f7-2b4a5c6d7e8f "$SBCERT"
+	echo "enrolled vars -> $out"
+	;;
+
 e2e)
 	exec bash "$repo/test/seedling-wifi/e2e.sh"
 	;;
