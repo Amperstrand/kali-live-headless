@@ -45,17 +45,23 @@ case "$variant" in
 		;;
 	fallback)
 		# dead server listed FIRST: the boot must survive via the second
-		# (the availability property, asserted by the fallback stage)
+		# (the availability property, asserted by the fallback stage).
+		# Each list entry needs its OWN scheme — the template prefixes
+		# the whole value once, a shared prefix left entry 2 scheme-less
+		# and bbootd died on a URL parse (found via the stage).
 		consoles="console=ttyS0,115200"
 		extra=""
-		server="$gateway:9999,$gateway:8443"
+		server=$gateway:8443
+		srv_list="https://$gateway:9999,https://$gateway:8443"
 		;;
 	pointer)
 		# relays-only: no pinned manifest — bbootd resolves the owner's
-		# signed pointer event (the remote-update path, asserted by the
-		# update stage)
+		# signed pointer event (the remote-update path). bb.d MUST match
+		# the d-tag the pointer was published with (bbootd's default is
+		# bboot:default, ours is bboot:m1 — mismatch = "no matching
+		# event", found via the update stage).
 		consoles="console=ttyS0,115200"
-		extra=""
+		extra="bb.d=bboot:m1"
 		server=$gateway:8443
 		;;
 	hw)
@@ -73,7 +79,7 @@ line=$(sed -e "s|@CONSOLES@|$consoles|" \
 	-e "s|@MANIFEST@|$MANIFEST|" \
 	-e "s|@NPUB@|$NPUB|" \
 	-e "s|@RELAYS@|wss://$server|" \
-	-e "s|@SERVERS@|https://$server|" "$tpl")
+	-e "s|@SERVERS@|${srv_list:-https://$server}|" "$tpl")
 if [ "$variant" = pointer ]; then
 	line=$(printf '%s' "$line" | sed 's|bb.manifest=[^ ]* ||')
 fi
