@@ -43,6 +43,21 @@ case "$variant" in
 		extra="bb.wifi.hwsim=1 bb.wifi.isolate=1"
 		server=$gateway:8443
 		;;
+	fallback)
+		# dead server listed FIRST: the boot must survive via the second
+		# (the availability property, asserted by the fallback stage)
+		consoles="console=ttyS0,115200"
+		extra=""
+		server="$gateway:9999,$gateway:8443"
+		;;
+	pointer)
+		# relays-only: no pinned manifest — bbootd resolves the owner's
+		# signed pointer event (the remote-update path, asserted by the
+		# update stage)
+		consoles="console=ttyS0,115200"
+		extra=""
+		server=$gateway:8443
+		;;
 	hw)
 		[ -n "${RELAY_HOST:-}" ] || { echo "hw variant needs RELAY_HOST" >&2; exit 1; }
 		consoles="console=ttyS0,115200 console=tty0 loglevel=7"
@@ -59,6 +74,9 @@ line=$(sed -e "s|@CONSOLES@|$consoles|" \
 	-e "s|@NPUB@|$NPUB|" \
 	-e "s|@RELAYS@|wss://$server|" \
 	-e "s|@SERVERS@|https://$server|" "$tpl")
+if [ "$variant" = pointer ]; then
+	line=$(printf '%s' "$line" | sed 's|bb.manifest=[^ ]* ||')
+fi
 line=$(echo "$line" | tr -s ' ' | sed 's| $||')
 
 # no placeholder may survive
