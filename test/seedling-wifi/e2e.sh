@@ -124,17 +124,131 @@ run_stage() {
 need
 
 # assert the artifacts exist (fail fast, no guessing); STAGES selects a subset
-STAGES=${STAGES:-assoc isolated no-radio nowifi}
+STAGES=${STAGES:-assoc isolated no-radio nowifi tamper}
 for s in $STAGES; do
 	case $s in
 	assoc) f=stick-hwsim.img ;;
 	isolated) f=stick-isolated.img ;;
 	no-radio) f=stick-qemu.img ;;
+	tamper) f=stick-qemu.img ;; # reuses the plain stick; corruption is server-side
 	nowifi) f=stick-nowifi.img ;;
 	*) say "unknown stage $s"; exit 2 ;;
 	esac
 	[ -s "$SEEDLING_DIR/e2e/$f" ] || { say "missing $f — run: klh-seedling-wifi.sh build-uki + build-stick per variant"; exit 2; }
 done
+
+tamper_restore() {
+	local tp
+	tp=$(pgrep -f bboot-testenv | head -1)
+	[ -n "$tp" ] && kill "$tp" 2>/dev/null
+	sleep 1
+	(cd "$SEEDLING_DIR" && nohup "${TAMPER_ARGV[@]}" > testenv-m1/testenv-lan.log 2>&1 &)
+	sleep 2
+	if pgrep -f bboot-testenv >/dev/null && ss -ltn | grep -q ':8443'; then
+		say "tamper: testenv restored clean"
+	else
+		say "tamper: WARNING — testenv restore failed; restart it manually"
+	fi
+}
+
+run_stage_tamper() {
+	local name=tamper serial="$LOGDIR/tamper-$TS.log"
+	local chunk0
+	chunk0=$(python3 -c "
+import json
+m = json.load(open('$SEEDLING_DIR/m1-rel-v2/$MANIFEST'))
+print(m['chunks'][0])")
+	if [ -z "$chunk0" ]; then
+		say "tamper: cannot read chunk list"
+		fail=$((fail + 1)); failed_stages+=(tamper); return 1
+	fi
+
+	local tp
+	tp=$(pgrep -f bboot-testenv | head -1)
+	if [ -z "$tp" ]; then
+		say "tamper: testenv not running"
+		fail=$((fail + 1)); failed_stages+=(tamper); return 1
+	fi
+	mapfile -t TAMPER_ARGV < <(tr '\0' '\n' < "/proc/$tp/cmdline")
+	kill "$tp" 2>/dev/null
+	sleep 1
+	(cd "$SEEDLING_DIR" && nohup "${TAMPER_ARGV[@]}" -tamper "$chunk0" > testenv-m1/testenv-tamper.log 2>&1 &)
+	sleep 2
+	if ! pgrep -af bboot-testenv | grep -q tamper; then
+		say "tamper: FAILED to start tampered testenv"
+		fail=$((fail + 1)); failed_stages+=(tamper); tamper_restore; return 1
+	fi
+	say "tamper: testenv serving chunk ${chunk0:0:12}… corrupted"
+
+	local rc=0
+	tamper_body "$serial" || rc=$?
+	kill "$(pgrep -f "qemu.*$serial" | head -1)" 2>/dev/null
+	tamper_restore
+	return $rc
+}
+
+tamper_body() {
+	local serial=$1
+	local vars="$LOGDIR/tamper-$TS.vars.fd"
+	rm -f "$serial" "$vars"
+	cp /usr/share/edk2/x64/OVMF_VARS.4m.fd "$vars"
+	timeout 900 qemu-system-x86_64 \
+		-m 2048 -smp 2 -enable-kvm \
+		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+		-drive if=pflash,format=raw,file="$vars" \
+		-drive file="$SEEDLING_DIR/e2e/stick-qemu.img",format=raw,if=virtio \
+		-display none -serial file:"$serial" \
+		-netdev user,id=n1 -device virtio-net-pci,netdev=n1 \
+		>/dev/null 2>&1 &
+	local qpid=$!
+
+	local uri="" waited=0
+	while [ $waited -lt 300 ]; do
+		uri=$(grep -m1 'nostrconnect://' "$serial" 2>/dev/null | sed 's/^bboot: //' |
+			sed 's|10\.0\.2\.2|127.0.0.1|g')
+		[ -n "$uri" ] && break
+		kill -0 $qpid 2>/dev/null || break
+		sleep 10; waited=$((waited + 10))
+	done
+	if [ -z "$uri" ]; then
+		say "tamper: FAILED — no unlock URI"
+		fail=$((fail + 1)); failed_stages+=(tamper); return 1
+	fi
+	BBOOT_NSEC=$(cat "$SEEDLING_DIR/.m1-nsec") \
+		SSL_CERT_FILE="$SEEDLING_DIR/testenv-m1/pki/ca.crt" \
+		timeout 60 "$SEEDLING_DIR/bin/bboot-testsigner" -timeout 45s -uri "$uri" \
+		>>"$LOGDIR/tamper-$TS.signer.log" 2>&1 || true
+	if ! grep -q 'released image key' "$LOGDIR/tamper-$TS.signer.log"; then
+		say "tamper: FAILED — signer never released"
+		fail=$((fail + 1)); failed_stages+=(tamper); return 1
+	fi
+
+	local evidence="" waited=0
+	while [ $waited -lt 240 ]; do
+		evidence=$(grep -E 'chunk [0-9]+: .*hash mismatch' "$serial" 2>/dev/null | head -2)
+		[ -n "$evidence" ] && break
+		kill -0 $qpid 2>/dev/null || break
+		sleep 10; waited=$((waited + 10))
+	done
+	if [ -z "$evidence" ]; then
+		say "tamper: FAILED — corrupted chunk was NOT detected. Serial tail:"
+		tail -6 "$serial" 2>/dev/null | sed 's/^/    /'
+		fail=$((fail + 1)); failed_stages+=(tamper); return 1
+	fi
+	say "tamper: corruption DETECTED (the core integrity property):"
+	printf '%s\n' "$evidence" | sed 's/^/    /'
+
+	# and it must NOT reach a login within 90s of detection
+	sleep 90
+	kill $qpid 2>/dev/null
+	if grep -q 'login:' "$serial"; then
+		say "tamper: FAILED — booted to login DESPITE corrupted chunk"
+		fail=$((fail + 1)); failed_stages+=(tamper); return 1
+	fi
+	say "tamper: PASS — tampered chunk refused, no login"
+	pass=$((pass + 1))
+	return 0
+}
 
 for st in $STAGES; do
 	case $st in
@@ -142,6 +256,7 @@ for st in $STAGES; do
 	isolated) run_stage isolated "$SEEDLING_DIR/e2e/stick-isolated.img" 'NOT reachable via' 1 'login:' ;;
 	no-radio) run_stage no-radio "$SEEDLING_DIR/e2e/stick-qemu.img" 'bboot-wifi: NO RADIO APPEARED' 1 'login:' ;;
 	nowifi) run_stage nowifi "$SEEDLING_DIR/e2e/stick-nowifi.img" 'bboot: image "m1"' 1 'login:' ;;
+	tamper) run_stage_tamper ;;
 	esac
 done
 # nowifi must show ZERO wifi-script lines — absence assert with non-empty

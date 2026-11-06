@@ -160,6 +160,37 @@ on physical possession rather than a pinned hash. Neither mode signs
 anything today; signing both (our own Secure-Boot keys, sbctl-style) would
 make them equivalent.
 
+## bbootd verification audit (read from source, proven by the tamper stage)
+
+What the boot actually verifies, per chunk, in order (cmd/bbootd/store.go,
+internal/image/image.go):
+
+1. **TLS** to the Blossom server (system CAs + the baked `extra-ca.pem`;
+   our testenv CA is the only trusted extra).
+2. HTTP 200 + a hard size cap (`chunk_size + 64`) — bounded memory.
+3. **SHA-256 of the served bytes must equal the manifest's chunk hash**
+   — content-addressed storage means tampered bytes cannot hash-match:
+   `chunk N: <server>: hash mismatch for <hash12>` (retrying).
+4. **AES-256-GCM open** with the image key, **AAD = (image_id, chunk
+   index)** — binds every ciphertext to its exact position in this exact
+   image: reordering, replaying a chunk into another slot, or splicing
+   images all fail the tag. A hash-matching-but-undecryptable blob is
+   treated as fatal (right blob, wrong key).
+5. Plaintext length must equal the manifest's `ChunkLen(i)`.
+
+The manifest itself is verified by its hash on the kernel cmdline; the
+image key is NIP-44-wrapped to the owner and only exists after the signer
+approves; fetch failures retry long (60 attempts) because a root filesystem
+should stall on network blips, not crash — and the tamper stage proves the
+whole chain end to end: corrupt one served chunk and the machine never
+reaches a login.
+
+Audit verdict: the chunk path is sound and conservatively written. The
+open items remain at the stick level (unsigned UKI — possession-trust,
+see the trust table) and the relay hop (NIP-46 over TLS to the testenv;
+production uses the private-relay + FIPS-delivery design in
+machine-identity-bootstrap.md).
+
 ## Security notes
 
 - The stick carries exactly one secret (the PSK) — theft of the stick
