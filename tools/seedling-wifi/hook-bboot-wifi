@@ -1,0 +1,58 @@
+#!/bin/sh
+# bboot-wifi initramfs hook: copy wpa_supplicant, iw, hostapd, all installed
+# firmware, and the wireless module stack into the initrd.
+# Installed by inject-wifi.sh (our overlay; Seedling's tree is untouched).
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+	prereqs) prereqs; exit 0 ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+for b in /sbin/wpa_supplicant /usr/sbin/wpa_supplicant; do
+	[ -x "$b" ] && copy_exec "$b"
+done
+for b in /sbin/iw /usr/sbin/iw; do
+	[ -x "$b" ] && copy_exec "$b"
+done
+[ -x /usr/sbin/hostapd ] && copy_exec /usr/sbin/hostapd
+
+# regulatory database + every installed firmware blob (the rootfs carries only
+# the Wi-Fi firmware packages, so this is bounded by that set)
+if [ -d /lib/firmware ]; then
+	mkdir -p "$DESTDIR/lib/firmware"
+	cp -a /lib/firmware/. "$DESTDIR/lib/firmware/"
+fi
+
+# the ENTIRE wireless driver tree (found 2026-11-05: MODULES=most does NOT
+# include drivers/net/wireless at all — a hand list missed rtw89_8852ae and
+# would have shipped ai-legion-small's radio dead). Every module the kernel
+# ships, ~25 MB compressed — cheap insurance.
+kroot=/lib/modules
+for kdir in "$kroot"/*/kernel; do
+	[ -d "$kdir/drivers/net/wireless" ] || continue
+	find "$kdir/drivers/net/wireless" -name '*.ko*' | while read -r ko; do
+		b=${ko##*/}; b=${b%%.ko*}
+		manual_add_modules "$b" 2>/dev/null || true
+	done
+done
+manual_add_modules cfg80211 mac80211 || true
+manual_add_modules mac80211_hwsim || true
+
+# mount the stick's ESP to read wifi.conf: vfat + its nls codepages, plus the
+# storage transports a real stick can hang off (usb-storage/uas/xhci, virtio
+# for QEMU). MODULES=most does NOT include vfat (found 2026-11-05: the mount
+# failed silently and the script reported 'no wifi.conf').
+for m in fat vfat nls_cp437 nls_iso8859_1 nls_ascii \
+	usb-storage uas xhci_pci ehci_pci \
+	virtio_blk virtio_pci; do
+	manual_add_modules "$m" 2>/dev/null || true
+done
+
+# WPA2 data-path crypto (CCMP/AES): without these the kernel REJECTS key
+# installation (nl80211 "key addition failed" — found via the hwsim test;
+# real hardware needs them just as much)
+for m in arc4 ecb cbc ccm cmac gcm aes_x86_64 aes_generic bridge; do
+	manual_add_modules "$m" 2>/dev/null || true
+done
