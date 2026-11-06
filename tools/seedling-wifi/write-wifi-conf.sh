@@ -4,8 +4,12 @@
 # Prompts for SSID and PSK — the PSK is read hidden, never appears in argv,
 # process lists, shell history, logs, or any repo file. Requires mtools and
 # the partition to be unmounted (mtools talks to the device directly).
+# --wpa3 emits a mixed WPA2/WPA3-SAE network block (ieee80211w=1) for APs
+# that require PMF; without it, plain WPA2-PSK (the common case).
 set -euo pipefail
-PART=${1:?usage: sudo write-wifi-conf.sh /dev/sdX1}
+WPA3=0
+if [ "${1:-}" = "--wpa3" ]; then WPA3=1; shift; fi
+PART=${1:?usage: sudo write-wifi-conf.sh [--wpa3] /dev/sdX1}
 [ -b "$PART" ] || { echo "not a block device: $PART" >&2; exit 1; }
 [ -w "$PART" ] || { echo "no write access to $PART — run me with sudo" >&2; exit 1; }
 if findmnt -rn "$PART" >/dev/null 2>&1; then
@@ -27,7 +31,12 @@ trap 'shred -u "$T" 2>/dev/null || rm -f "$T"' EXIT
 	printf 'network={\n'
 	printf '  ssid="%s"\n' "$(esc "$SSID")"
 	printf '  psk="%s"\n' "$(esc "$PSK")"
-	printf '  key_mgmt=WPA-PSK\n'
+	if [ "$WPA3" -eq 1 ]; then
+		printf '  key_mgmt=SAE WPA-PSK\n'
+		printf '  ieee80211w=1\n'
+	else
+		printf '  key_mgmt=WPA-PSK\n'
+	fi
 	printf '  scan_ssid=1\n'
 	printf '}\n'
 } > "$T"
