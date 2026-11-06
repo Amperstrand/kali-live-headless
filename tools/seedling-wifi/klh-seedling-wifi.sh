@@ -47,7 +47,7 @@ build-uki)
 	variant=qemu
 	[ "${1:-}" = "--variant" ] && variant=${2:?variant name}
 	case "$variant" in
-	qemu|hwsim|nowifi|isolated|hw) ;;
+	qemu|hwsim|nowifi|isolated|fallback|pointer|hw) ;;
 	*) echo "variant must be qemu|hwsim|nowifi|hw" >&2; exit 1 ;;
 	esac
 	mkdir -p "$SEEDLING_DIR/out" "$SEEDLING_DIR/cmdlines"
@@ -66,9 +66,11 @@ build-stick)
 	[ "${1:-}" = "--variant" ] && variant=${2:?variant name}
 	conf=${3:-$repo/test/seedling-wifi/fixtures/wifi-test.conf}
 	mkdir -p "$SEEDLING_DIR/e2e"
+	# 320M fits initrd(145M)+kernel(12M)+conf; smaller sticks boot faster
+	# in QEMU (the hw flash path keeps its own size)
 	bash "$here/make-wifi-stick.sh" \
 		"$SEEDLING_DIR/out/bboot-wifi-$variant.efi" "$conf" \
-		"$SEEDLING_DIR/e2e/stick-$variant.img" 768
+		"$SEEDLING_DIR/e2e/stick-$variant.img" 320
 	;;
 
 sign-uki)

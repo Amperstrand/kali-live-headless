@@ -43,6 +43,27 @@ case "$variant" in
 		extra="bb.wifi.hwsim=1 bb.wifi.isolate=1"
 		server=$gateway:8443
 		;;
+	fallback)
+		# dead server listed FIRST: the boot must survive via the second
+		# (the availability property, asserted by the fallback stage).
+		# Each list entry needs its OWN scheme — the template prefixes
+		# the whole value once, a shared prefix left entry 2 scheme-less
+		# and bbootd died on a URL parse (found via the stage).
+		consoles="console=ttyS0,115200"
+		extra=""
+		server=$gateway:8443
+		srv_list="https://$gateway:9999,https://$gateway:8443"
+		;;
+	pointer)
+		# relays-only: no pinned manifest — bbootd resolves the owner's
+		# signed pointer event (the remote-update path). bb.d MUST match
+		# the d-tag the pointer was published with (bbootd's default is
+		# bboot:default, ours is bboot:m1 — mismatch = "no matching
+		# event", found via the update stage).
+		consoles="console=ttyS0,115200"
+		extra="bb.d=bboot:m1"
+		server=$gateway:8443
+		;;
 	hw)
 		[ -n "${RELAY_HOST:-}" ] || { echo "hw variant needs RELAY_HOST" >&2; exit 1; }
 		consoles="console=ttyS0,115200 console=tty0 loglevel=7"
@@ -58,7 +79,10 @@ line=$(sed -e "s|@CONSOLES@|$consoles|" \
 	-e "s|@MANIFEST@|$MANIFEST|" \
 	-e "s|@NPUB@|$NPUB|" \
 	-e "s|@RELAYS@|wss://$server|" \
-	-e "s|@SERVERS@|https://$server|" "$tpl")
+	-e "s|@SERVERS@|${srv_list:-https://$server}|" "$tpl")
+if [ "$variant" = pointer ]; then
+	line=$(printf '%s' "$line" | sed 's|bb.manifest=[^ ]* ||')
+fi
 line=$(echo "$line" | tr -s ' ' | sed 's| $||')
 
 # no placeholder may survive
