@@ -35,21 +35,21 @@ CI lanes and, where physical, by `vm-check`/`hw-check`.
 
 ## Phase 3 — the runner fleet
 
-5. **Ephemeral/JIT runner investigation** — GitHub's guidance prefers
-   ephemeral; our persistent runners are acceptable *because* the guest
-   is disposable and secret-free, but single-use runners would remove the
-   class entirely. Decide with evidence, not vibes (note: a PAT in the
-   guest would weaken the model — document why-not if rejected).
-   → [#42](https://github.com/Amperstrand/kali-live-headless/issues/42)
-6. ~~**Extend the optimistic lane**~~ — **DONE, and hardened twice**:
-   ccid + micronuts fuzz nightlies green 4+ consecutive nights on the
-   fleet; the probe survived two real failure classes (dead-label queues
-   → own-repo signal + dark-detection, Oct 31; stopped-runner queues →
-   the fleet canary + `klh-runner-doctor`, Nov 5). The pattern is
-   documented in ops#43; two more orgs adopted the fleet unprompted
-   (androidpay, foundry). Remaining want: routing push legs, which
-   stays gated on owner appetite for public-repo push coverage.
-   → [#42](https://github.com/Amperstrand/kali-live-headless/issues/42)
+5. ~~**Ephemeral/JIT runner investigation**~~ — **DECIDED 2026-11-06:
+   stay persistent** ([the evidence](runner-ephemerality-decision.md)) —
+   utilization is ~6 jobs/week/repo, the cross-job-persistence threat is
+   already capped by disposable secret-free guests + no-fork-PR routing
+   + per-repo isolation, every observed fleet failure was operational
+   (better as doctor-watched long-lived units), and ephemeral needs
+   guest-held credentials (strictly weaker). Revisit triggers in the
+   doc. → [#42 closed](https://github.com/Amperstrand/kali-live-headless/issues/42)
+6. ~~**Extend the optimistic lane**~~ — **DONE, hardened twice, and
+   re-armable**: ccid + micronuts green **5+ consecutive nights**; the
+   probe survived dead-label queues (own-repo signal, Oct 31) and
+   stopped-runner queues (fleet canary + `klh-runner-doctor`, Nov 5);
+   the dark-lane deadlock got its human escape (`force_lane` dispatch
+   input — ccid #564 / micronuts #162 / esp-idf-hal #7, proven live on
+   esp-idf). Push-leg routing stays owner-gated.
 
 ## Phase 4 — fleet operations (new, 2026-11-05)
 
