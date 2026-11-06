@@ -1,0 +1,18 @@
+#!/bin/sh
+# bboot-wifi-report (init-bottom): after the whole boot settled, print which
+# interface carries the network — settles "did the wifi actually carry the
+# boot, or did the wired path take over?" on the console for analysis.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+	prereqs) prereqs; exit 0 ;;
+esac
+
+echo "bboot-wifi-report: final network state:" >&2
+ip -4 addr show 2>/dev/null | grep -E "^[0-9]+:|inet " | while IFS= read -r l; do echo "  $l" >&2; done
+ip route show 2>/dev/null | while IFS= read -r l; do echo "  $l" >&2; done
+for f in /run/net-*.conf; do
+	[ -f "$f" ] || continue
+	echo "  $(basename "$f"): $(grep -m1 IPV4ADDR= "$f" | cut -d= -f2-) $(grep -m1 PROTO= "$f" | cut -d= -f2-)" >&2
+done
+exit 0
