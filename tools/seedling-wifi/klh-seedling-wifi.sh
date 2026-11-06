@@ -66,9 +66,11 @@ build-stick)
 	[ "${1:-}" = "--variant" ] && variant=${2:?variant name}
 	conf=${3:-$repo/test/seedling-wifi/fixtures/wifi-test.conf}
 	mkdir -p "$SEEDLING_DIR/e2e"
+	# 320M fits initrd(145M)+kernel(12M)+conf; smaller sticks boot faster
+	# in QEMU (the hw flash path keeps its own size)
 	bash "$here/make-wifi-stick.sh" \
 		"$SEEDLING_DIR/out/bboot-wifi-$variant.efi" "$conf" \
-		"$SEEDLING_DIR/e2e/stick-$variant.img" 768
+		"$SEEDLING_DIR/e2e/stick-$variant.img" 320
 	;;
 
 sign-uki)
