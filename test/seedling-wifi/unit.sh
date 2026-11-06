@@ -122,12 +122,11 @@ if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null &&
 	LOOP=$(sudo -n losetup -f --show -o $((2048 * 512)) --sizelimit $((63 * 1024 * 1024)) "$BIN/stick.img" 2>/dev/null || true)
 	if [ -n "${LOOP:-}" ]; then
 		printf 'weird"ss\\id\npa$$w0rd"x8\n' |
-			PATH="$BIN2/shim:$PATH" bash "$here/write-wifi-conf.sh" "$LOOP" >/dev/null 2>&1
-		if [ -s "$CAP" ] && grep -q 'key_mgmt=WPA-PSK' "$CAP" && grep -q 'weird' "$CAP" &&
-			grep -q 'pa\$\$w0rd"x8' "$CAP" 2>/dev/null; then
-			ok "write-wifi-conf produces a wpa_supplicant config"
+			PATH="$BIN2/shim:$PATH" bash "$here/write-wifi-conf.sh" --wpa3 "$LOOP" >/dev/null 2>&1
+		if [ -s "$CAP" ] && grep -q 'key_mgmt=SAE WPA-PSK' "$CAP" && grep -q 'ieee80211w=1' "$CAP"; then
+			ok "write-wifi-conf --wpa3 emits SAE-mixed with PMF"
 		elif [ -s "$CAP" ]; then
-			ok "write-wifi-conf produces a wpa_supplicant config"
+			bad "write-wifi-conf --wpa3 missing SAE/PMF lines"
 		else
 			bad "write-wifi-conf produced no file"
 		fi
