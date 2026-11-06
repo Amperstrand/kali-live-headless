@@ -8,6 +8,19 @@ case "$1" in
 	prereqs) prereqs; exit 0 ;;
 esac
 
+# M2: publish the machine's birth event (stable npub from the hardware
+# serial). Best-effort: a birth failure must never block the boot.
+BBIRTH=/usr/local/sbin/bbirth
+if [ -x "$BBIRTH" ] || command -v bbirth >/dev/null 2>&1; then
+	[ -x "$BBIRTH" ] || BBIRTH=bbirth
+	BIRTH_RELAY=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^bb.relays=//p' | cut -d, -f1)
+	if [ -n "$BIRTH_RELAY" ]; then
+		KVER=$(uname -r 2>/dev/null || echo '?')
+		"$BBIRTH" -relay "$BIRTH_RELAY" "$KVER" >&2 || \
+			echo "bboot-birth: publish failed (boot continues)" >&2
+	fi
+fi
+
 echo "bboot-wifi-report: final network state:" >&2
 ip -4 addr show 2>/dev/null | grep -E "^[0-9]+:|inet " | while IFS= read -r l; do echo "  $l" >&2; done
 ip route show 2>/dev/null | while IFS= read -r l; do echo "  $l" >&2; done
