@@ -160,6 +160,43 @@ on physical possession rather than a pinned hash. Neither mode signs
 anything today; signing both (our own Secure-Boot keys, sbctl-style) would
 make them equivalent.
 
+## Secure Boot (proven in QEMU, 2026-11-06)
+
+Our own keys, our own firmware enrollment — the UKI is signed, the
+firmware verifies it, and possession-trust becomes measured-trust:
+
+```sh
+tools/seedling-wifi/klh-seedling-wifi.sh sign-uki --variant qemu   # keys in the WORKSPACE
+tools/seedling-wifi/klh-seedling-wifi.sh make-sb-vars              # enroll db+KEK+PK, SB on
+```
+
+QEMU recipe (the secboot OVMF build requires it, or the firmware dies
+before console init): `-machine q35,smm=on -global
+driver=cfi.pflash01,property=secure,value=on` + `OVMF_CODE.secboot.4m.fd`
++ the enrolled vars. The e2e `secureboot` stage asserts the full matrix:
+
+| binary | Secure Boot | result |
+|---|---|---|
+| our signed UKI | on | boots, unlocks, login |
+| unsigned UKI | on | `Access Denied -- rejected probably by Secure Boot` |
+| signed, one byte flipped | on | refused |
+
+Two traps on the way in: `virt-fw-vars --enroll-cert --no-microsoft`
+skips **db** (an empty db rejects everything, signed or not — add it
+explicitly), and the signing keys live in the workspace, never the repo.
+
+On real hardware the enrollment step is a one-time firmware action
+(MOK/sbctl-style) per machine; the signed stick then boots only there.
+
+## Dogfood of the upstream patch (local only, not sent)
+
+Branch `wifi-boot-dogfood` in the Seedling clone holds the upstream-shaped
+patch: `WIFI_BOOT=1` opt-in in their `build-rootfs.sh`, our three files in
+their `initramfs/` layout, packages via their existing `EXTRA_PACKAGES`
+knob. A rootfs+initrd built from that branch passes the assoc, no-radio
+and tamper stages — the patch is proven in their shape before anyone is
+asked to take it. Not pushed anywhere.
+
 ## bbootd verification audit (read from source, proven by the tamper stage)
 
 What the boot actually verifies, per chunk, in order (cmd/bbootd/store.go,
