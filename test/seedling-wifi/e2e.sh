@@ -127,7 +127,7 @@ run_stage() {
 need
 
 # assert the artifacts exist (fail fast, no guessing); STAGES selects a subset
-STAGES=${STAGES:-assoc isolated no-radio nowifi tamper secureboot birth}
+STAGES=${STAGES:-assoc isolated no-radio nowifi tamper secureboot birth fallback update}
 for s in $STAGES; do
 	case $s in
 	assoc) f=stick-hwsim.img ;;
@@ -135,7 +135,9 @@ for s in $STAGES; do
 	no-radio) f=stick-qemu.img ;;
 	tamper) f=stick-qemu.img ;;
 	secureboot) f=stick-qemu.img ;;
-	birth) f=stick-qemu.img ;; # reuses the plain stick; corruption is server-side
+	birth) f=stick-qemu.img ;;
+	fallback) f=stick-fallback.img ;;
+	update) f=stick-pointer.img ;; # reuses the plain stick; corruption is server-side
 	nowifi) f=stick-nowifi.img ;;
 	*) say "unknown stage $s"; exit 2 ;;
 	esac
@@ -481,7 +483,104 @@ run_stage_birth() {
 	pass=$((pass + 1))
 }
 
+# update stage (M5): the stick NEVER changes — the owner redirects the
+# machine to a new image by publishing one signed pointer event. Boots a
+# relays-only UKI (no pinned manifest), asserts the resolved image name,
+# republishes the pointer to a different image, boots again and asserts
+# the new name. Deterministic: resets the pointer to the original first.
+run_stage_update() {
+	local m1="369cf3551721f5fe74ebeb928069c31d04e23d8492079f69437823b6623969a9"
+	local m1v2="68474c6d0774b71f2b0904f6c4c77287530cc88271ae7dfa62fb50b11054e652"
+
+	publish_pointer() { # manifest
+		BBOOT_NSEC=$(cat "$SEEDLING_DIR/.m1-nsec") \
+			SSL_CERT_FILE="$SEEDLING_DIR/testenv-m1/pki/ca.crt" \
+			"$SEEDLING_DIR/bin/bboot" publish \
+			-relays wss://127.0.0.1:8443 -manifest "$1" \
+			-servers https://10.0.2.2:8443 -d bboot:m1 \
+			>>"$LOGDIR/update-$TS.publish.log" 2>&1
+	}
+
+	update_boot_once() { # tag
+		rm -f "$LOGDIR/update-$TS.$1.log" "$LOGDIR/update-$TS.$1.vars.fd"
+		cp /usr/share/edk2/x64/OVMF_VARS.4m.fd "$LOGDIR/update-$TS.$1.vars.fd"
+		timeout 900 qemu-system-x86_64 \
+			-m 2048 -smp 2 -enable-kvm \
+			-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+			-drive if=pflash,format=raw,file="$LOGDIR/update-$TS.$1.vars.fd" \
+			-drive file="$SEEDLING_DIR/e2e/stick-pointer.img",format=raw,if=virtio \
+			-display none -serial file:"$LOGDIR/update-$TS.$1.log" \
+			-netdev user,id=n1 -device virtio-net-pci,netdev=n1 \
+			>/dev/null 2>&1 &
+		UPDQ=$!
+	}
+
+	update_wait() { # log sentinel timeout
+		local waited=0 ev=""
+		while [ $waited -lt $3 ]; do
+			ev=$(grep -E "$2" "$1" 2>/dev/null | head -2)
+			[ -n "$ev" ] && return 0
+			kill -0 $UPDQ 2>/dev/null || break
+			sleep 10; waited=$((waited + 10))
+		done
+		return 1
+	}
+
+	update_signer() { # log
+		local uri="" waited=0
+		while [ $waited -lt 300 ]; do
+			uri=$(grep -m1 'nostrconnect://' "$1" 2>/dev/null | sed 's/^bboot: //' | sed 's|10\.0\.2\.2|127.0.0.1|g')
+			[ -n "$uri" ] && break
+			kill -0 $UPDQ 2>/dev/null || break
+			sleep 10; waited=$((waited + 10))
+		done
+		[ -n "$uri" ] || return 1
+		BBOOT_NSEC=$(cat "$SEEDLING_DIR/.m1-nsec") \
+			SSL_CERT_FILE="$SEEDLING_DIR/testenv-m1/pki/ca.crt" \
+			timeout 60 "$SEEDLING_DIR/bin/bboot-testsigner" -timeout 45s -uri "$uri" \
+			>>"$LOGDIR/update-$TS.signer.log" 2>&1 || true
+		grep -q 'released image key' "$LOGDIR/update-$TS.signer.log"
+	}
+
+	# deterministic start state: original pointer
+	publish_pointer "$m1" || { say "update: FAILED — could not reset the pointer"; fail=$((fail+1)); failed_stages+=(update); return 1; }
+
+	# boot 1: resolves the pointer, boots image "m1"
+	update_boot_once b1
+	if ! update_wait "$LOGDIR/update-$TS.b1.log" 'pointer .* published .* -> manifest 369cf355' 300; then
+		say "update: FAILED — pointer not resolved on boot 1"
+		tail -4 "$LOGDIR/update-$TS.b1.log" 2>/dev/null | sed 's/^/    /'
+		kill "$UPDQ" 2>/dev/null; fail=$((fail+1)); failed_stages+=(update); return 1
+	fi
+	say "update: boot 1 resolved the owner pointer -> m1"
+	update_signer "$LOGDIR/update-$TS.b1.log" || { say "update: FAILED — unlock 1"; kill "$UPDQ" 2>/dev/null; fail=$((fail+1)); failed_stages+=(update); return 1; }
+	update_wait "$LOGDIR/update-$TS.b1.log" 'login:' 300 || { say "update: FAILED — no login (boot 1)"; kill "$UPDQ" 2>/dev/null; fail=$((fail+1)); failed_stages+=(update); return 1; }
+	grep -m1 'bboot: image "m1"' "$LOGDIR/update-$TS.b1.log" | sed 's/^/    /'
+	kill "$UPDQ" 2>/dev/null
+
+	# the owner publishes ONE event; the same stick must now boot m1v2
+	publish_pointer "$m1v2" || { say "update: FAILED — could not publish the new pointer"; fail=$((fail+1)); failed_stages+=(update); return 1; }
+	grep -m1 'published' "$LOGDIR/update-$TS.publish.log" | tail -1 | sed 's/^/    /'
+
+	update_boot_once b2
+	if ! update_wait "$LOGDIR/update-$TS.b2.log" 'pointer .* published .* -> manifest 68474c6d' 300; then
+		say "update: FAILED — new pointer not resolved on boot 2"
+		tail -4 "$LOGDIR/update-$TS.b2.log" 2>/dev/null | sed 's/^/    /'
+		kill "$UPDQ" 2>/dev/null; fail=$((fail+1)); failed_stages+=(update); return 1
+	fi
+	update_signer "$LOGDIR/update-$TS.b2.log" || { say "update: FAILED — unlock 2"; kill "$UPDQ" 2>/dev/null; fail=$((fail+1)); failed_stages+=(update); return 1; }
+	update_wait "$LOGDIR/update-$TS.b2.log" 'bboot: image "m1v2"' 300 || {
+		say "update: FAILED — boot 2 did not use the new image"
+		grep -m1 'bboot: image' "$LOGDIR/update-$TS.b2.log" 2>/dev/null | sed 's/^/    /'
+		kill "$UPDQ" 2>/dev/null; fail=$((fail+1)); failed_stages+=(update); return 1; }
+	kill "$UPDQ" 2>/dev/null
+	say "update: PASS — same stick, new image via one signed pointer event:"
+	grep -m1 'bboot: image "m1v2"' "$LOGDIR/update-$TS.b2.log" | sed 's/^/    /'
+	pass=$((pass + 1))
+}
+
 for st in $STAGES; do
+
 	case $st in
 	assoc) run_stage assoc "$SEEDLING_DIR/e2e/stick-hwsim.img" 'committed' 1 'login:' ;;
 	isolated) run_stage isolated "$SEEDLING_DIR/e2e/stick-isolated.img" 'NOT reachable via' 1 'login:' ;;
@@ -490,6 +589,8 @@ for st in $STAGES; do
 	tamper) run_stage_tamper ;;
 	secureboot) run_stage_secureboot ;;
 	birth) run_stage_birth ;;
+	fallback) run_stage fallback "$SEEDLING_DIR/e2e/stick-fallback.img" 'bboot: image "m1"' 1 'login:' ;;
+	update) run_stage_update ;;
 	esac
 done
 # nowifi must show ZERO wifi-script lines — absence assert with non-empty

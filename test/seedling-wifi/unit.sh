@@ -84,10 +84,12 @@ echo "unit: render-cmdline"
 T=$(mktemp -d)
 export MANIFEST=aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111
 export NPUB=npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
-for v in qemu hwsim nowifi isolated; do
-	if bash "$here/render-cmdline.sh" "$v" "$T/$v.txt" >/dev/null 2>&1 &&
-		grep -q "bb.manifest=$MANIFEST" "$T/$v.txt"; then
-		ok "render $v"
+for v in qemu hwsim nowifi isolated fallback pointer; do
+	if bash "$here/render-cmdline.sh" "$v" "$T/$v.txt" >/dev/null 2>&1; then
+		case $v in
+		pointer) grep -q "bb.manifest=" "$T/$v.txt" && bad "pointer variant must not pin a manifest" || ok "render pointer (relay-resolved)" ;;
+		*) grep -q "bb.manifest=$MANIFEST" "$T/$v.txt" && ok "render $v" || bad "render $v" ;;
+		esac
 	else
 		bad "render $v"
 	fi
@@ -98,11 +100,14 @@ grep -q 'bb.nowifi=1' "$T/nowifi.txt" && ok "nowifi variant disables wifi" ||
 	bad "nowifi variant disables wifi"
 # the QEMU-family variants must carry the relay PORT (a portless URL once
 # made bbootd dial :443 and every stage died with connection refused)
-for v in qemu hwsim nowifi isolated; do
+for v in qemu hwsim nowifi isolated fallback pointer; do
 	grep -q ':8443' "$T/$v.txt" && ok "$v cmdline has relay port" || bad "$v cmdline has relay port"
 done
 ! grep -q 'tty0' "$T/qemu.txt" && ok "qemu variant stays serial-only" ||
 	bad "qemu variant stays serial-only"
+MANIFEST=$(MANIFEST=$MANIFEST) bash -c 'true'
+grep -q 'bb.servers=https://.*:9999,https://.*:8443' "$T/fallback.txt" && ok "fallback: dead server first, every entry schemed" || bad "fallback: dead server first, every entry schemed"
+grep -q 'bb.relays=wss://.*:8443$' <(tr ' ' '\n' < "$T/fallback.txt" | grep '^bb.relays=') && ok "fallback: relay stays on the live server" || bad "fallback: relay stays on the live server"
 RELAY_HOST=10.99.0.5 RELAY_PORT=9443 bash "$here/render-cmdline.sh" hw "$T/hw.txt" >/dev/null 2>&1
 grep -q 'console=ttyS0,115200 console=tty0' "$T/hw.txt" &&
 	grep -q 'https://10.99.0.5:9443' "$T/hw.txt" &&
