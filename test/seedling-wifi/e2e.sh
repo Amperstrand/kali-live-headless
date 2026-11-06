@@ -8,6 +8,9 @@
 # Every assert prints its evidence lines (never a bare count), the signer
 # is automated, and the verdict is a RESULT line per stage plus a summary.
 set -u
+here=$(cd "$(dirname "$0")/../../tools/seedling-wifi" && pwd)
+repo=$(cd "$here/../.." && pwd)
+
 SEEDLING_DIR=${SEEDLING_DIR:-$HOME/src/seedling-m1}
 ENV_FILE=${ENV_FILE:-$SEEDLING_DIR/wifi-env.sh}
 # shellcheck disable=SC1090 # workspace env file is intentionally non-constant
@@ -124,13 +127,15 @@ run_stage() {
 need
 
 # assert the artifacts exist (fail fast, no guessing); STAGES selects a subset
-STAGES=${STAGES:-assoc isolated no-radio nowifi tamper}
+STAGES=${STAGES:-assoc isolated no-radio nowifi tamper secureboot birth}
 for s in $STAGES; do
 	case $s in
 	assoc) f=stick-hwsim.img ;;
 	isolated) f=stick-isolated.img ;;
 	no-radio) f=stick-qemu.img ;;
-	tamper) f=stick-qemu.img ;; # reuses the plain stick; corruption is server-side
+	tamper) f=stick-qemu.img ;;
+	secureboot) f=stick-qemu.img ;;
+	birth) f=stick-qemu.img ;; # reuses the plain stick; corruption is server-side
 	nowifi) f=stick-nowifi.img ;;
 	*) say "unknown stage $s"; exit 2 ;;
 	esac
@@ -250,6 +255,232 @@ tamper_body() {
 	return 0
 }
 
+# secureboot stage: prove the signing chain end to end under OVMF's
+# secboot build (q35 + SMM + secure pflash). Three boots: our signed UKI
+# must reach a login; the unsigned UKI and a one-byte-tampered signed UKI
+# must both be explicitly refused by the firmware. Keys live in the
+# workspace; this stage generates them if absent via the driver.
+run_stage_secureboot() {
+	command -v sbsign >/dev/null || { say "secureboot: sbsign missing (sbsigntools)"; fail=$((fail+1)); failed_stages+=(secureboot); return 1; }
+	command -v virt-fw-vars >/dev/null || { say "secureboot: virt-fw-vars missing (virt-firmware)"; fail=$((fail+1)); failed_stages+=(secureboot); return 1; }
+	[ -f /usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd ] || { say "secureboot: secboot OVMF missing"; fail=$((fail+1)); failed_stages+=(secureboot); return 1; }
+
+	bash "$here/klh-seedling-wifi.sh" sign-uki --variant qemu >/dev/null 2>&1 ||
+		{ say "secureboot: sign-uki failed"; fail=$((fail+1)); failed_stages+=(secureboot); return 1; }
+	bash "$here/klh-seedling-wifi.sh" make-sb-vars "$SEEDLING_DIR/qemu-m1/vars-sb.fd" >/dev/null 2>&1 ||
+		{ say "secureboot: make-sb-vars failed"; fail=$((fail+1)); failed_stages+=(secureboot); return 1; }
+	bash "$here/make-wifi-stick.sh" "$SEEDLING_DIR/out/bboot-wifi-qemu-signed.efi" \
+		"$repo/test/seedling-wifi/fixtures/wifi-test.conf" "$SEEDLING_DIR/e2e/stick-sb.img" 768 >/dev/null
+
+	# tampered copy: one flipped byte in the middle of the signed UKI
+	python3 - "$SEEDLING_DIR/out/bboot-wifi-qemu-signed.efi" /tmp/bboot-sb-tampered.efi <<'PYT'
+import sys
+d = bytearray(open(sys.argv[1], "rb").read())
+d[len(d)//2] ^= 0xFF
+open(sys.argv[2], "wb").write(d)
+PYT
+	bash "$here/make-wifi-stick.sh" /tmp/bboot-sb-tampered.efi \
+		"$repo/test/seedling-wifi/fixtures/wifi-test.conf" /tmp/stick-sb-tampered.img 768 >/dev/null
+
+	sb_boot() { # img serial
+		rm -f "$2"
+		cp "$SEEDLING_DIR/qemu-m1/vars-sb.fd" "$SEEDLING_DIR/qemu-m1/vars-sb-active.fd"
+		timeout 420 qemu-system-x86_64 \
+			-machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on \
+			-m 2048 -smp 2 -enable-kvm \
+			-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd \
+			-drive if=pflash,format=raw,file="$SEEDLING_DIR/qemu-m1/vars-sb-active.fd" \
+			-drive file="$1",format=raw,if=virtio \
+			-display none -serial file:"$2" \
+			-netdev user,id=n1 -device virtio-net-pci,netdev=n1 \
+			>/dev/null 2>&1 &
+		SBQ=$!
+	}
+
+	# 1. signed must boot, unlock, login
+	sb_boot "$SEEDLING_DIR/e2e/stick-sb.img" "$LOGDIR/secureboot-$TS.signed.log"
+	local uri="" waited=0
+	while [ $waited -lt 300 ]; do
+		uri=$(grep -m1 'nostrconnect://' "$LOGDIR/secureboot-$TS.signed.log" 2>/dev/null | sed 's/^bboot: //' | sed 's|10\.0\.2\.2|127.0.0.1|g')
+		[ -n "$uri" ] && break
+		kill -0 $SBQ 2>/dev/null || break
+		sleep 10; waited=$((waited + 10))
+	done
+	if [ -z "$uri" ]; then
+		say "secureboot: FAILED — signed UKI never reached the QR"
+		tail -4 "$LOGDIR/secureboot-$TS.signed.log" 2>/dev/null | sed 's/^/    /'
+		fail=$((fail+1)); failed_stages+=(secureboot); kill "$SBQ" 2>/dev/null; return 1
+	fi
+	BBOOT_NSEC=$(cat "$SEEDLING_DIR/.m1-nsec") \
+		SSL_CERT_FILE="$SEEDLING_DIR/testenv-m1/pki/ca.crt" \
+		timeout 60 "$SEEDLING_DIR/bin/bboot-testsigner" -timeout 45s -uri "$uri" \
+		>>"$LOGDIR/secureboot-$TS.signer.log" 2>&1 || true
+	grep -q 'released image key' "$LOGDIR/secureboot-$TS.signer.log" || {
+		say "secureboot: FAILED — signer never released (signed boot)"
+		fail=$((fail+1)); failed_stages+=(secureboot); kill "$SBQ" 2>/dev/null; return 1
+	}
+	waited=0
+	while [ $waited -lt 300 ]; do
+		grep -q 'login:' "$LOGDIR/secureboot-$TS.signed.log" 2>/dev/null && break
+		kill -0 $SBQ 2>/dev/null || break
+		sleep 10; waited=$((waited + 10))
+	done
+	if ! grep -q 'login:' "$LOGDIR/secureboot-$TS.signed.log"; then
+		say "secureboot: FAILED — signed UKI booted but never reached login"
+		fail=$((fail+1)); failed_stages+=(secureboot); kill "$SBQ" 2>/dev/null; return 1
+	fi
+	kill "$SBQ" 2>/dev/null
+	say "secureboot: SIGNED UKI boots under enforcement (login reached)"
+
+	# 2+3. unsigned and tampered must be explicitly refused
+	local neg n img refused kernel
+	for neg in "unsigned:$SEEDLING_DIR/e2e/stick-qemu.img" "tampered:/tmp/stick-sb-tampered.img"; do
+		n=${neg%%:*}; img=${neg#*:}
+		sb_boot "$img" "$LOGDIR/secureboot-$TS.$n.log"
+		waited=0
+		while [ $waited -lt 180 ]; do
+			grep -q 'rejected probably by Secure Boot' "$LOGDIR/secureboot-$TS.$n.log" 2>/dev/null && break
+			kill -0 $SBQ 2>/dev/null || break
+			sleep 10; waited=$((waited + 10))
+		done
+		refused=$(grep -c 'rejected probably by Secure Boot' "$LOGDIR/secureboot-$TS.$n.log" 2>/dev/null)
+		kernel=$(grep -c 'Command line' "$LOGDIR/secureboot-$TS.$n.log" 2>/dev/null)
+		kill "$SBQ" 2>/dev/null
+		if [ "$refused" -ge 1 ] && [ "$kernel" -eq 0 ]; then
+			say "secureboot: $n UKI refused by firmware (kernel boots: $kernel)"
+		else
+			say "secureboot: FAILED — $n UKI not properly refused (refused=$refused kernel=$kernel)"
+			grep -m2 'BdsDxe' "$LOGDIR/secureboot-$TS.$n.log" 2>/dev/null | sed 's/^/    /'
+			fail=$((fail+1)); failed_stages+=(secureboot); return 1
+		fi
+	done
+	say "secureboot: PASS — signed boots, unsigned and tampered refused"
+	pass=$((pass + 1))
+}
+
+# birth stage (M2+M3): boot with a UNIQUE -smbios serial; the machine must
+# publish a signed kind-30078 birth event with that serial (id-verified by
+# the listener), report itself UNCLAIMED, then the owner claims it and a
+# second boot must publish under the SAME pubkey and acknowledge the claim.
+run_stage_birth() {
+	local serial="KLH-BIRTH-$TS"
+	local listeners=()
+	local pubkeys=""
+
+	birth_boot_once() { # tag serial log
+		rm -f "$3" "$LOGDIR/birth-$TS.$1.vars.fd"
+		cp /usr/share/edk2/x64/OVMF_VARS.4m.fd "$LOGDIR/birth-$TS.$1.vars.fd"
+		timeout 900 qemu-system-x86_64 \
+			-m 2048 -smp 2 -enable-kvm \
+			-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+			-drive if=pflash,format=raw,file="$LOGDIR/birth-$TS.$1.vars.fd" \
+			-drive file="$SEEDLING_DIR/e2e/stick-qemu.img",format=raw,if=virtio \
+			-smbios "type=1,serial=$2" \
+			-display none -serial file:"$3" \
+			-netdev user,id=n1 -device virtio-net-pci,netdev=n1 \
+			>/dev/null 2>&1 &
+		BIRTHQ=$!
+	}
+
+	birth_unlock_and_login() { # log
+		local uri="" waited=0
+		while [ $waited -lt 300 ]; do
+			uri=$(grep -m1 'nostrconnect://' "$1" 2>/dev/null | sed 's/^bboot: //' | sed 's|10\.0\.2\.2|127.0.0.1|g')
+			[ -n "$uri" ] && break
+			kill -0 $BIRTHQ 2>/dev/null || break
+			sleep 10; waited=$((waited + 10))
+		done
+		[ -n "$uri" ] || return 1
+		BBOOT_NSEC=$(cat "$SEEDLING_DIR/.m1-nsec") \
+			SSL_CERT_FILE="$SEEDLING_DIR/testenv-m1/pki/ca.crt" \
+			timeout 60 "$SEEDLING_DIR/bin/bboot-testsigner" -timeout 45s -uri "$uri" \
+			>>"$LOGDIR/birth-$TS.signer.log" 2>&1 || true
+		grep -q 'released image key' "$LOGDIR/birth-$TS.signer.log" || return 1
+		waited=0
+		while [ $waited -lt 300 ]; do
+			grep -q 'login:' "$1" 2>/dev/null && return 0
+			kill -0 $BIRTHQ 2>/dev/null || break
+			sleep 10; waited=$((waited + 10))
+		done
+		return 1
+	}
+
+	local round
+	for round in 1 2; do
+		local lf="$LOGDIR/birth-$TS.listen$round.jsonl"
+		# -u: unbuffered — the stage greps this file while we run
+		python3 -u "$repo/test/seedling-wifi/relay-listen.py" \
+			"$SEEDLING_DIR/testenv-m1/pki/ca.crt" \
+			wss://127.0.0.1:8443 '[30078]' 420 "$serial" >"$lf" 2>/dev/null &
+		listeners+=($!)
+
+		birth_boot_once "r$round" "$serial" "$LOGDIR/birth-$TS.r$round.log"
+		if ! birth_unlock_and_login "$LOGDIR/birth-$TS.r$round.log"; then
+			say "birth: FAILED — round $round did not reach login"
+			tail -4 "$LOGDIR/birth-$TS.r$round.log" 2>/dev/null | sed 's/^/    /'
+			kill "$BIRTHQ" "${listeners[@]}" 2>/dev/null
+			fail=$((fail + 1)); failed_stages+=(birth); return 1
+		fi
+		kill "$BIRTHQ" 2>/dev/null
+
+		# the birth event should arrive within ~90s of login (init-bottom runs first)
+		local found=""
+		for _ in $(seq 1 12); do
+			found=$(grep -F "\"$serial\"" "$lf" 2>/dev/null | grep '"kind": 30078' | head -1)
+			[ -n "$found" ] && break
+			sleep 10
+		done
+		if [ -z "$found" ]; then
+			say "birth: FAILED — no birth event for $serial on the relay (round $round)"
+			kill "${listeners[@]}" 2>/dev/null
+			fail=$((fail + 1)); failed_stages+=(birth); return 1
+		fi
+		local pk
+		pk=$(printf '%s' "$found" | python3 -c 'import json,sys; print(json.load(sys.stdin)["pubkey"])')
+		if [ -z "$pubkeys" ]; then
+			pubkeys=$pk
+			say "birth: round 1 published (pubkey ${pk:0:16}…, id-verified):"
+			# M3: unclaimed first, then the owner claims, round 2 must see it
+			if ! grep -q 'bboot-birth: unclaimed' "$LOGDIR/birth-$TS.r1.log"; then
+				say "birth: FAILED — round 1 did not report unclaimed"
+				kill "${listeners[@]}" 2>/dev/null
+				fail=$((fail + 1)); failed_stages+=(birth); return 1
+			fi
+			local npub
+			npub=$(grep -m1 'bboot-birth: machine.*announced as' "$LOGDIR/birth-$TS.r1.log" | grep -o 'npub1[a-z0-9]*')
+			if ! BBOOT_NSEC=$(cat "$SEEDLING_DIR/.m1-nsec") \
+				SSL_CERT_FILE="$SEEDLING_DIR/testenv-m1/pki/ca.crt" \
+				"$SEEDLING_DIR/bin/bclaim" -relay wss://127.0.0.1:8443 -machine "$npub" \
+				>>"$LOGDIR/birth-$TS.claim.log" 2>&1; then
+				say "birth: FAILED — bclaim errored"
+				tail -2 "$LOGDIR/birth-$TS.claim.log" | sed 's/^/    /'
+				kill "${listeners[@]}" 2>/dev/null
+				fail=$((fail + 1)); failed_stages+=(birth); return 1
+			fi
+			say "birth: owner claimed the machine:"
+			grep -m1 'bclaim:' "$LOGDIR/birth-$TS.claim.log" | sed 's/^/    /'
+		elif [ "$pk" != "$pubkeys" ]; then
+			say "birth: FAILED — pubkey changed between boots ($pubkeys vs $pk)"
+			kill "${listeners[@]}" 2>/dev/null
+			fail=$((fail + 1)); failed_stages+=(birth); return 1
+		else
+			say "birth: round 2 SAME pubkey — identity is stable for the serial"
+			if grep -q 'bboot-birth: claimed by' "$LOGDIR/birth-$TS.r2.log"; then
+				say "birth: machine acknowledges the claim:"
+				grep -m1 'bboot-birth: claimed by' "$LOGDIR/birth-$TS.r2.log" | sed 's/^/    /'
+			else
+				say "birth: FAILED — round 2 did not acknowledge the claim"
+				kill "${listeners[@]}" 2>/dev/null
+				fail=$((fail + 1)); failed_stages+=(birth); return 1
+			fi
+		fi
+		printf '%s\n' "$found" | sed 's/^/    /'
+		kill "${listeners[$((round - 1))]}" 2>/dev/null
+	done
+	say "birth: PASS — stable identity + full birth→claim→acknowledge loop"
+	pass=$((pass + 1))
+}
+
 for st in $STAGES; do
 	case $st in
 	assoc) run_stage assoc "$SEEDLING_DIR/e2e/stick-hwsim.img" 'committed' 1 'login:' ;;
@@ -257,6 +488,8 @@ for st in $STAGES; do
 	no-radio) run_stage no-radio "$SEEDLING_DIR/e2e/stick-qemu.img" 'bboot-wifi: NO RADIO APPEARED' 1 'login:' ;;
 	nowifi) run_stage nowifi "$SEEDLING_DIR/e2e/stick-nowifi.img" 'bboot: image "m1"' 1 'login:' ;;
 	tamper) run_stage_tamper ;;
+	secureboot) run_stage_secureboot ;;
+	birth) run_stage_birth ;;
 	esac
 done
 # nowifi must show ZERO wifi-script lines — absence assert with non-empty
