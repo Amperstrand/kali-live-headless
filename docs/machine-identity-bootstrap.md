@@ -740,7 +740,15 @@ Original plan (kept for reference):: Birth event (the machine announces)
 - Test: 2-3 QEMU machines running different images, audit shows all
 - **Deliverable**: `fleet-audit` output showing the fleet
 
-### M5: Signed-pointer updates (the Seedling loop)
+### M5: Signed-pointer update — **PROVEN IN QEMU 2026-11-06** ✅
+
+The stick carries no image pin at all (relays-only cmdline + `bb.d`): the
+machine resolves the owner's signed pointer event at every boot. The e2e
+`update` stage proves the complete loop — boot resolves pointer → image
+"m1"; the owner publishes one new pointer; the SAME stick boots "m1v2".
+A deployment is now: flash once, update forever by signing one event.
+
+Original plan (kept for reference):: Signed-pointer updates (the Seedling loop)
 - The owner publishes a new pointer; the machine fetches and reboots
 - Test: machine boots image A, pointer changes to image B, reboot → B
 - **Deliverable**: an update cycle with no stick contact

@@ -188,6 +188,26 @@ explicitly), and the signing keys live in the workspace, never the repo.
 On real hardware the enrollment step is a one-time firmware action
 (MOK/sbctl-style) per machine; the signed stick then boots only there.
 
+## Availability + remote update (proven 2026-11-06)
+
+Two more properties, both now executable asserts:
+
+- **fallback**: the cmdline lists a dead server FIRST — the boot survives
+  via the second (per-chunk GetAny). The stage caught a real render bug on
+  its first run: a comma list needs a scheme on EVERY entry (one prefix
+  for the whole value left entry 2 scheme-less and bbootd refused to
+  boot).
+- **update (M5)**: a relays-only UKI carries no pinned manifest — bbootd
+  resolves the owner's SIGNED pointer event (`bb.d` must match the
+  published d-tag; bbootd's default is `bboot:default`). The stage boots
+  image "m1", the owner publishes ONE pointer event pointing at a second
+  image ("m1v2"), and the SAME stick boots the new image on the next
+  boot. The stick is a placeholder; the owner's key is the deployment.
+
+Suite: **unit 51/0, e2e 10/0** (assoc · isolated · no-radio · nowifi ·
+tamper · secureboot · birth · fallback · update · absence). Test sticks
+are 320 MB (the hw flash keeps its own size).
+
 ## Dogfood of the upstream patch (local only, not sent)
 
 Branch `wifi-boot-dogfood` in the Seedling clone holds the upstream-shaped
