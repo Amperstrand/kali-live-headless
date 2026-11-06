@@ -26,8 +26,16 @@ proceeds unchanged (Ethernet, USB dongle, phone tether all still work).
 
 ## The overlay (consume/contribute, no fork)
 
-Seedling's tree is untouched. Everything lives in `wifi-overlay/` in the
-M1 workspace and post-processes their artifacts:
+> **2026-11-06**: the overlay is now VERSIONED IN THIS REPO at
+> `tools/seedling-wifi/` with a unit suite (45+ asserts) and a four-stage
+> QEMU e2e suite — `klh-seedling-wifi.sh unit|e2e|flash`. The stages prove:
+> wireless-only commit (hwsim AP bridged to the wired NIC), lease-but-no-
+> relay fallback, no-radio diagnostics, zero-impact-when-disabled. The DHCP
+> fast path now uses klibc ipconfig + a DEVICE export so configure_networking
+> skips its retry loop; udhcpc is gone. Tests caught a portless relay URL,
+> docker-cp nesting, and a bb.nowifi token mismatch — each is now an assert.
+
+Seedling's tree is untouched. Everything post-processes their artifacts:
 
 | file | role |
 |---|---|

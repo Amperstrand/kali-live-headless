@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# render-cmdline.sh VARIANT OUTFILE
+# Render cmdline.template for a variant. Values come from the environment
+# (wifi-env.sh in the workspace — outside this repo) so that no machine
+# addresses or identities are committed here. Variants:
+#   qemu    serial console, relay at QEMU's constant user-net gateway
+#   hwsim   qemu + bb.wifi.hwsim=1 (self-contained radio test)
+#   nowifi  qemu + bb.nowifi=1 (wifi path disabled — regression stage)
+#   hw      display console primary + serial kernel messages + loglevel=7,
+#           relay at RELAY_HOST from the environment
+set -euo pipefail
+variant=${1:?variant: qemu|hwsim|nowifi|hw}
+out=${2:?output file}
+
+here=$(cd "$(dirname "$0")" && pwd)
+tpl=$here/cmdline.template
+
+# defaults (QEMU constants — safe to have here)
+MANIFEST=${MANIFEST:?set MANIFEST (workspace wifi-env.sh)}
+NPUB=${NPUB:?set NPUB (workspace wifi-env.sh)}
+gateway=10.0.2.2
+
+case "$variant" in
+	qemu)
+		consoles="console=ttyS0,115200"
+		extra=""
+		server=$gateway:8443
+		;;
+	hwsim)
+		consoles="console=ttyS0,115200"
+		extra="bb.wifi.hwsim=1"
+		server=$gateway:8443
+		;;
+	nowifi)
+		consoles="console=ttyS0,115200"
+		extra="bb.nowifi=1"
+		server=$gateway:8443
+		;;
+	isolated)
+		# hwsim with an isolated AP net: wifi DHCP works but the relay is
+		# unreachable — proves the clean fallback to wired
+		consoles="console=ttyS0,115200"
+		extra="bb.wifi.hwsim=1 bb.wifi.isolate=1"
+		server=$gateway:8443
+		;;
+	hw)
+		[ -n "${RELAY_HOST:-}" ] || { echo "hw variant needs RELAY_HOST" >&2; exit 1; }
+		consoles="console=ttyS0,115200 console=tty0 loglevel=7"
+		extra=""
+		server=$RELAY_HOST
+		[ -n "${RELAY_PORT:-}" ] && server="$RELAY_HOST:$RELAY_PORT"
+		;;
+	*) echo "unknown variant: $variant" >&2; exit 1 ;;
+esac
+
+line=$(sed -e "s|@CONSOLES@|$consoles|" \
+	-e "s|@EXTRA@|$extra|" \
+	-e "s|@MANIFEST@|$MANIFEST|" \
+	-e "s|@NPUB@|$NPUB|" \
+	-e "s|@RELAYS@|wss://$server|" \
+	-e "s|@SERVERS@|https://$server|" "$tpl")
+line=$(echo "$line" | tr -s ' ' | sed 's| $||')
+
+# no placeholder may survive
+if echo "$line" | grep -q '@[A-Z]*@'; then
+	echo "unsubstituted placeholder in: $line" >&2
+	exit 1
+fi
+
+printf '%s\n' "$line" > "$out"
+echo "rendered $variant -> $out"
