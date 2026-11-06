@@ -145,6 +145,21 @@ Fixes shipped in stick v3, each QEMU-proven:
    - the USB enumeration wait for the BBOOT ESP went 10s → 30s
    - every step announces itself (`wi-fi boot stick v3 ... starting`)
 
+## Trust model per stick mode (audited 2026-11-06)
+
+| property | 64 MB iPXE stick | Wi-Fi UKI stick (this) | full KLH ISO |
+|---|---|---|---|
+| kernel+initrd integrity | SHA-256 **pinned in the iPXE script**; fetched over CA-pinned TLS; a malicious server cannot substitute them | **possession of the stick** (unsigned UKI; Secure-Boot signing is the natural upgrade) | possession |
+| rootfs integrity | manifest hash pinned on the cmdline + per-chunk SHA-256 | same | squashfs inside the ISO |
+| secrets on stick | none | exactly one: the WiFi PSK | WiFi PSK + console password |
+| pre-unlock network exposure | server addresses only | SSID+PSK used at association; everything else public/encrypted | none (offline) |
+| lost-stick damage | server addresses leak | the PSK joins the WiFi (same class as KLHCONFIG) | the PSK joins the WiFi |
+
+The one property the UKI stick trades away vs iPXE: kernel integrity rests
+on physical possession rather than a pinned hash. Neither mode signs
+anything today; signing both (our own Secure-Boot keys, sbctl-style) would
+make them equivalent.
+
 ## Security notes
 
 - The stick carries exactly one secret (the PSK) — theft of the stick
