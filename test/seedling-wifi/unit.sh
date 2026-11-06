@@ -106,7 +106,8 @@ done
 ! grep -q 'tty0' "$T/qemu.txt" && ok "qemu variant stays serial-only" ||
 	bad "qemu variant stays serial-only"
 MANIFEST=$(MANIFEST=$MANIFEST) bash -c 'true'
-grep -q '9999,.*8443' "$T/fallback.txt" && ok "fallback variant lists the dead server first" || bad "fallback variant lists the dead server first"
+grep -q 'bb.servers=https://.*:9999,https://.*:8443' "$T/fallback.txt" && ok "fallback: dead server first, every entry schemed" || bad "fallback: dead server first, every entry schemed"
+grep -q 'bb.relays=wss://.*:8443$' <(tr ' ' '\n' < "$T/fallback.txt" | grep '^bb.relays=') && ok "fallback: relay stays on the live server" || bad "fallback: relay stays on the live server"
 RELAY_HOST=10.99.0.5 RELAY_PORT=9443 bash "$here/render-cmdline.sh" hw "$T/hw.txt" >/dev/null 2>&1
 grep -q 'console=ttyS0,115200 console=tty0' "$T/hw.txt" &&
 	grep -q 'https://10.99.0.5:9443' "$T/hw.txt" &&
