@@ -55,6 +55,41 @@ done
 
 say "wi-fi boot stick v4 (overlay 2026-11-06)"
 
+# Remote-unlock setup ("leave the stick in the machine" mode): route all
+# further init output through tee so the unlock URI lands in
+# /run/bboot.log (bbootd honors BBOOT_CONSOLE=stdout; we are sourced into
+# /init's shell, so the exec + export reach it). A poller then ships the
+# URI to the relay, NIP-44-encrypted to the owner — bunlock on the
+# workstation answers it. bb.noremote=1 disables the whole mechanism.
+if [ "${BB_REMOTE:-1}" = 1 ] && [ ! -e /run/bboot.out ] && command -v mkfifo >/dev/null 2>&1; then
+	for x in $(cat /proc/cmdline 2>/dev/null); do
+		case "$x" in bb.noremote=1) BB_REMOTE=0 ;; esac
+	done
+fi
+if [ "${BB_REMOTE:-1}" = 1 ] && [ ! -e /run/bboot.out ] && command -v mkfifo >/dev/null 2>&1; then
+	mkfifo /run/bboot.out 2>/dev/null || true
+	if [ -p /run/bboot.out ]; then
+		tee /run/bboot.log < /run/bboot.out > /dev/console 2>&1 &
+		exec >/run/bboot.out 2>&1
+		export BBOOT_CONSOLE=stdout
+		say "remote-unlock: output teed to /run/bboot.log (BBOOT_CONSOLE=stdout)"
+		(
+			R=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^bb.relays=//p' | cut -d, -f1)
+			OWNER=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^bb.npub=//p' | cut -d, -f1)
+			i=0
+			while [ $i -lt 450 ]; do
+				URI=$(grep -o 'nostrconnect://[^ ]*' /run/bboot.log 2>/dev/null | head -1)
+				if [ -n "$URI" ] && [ -x /usr/local/sbin/bannounce ]; then
+					/usr/local/sbin/bannounce -relay "$R" -owner "$OWNER" -uri "$URI" > /dev/console 2>&1
+					exit 0
+				fi
+				sleep 2
+				i=$((i + 1))
+			done
+		) &
+	fi
+fi
+
 CONF=""
 if [ -n "$WIFI_SPEC" ] && [ -f "$WIFI_SPEC" ]; then
 	CONF="$WIFI_SPEC"

@@ -127,7 +127,7 @@ run_stage() {
 need
 
 # assert the artifacts exist (fail fast, no guessing); STAGES selects a subset
-STAGES=${STAGES:-assoc isolated no-radio nowifi tamper secureboot birth fallback update}
+STAGES=${STAGES:-assoc isolated no-radio nowifi tamper secureboot birth fallback update remote}
 for s in $STAGES; do
 	case $s in
 	assoc) f=stick-hwsim.img ;;
@@ -137,7 +137,8 @@ for s in $STAGES; do
 	secureboot) f=stick-qemu.img ;;
 	birth) f=stick-qemu.img ;;
 	fallback) f=stick-fallback.img ;;
-	update) f=stick-pointer.img ;; # reuses the plain stick; corruption is server-side
+	update) f=stick-pointer.img ;;
+	remote) f=stick-remote.img ;; # reuses the plain stick; corruption is server-side
 	nowifi) f=stick-nowifi.img ;;
 	*) say "unknown stage $s"; exit 2 ;;
 	esac
@@ -579,6 +580,80 @@ run_stage_update() {
 	pass=$((pass + 1))
 }
 
+
+# remote stage ("leave the stick in the machine" mode): NO serial-driven
+# signer at all. bunlock runs on the host; the machine tees its output,
+# banounce ships the unlock URI NIP-44-encrypted to the owner, bunlock
+# decrypts and answers. Assert: announce sent, UNLOCKED on the host,
+# login on the machine.
+run_stage_remote() {
+	local serial="$LOGDIR/remote-$TS.log"
+	local vars="$LOGDIR/remote-$TS.vars.fd"
+	rm -f "$serial" "$vars" "$LOGDIR/remote-$TS.unlock.log"
+	cp /usr/share/edk2/x64/OVMF_VARS.4m.fd "$vars"
+
+	BBOOT_NSEC=$(cat "$SEEDLING_DIR/.m1-nsec") \
+		SSL_CERT_FILE="$SEEDLING_DIR/testenv-m1/pki/ca.crt" \
+		"$SEEDLING_DIR/bin/bunlock" -relay wss://127.0.0.1:8443 \
+		-nsec-file "$SEEDLING_DIR/.m1-nsec" \
+		-signer "$SEEDLING_DIR/bin/bboot-testsigner" \
+		-map 10.0.2.2=127.0.0.1 -once >"$LOGDIR/remote-$TS.unlock.log" 2>&1 &
+	local unlockpid=$!
+
+	timeout 900 qemu-system-x86_64 \
+		-m 2048 -smp 2 -enable-kvm \
+		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+		-drive if=pflash,format=raw,file="$vars" \
+		-drive file="$SEEDLING_DIR/e2e/stick-remote.img",format=raw,if=virtio \
+		-display none -serial file:"$serial" \
+		-netdev user,id=n1 -device virtio-net-pci,netdev=n1 \
+		>/dev/null 2>&1 &
+	local qpid=$!
+
+	local waited=0
+	while [ $waited -lt 420 ]; do
+		grep -q 'bannounce: unlock offer sent' "$serial" 2>/dev/null && break
+		kill -0 $qpid 2>/dev/null || break
+		sleep 10; waited=$((waited + 10))
+	done
+	if ! grep -q 'bannounce: unlock offer sent' "$serial"; then
+		say "remote: FAILED — the machine never announced its unlock URI"
+		tail -4 "$serial" 2>/dev/null | sed 's/^/    /'
+		kill $qpid $unlockpid 2>/dev/null
+		fail=$((fail + 1)); failed_stages+=(remote); return 1
+	fi
+	say "remote: machine shipped its unlock offer (encrypted to the owner)"
+
+	waited=0
+	while [ $waited -lt 300 ]; do
+		grep -q 'bunlock: UNLOCKED' "$LOGDIR/remote-$TS.unlock.log" 2>/dev/null && break
+		kill -0 $unlockpid 2>/dev/null || break
+		sleep 10; waited=$((waited + 10))
+	done
+	if ! grep -q 'bunlock: UNLOCKED' "$LOGDIR/remote-$TS.unlock.log"; then
+		say "remote: FAILED — bunlock never completed. Its log:"
+		tail -4 "$LOGDIR/remote-$TS.unlock.log" 2>/dev/null | sed 's/^/    /'
+		kill $qpid $unlockpid 2>/dev/null
+		fail=$((fail + 1)); failed_stages+=(remote); return 1
+	fi
+	say "remote: bunlock decrypted + answered autonomously:"
+
+	waited=0
+	while [ $waited -lt 300 ]; do
+		grep -q 'login:' "$serial" 2>/dev/null && break
+		kill -0 $qpid 2>/dev/null || break
+		sleep 10; waited=$((waited + 10))
+	done
+	kill $qpid $unlockpid 2>/dev/null
+	if grep -q 'login:' "$serial"; then
+		say "remote: PASS — booted and unlocked with ZERO interaction"
+		pass=$((pass + 1))
+	else
+		say "remote: FAILED — unlocked but never reached login"
+		fail=$((fail + 1)); failed_stages+=(remote)
+	fi
+}
+
 for st in $STAGES; do
 
 	case $st in
@@ -591,6 +666,7 @@ for st in $STAGES; do
 	birth) run_stage_birth ;;
 	fallback) run_stage fallback "$SEEDLING_DIR/e2e/stick-fallback.img" 'bboot: image "m1"' 1 'login:' ;;
 	update) run_stage_update ;;
+	remote) run_stage_remote ;;
 	esac
 done
 # nowifi must show ZERO wifi-script lines — absence assert with non-empty

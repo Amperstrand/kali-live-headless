@@ -39,6 +39,9 @@ install -D -m 0755 "$SRC/hook-bboot-wifi" \
 if [ -x /src/bin/bbirth ]; then
 	install -D -m 0755 /src/bin/bbirth "$ROOT/usr/local/sbin/bbirth"
 fi
+if [ -x /src/bin/bannounce ]; then
+	install -D -m 0755 /src/bin/bannounce "$ROOT/usr/local/sbin/bannounce"
+fi
 install -D -m 0755 "$SRC/script-bboot-wifi" \
 	"$ROOT/etc/initramfs-tools/scripts/init-premount/bboot-wifi"
 
