@@ -25,6 +25,31 @@ mkfifo /run/bboot.out 2>/dev/null || exec /sbin/bbootd.real "$@"
 R=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^bb.relays=//p' | cut -d, -f1)
 OWNER=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^bb.npub=//p' | cut -d, -f1)
 
+# the ANNOUNCER: fully detached (no fifo fds — blocking it can stall bbootd
+# through the fifo, which is exactly how the hwsim chunk-storm regression
+# happened), polls for the captured URI, retries through bridge congestion
+if [ -n "$R" ] && [ -x /usr/local/sbin/bannounce ]; then
+	(
+		n=0
+		while [ ! -s /run/bboot.uri ] && [ $n -lt 300 ]; do
+			sleep 2
+			n=$((n + 1))
+		done
+		[ -s /run/bboot.uri ] || exit 0
+		URI=$(cat /run/bboot.uri)
+		a=0
+		while [ $a -lt 5 ]; do
+			if timeout 25 /usr/local/sbin/bannounce -relay "$R" -owner "$OWNER" -uri "$URI"; then
+				exit 0
+			fi
+			a=$((a + 1))
+			sleep 5
+		done
+		echo "bboot-wifi: announce gave up after $a attempts (boot continues)"
+		exit 1
+	) </dev/null >/dev/console 2>&1 &
+fi
+
 # reader FIRST: the exec below opens the fifo for write, which blocks
 # until a reader exists — forking the reader after the exec deadlocks.
 (
@@ -34,10 +59,9 @@ OWNER=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^bb.npub=//p' | cut -d, -f1)
 		case "$l" in
 		*nostrconnect://*)
 			URI=$(printf '%s' "$l" | grep -o 'nostrconnect://[^ ]*' | head -1)
-			if [ -n "$URI" ] && [ -x /usr/local/sbin/bannounce ]; then
-				echo "bboot-wifi: unlock-reader invoking banounce" > /dev/console 2>&1
-				timeout 25 /usr/local/sbin/bannounce -relay "$R" -owner "$OWNER" -uri "$URI" > /dev/console 2>&1
-				echo "bboot-wifi: banounce rc=$?" > /dev/console 2>&1
+			if [ -n "$URI" ]; then
+				printf '%s\n' "$URI" > /run/bboot.uri
+				echo "bboot-wifi: unlock URI captured (announce detached)" > /dev/console 2>&1
 			fi
 			;;
 		esac
