@@ -1,0 +1,49 @@
+#!/bin/sh
+# bbootd wrapper (remote-unlock, "leave the stick in the machine" mode).
+# Installed by hook-bboot-wifi as /sbin/bbootd; the real binary is
+# /sbin/bbootd.real. Captures bbootd's stdout through a fifo (bbootd
+# honors BBOOT_CONSOLE=stdout — set here, on the exec line, because
+# premount-script exports do NOT cross the subshell boundary), mirrors
+# every line to the console, and ships the unlock URI to the relay
+# NIP-44-encrypted to the owner (bunlock on the workstation answers it).
+# bb.noremote=1 on the kernel cmdline disables the whole mechanism.
+set -u
+
+if [ -e /run/bboot.remote-done ] || [ ! -x /sbin/bbootd.real ]; then
+	exec /sbin/bbootd.real "$@"
+fi
+: > /run/bboot.remote-done
+
+case " $(cat /proc/cmdline 2>/dev/null) " in
+*" bb.noremote=1 "*) exec /sbin/bbootd.real "$@" ;;
+esac
+
+mkdir -p /run 2>/dev/null
+mkfifo /run/bboot.out 2>/dev/null || exec /sbin/bbootd.real "$@"
+[ -p /run/bboot.out ] || exec /sbin/bbootd.real "$@"
+
+R=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^bb.relays=//p' | cut -d, -f1)
+OWNER=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^bb.npub=//p' | cut -d, -f1)
+
+# reader FIRST: the exec below opens the fifo for write, which blocks
+# until a reader exists — forking the reader after the exec deadlocks.
+(
+	i=0
+	while IFS= read -r l; do
+		printf '%s\n' "$l" > /dev/console 2>&1
+		case "$l" in
+		*nostrconnect://*)
+			URI=$(printf '%s' "$l" | grep -o 'nostrconnect://[^ ]*' | head -1)
+			if [ -n "$URI" ] && [ -x /usr/local/sbin/bannounce ]; then
+				echo "bboot-wifi: unlock-reader invoking banounce" > /dev/console 2>&1
+				timeout 25 /usr/local/sbin/bannounce -relay "$R" -owner "$OWNER" -uri "$URI" > /dev/console 2>&1
+				echo "bboot-wifi: banounce rc=$?" > /dev/console 2>&1
+			fi
+			;;
+		esac
+		i=$((i + 1))
+	done < /run/bboot.out
+) &
+
+exec >/run/bboot.out 2>&1
+BBOOT_CONSOLE=stdout exec /sbin/bbootd.real "$@"

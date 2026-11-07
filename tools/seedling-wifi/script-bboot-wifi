@@ -55,6 +55,12 @@ done
 
 say "wi-fi boot stick v4 (overlay 2026-11-06)"
 
+# Remote-unlock setup ("leave the stick in the machine" mode): route all
+# further init output through tee so the unlock URI lands in
+# /run/bboot.log (bbootd honors BBOOT_CONSOLE=stdout; we are sourced into
+# /init's shell, so the exec + export reach it). A poller then ships the
+# URI to the relay, NIP-44-encrypted to the owner — bunlock on the
+# workstation answers it. bb.noremote=1 disables the whole mechanism.
 CONF=""
 if [ -n "$WIFI_SPEC" ] && [ -f "$WIFI_SPEC" ]; then
 	CONF="$WIFI_SPEC"
@@ -89,9 +95,8 @@ fi
 say "config found"
 
 # --- hwsim self-test (bb.wifi.hwsim=1): two virtual radios, hostapd as a
-# WPA2-PSK AP on the first, wpa_supplicant on the second using the stick's
-# own wifi.conf. Proves the whole Wi-Fi path (driver -> scan -> associate)
-# in QEMU without physical hardware. Fixture PSK matches the test stick.
+# remote-unlock is handled by the /sbin/bbootd wrapper (hook installs it)
+
 # enumerate wifi interfaces by sysfs, never by name: predictable udev names
 # (wlp3s0, enp2s0 — active in this initrd, seen on real hardware 2026-11-06)
 # mean wlan* globs find NOTHING. phy80211 marks mac80211 devices; the
