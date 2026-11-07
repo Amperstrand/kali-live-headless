@@ -43,6 +43,13 @@ case "$variant" in
 		extra="bb.wifi.hwsim=1 bb.wifi.isolate=1"
 		server=$gateway:8443
 		;;
+	remote)
+		# identical transport to qemu; the remote-unlock machinery in the
+		# initramfs (tee + banounce) + bunlock on the host do the rest
+		consoles="console=ttyS0,115200"
+		extra=""
+		server=$gateway:8443
+		;;
 	fallback)
 		# dead server listed FIRST: the boot must survive via the second
 		# (the availability property, asserted by the fallback stage).
