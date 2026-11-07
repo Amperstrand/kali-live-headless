@@ -734,7 +734,20 @@ Original plan (kept for reference):: Birth event (the machine announces)
 - Test: boot → birth → claim → machine shows "owned by <npub>"
 - **Deliverable**: the full handshake, tested in QEMU
 
-### M4: Attestation (continuous fleet audit)
+### M4: Fleet audit — **PROVEN 2026-11-07** ✅
+
+`bfleet` (cmd/bfleet on the dogfood branch) lists every machine that has
+ever announced a birth: npub, serial, hostname, kernel, born-at, and the
+claim state (owner npub + time). Grouping happens client-side (the relay
+ignores tag filters — and claim events carry machine tags too, which the
+naive parser swallowed: claims looked absent until the case order was
+fixed). No key needed — it reads public events. The `fleet` e2e stage
+proves the owner-side loop without a boot: birth a machine host-side,
+claim it, and the registry must show it claimed. With this, all of
+M1–M5 except real-hardware validation are executable asserts:
+**unit 53/0, e2e 12/0.**
+
+Original plan (kept for reference):: Attestation (continuous fleet audit)
 - The machine publishes attest events on every boot + a timer
 - A `fleet-audit` tool lists all machines and their running hashes
 - Test: 2-3 QEMU machines running different images, audit shows all
