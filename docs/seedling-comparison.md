@@ -370,3 +370,22 @@ logic and unattended-boot posture for their converted images. The first
 contribution (the KLH_DEB_POOL fix) is already on our side; the
 docs/kali.md naming note is a one-line upstream comment when a channel
 exists.
+
+
+## The line between the projects (contract, 2026-11-07)
+
+Rule of thumb: **if it is about BOOTING, it belongs upstream; if it is
+about OUR MLEET of machines, it belongs here; if it is about both, it
+starts here and is offered upstream.**
+
+| | Seedling (theirs) | kali-live-headless (ours) |
+|---|---|---|
+| owns | the MEDIUM: how any machine boots from the network — bbootd, the chunk protocol (SHA-256 + AES-GCM with AAD), the NIP-46 unlock, pointer events, Blossom/relay wire behavior, the minimal rootfs + 64 MB iPXE stick | the FLEET + the PRODUCT: what our machines are (rootfs/provision stack), how they are operated (Wi-Fi boot, remote-unlock, machine identity/claims, Secure Boot keys, fleet audit, the whole test discipline) |
+| we consume | exactly three inputs (`out/vmlinuz`, `out/initrd.img`, `work-*/rootfs/`) through two documented seams (chroot `/etc/initramfs-tools` hooks + premount scripts), the wire protocols, and their Go module for our helper binaries | nothing flows the other way unless offered |
+| we contribute | — | Wi-Fi boot (hook + premount script + the d-tag/scheme lessons), machine identity primitives (bbirth/bclaim), the QEMU proof harness (hwsim AP bridged to the NIC, the e2e stage shape), and the hardware-boot lessons (console=tty0, predictable names, rfkill, crypto modules) |
+| border cases | their `internal/` packages are imported by our tools — bbirth/bclaim are generic identity (upstream candidates); banounce/bunlock are fleet ops that need a shared lib or stay here on the dogfood branch | our overlay never modifies their tree; the dogfood branch is the staging area for everything we offer |
+
+Failure domains respect the same line: a broken fetch/verify/chunk bug is
+an upstream bug (we file it, we carry a patch on the dogfood branch); a
+broken association/diagnostic/identity behavior is ours; the contract
+itself (inputs/seams) is asserted by `inject-wifi.sh` failing loudly.
