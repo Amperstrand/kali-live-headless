@@ -71,6 +71,16 @@ case "$variant" in
 		extra="bb.d=bboot:m1"
 		server=$gateway:8443
 		;;
+	hwsafe)
+		# hw console + the remote-unlock wrapper DISABLED: identical to
+		# the long-proven pre-wrapper boot path (the wrapper stalls chunk
+		# serving on the hwsim bridge — open item; real-hw wifi is a
+		# different data path, but flash-proven beats flash-novel)
+		consoles="console=ttyS0,115200 console=tty0 loglevel=7"
+		extra="bb.noremote=1"
+		server=$RELAY_HOST
+		[ -n "${RELAY_PORT:-}" ] && server="$RELAY_HOST:$RELAY_PORT"
+		;;
 	hw)
 		[ -n "${RELAY_HOST:-}" ] || { echo "hw variant needs RELAY_HOST" >&2; exit 1; }
 		consoles="console=ttyS0,115200 console=tty0 loglevel=7"
