@@ -43,6 +43,13 @@ case "$variant" in
 		extra="bb.wifi.hwsim=1 bb.wifi.isolate=1"
 		server=$gateway:8443
 		;;
+	remote)
+		# identical transport to qemu; the remote-unlock machinery in the
+		# initramfs (tee + banounce) + bunlock on the host do the rest
+		consoles="console=ttyS0,115200"
+		extra=""
+		server=$gateway:8443
+		;;
 	fallback)
 		# dead server listed FIRST: the boot must survive via the second
 		# (the availability property, asserted by the fallback stage).
@@ -63,6 +70,16 @@ case "$variant" in
 		consoles="console=ttyS0,115200"
 		extra="bb.d=bboot:m1"
 		server=$gateway:8443
+		;;
+	hwsafe)
+		# hw console + the remote-unlock wrapper DISABLED: identical to
+		# the long-proven pre-wrapper boot path (the wrapper stalls chunk
+		# serving on the hwsim bridge — open item; real-hw wifi is a
+		# different data path, but flash-proven beats flash-novel)
+		consoles="console=ttyS0,115200 console=tty0 loglevel=7"
+		extra="bb.noremote=1"
+		server=$RELAY_HOST
+		[ -n "${RELAY_PORT:-}" ] && server="$RELAY_HOST:$RELAY_PORT"
 		;;
 	hw)
 		[ -n "${RELAY_HOST:-}" ] || { echo "hw variant needs RELAY_HOST" >&2; exit 1; }
