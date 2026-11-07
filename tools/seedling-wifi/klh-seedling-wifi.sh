@@ -111,6 +111,9 @@ make-sb-vars)
 e2e)
 	exec bash "$repo/test/seedling-wifi/e2e.sh"
 	;;
+preflight)
+	exec bash "$here/preflight.sh" "${1:-}" "${2:-}"
+	;;
 
 flash)
 	dev=${1:?device, e.g. /dev/sdb}

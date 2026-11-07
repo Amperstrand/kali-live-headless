@@ -20,6 +20,17 @@ done
 [ -x /usr/local/sbin/bbirth ] && copy_exec /usr/local/sbin/bbirth
 [ -x /usr/local/sbin/bannounce ] && copy_exec /usr/local/sbin/bannounce
 
+# remote-unlock wrapper: our hook runs AFTER theirs (alphabetical), so
+# /sbin/bbootd is already in DESTDIR — rename it and put the wrapper in
+# its place. The wrapper sets BBOOT_CONSOLE on its own exec line (env
+# from premount scripts does not cross the subshell boundary).
+if [ -x "$DESTDIR/sbin/bbootd" ] && [ ! -e "$DESTDIR/sbin/bbootd.real" ]; then
+	mv "$DESTDIR/sbin/bbootd" "$DESTDIR/sbin/bbootd.real"
+	install -m 0755 /etc/initramfs-tools/bbootd-wrapper "$DESTDIR/sbin/bbootd" 2>/dev/null ||
+		cp /etc/initramfs-tools/bbootd-wrapper "$DESTDIR/sbin/bbootd"
+	chmod 0755 "$DESTDIR/sbin/bbootd"
+fi
+
 # regulatory database + every installed firmware blob (the rootfs carries only
 # the Wi-Fi firmware packages, so this is bounded by that set)
 if [ -d /lib/firmware ]; then
