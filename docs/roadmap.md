@@ -123,7 +123,7 @@ vm-store (restored + wired), zstd squashfs experiment (measured — see
 
 ## Seedling lane (2026-11-07)
 - M1 medium ✅ · M2 birth ✅ · M3 claim ✅ · M5 signed-pointer update ✅ (all QEMU)
-- M4 fleet audit — open
+- M4 fleet audit ✅ (bfleet registry view + e2e stage, 2026-11-07)
 - Wi-Fi boot stick: repo-versioned overlay, unit 53/0 + e2e 10/11 (open: #76 wrapper regression)
 - Secure Boot: proven in QEMU (signed/unsigned/tampered matrix); real-hw enrollment pending
 - Remote-unlock: loop proven (remote e2e); wrapper regression blocks shipping it ON the stick (#76)

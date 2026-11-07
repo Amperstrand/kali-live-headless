@@ -127,7 +127,7 @@ run_stage() {
 need
 
 # assert the artifacts exist (fail fast, no guessing); STAGES selects a subset
-STAGES=${STAGES:-assoc isolated no-radio nowifi tamper secureboot birth fallback update remote}
+STAGES=${STAGES:-assoc isolated no-radio nowifi tamper secureboot birth fallback update remote fleet}
 for s in $STAGES; do
 	case $s in
 	assoc) f=stick-hwsim.img ;;
@@ -138,11 +138,14 @@ for s in $STAGES; do
 	birth) f=stick-qemu.img ;;
 	fallback) f=stick-fallback.img ;;
 	update) f=stick-pointer.img ;;
-	remote) f=stick-remote.img ;; # reuses the plain stick; corruption is server-side
+	remote) f=stick-remote.img ;;
+	fleet) f=none ;; # no boot: host-side registry proof # reuses the plain stick; corruption is server-side
 	nowifi) f=stick-nowifi.img ;;
 	*) say "unknown stage $s"; exit 2 ;;
 	esac
-	[ -s "$SEEDLING_DIR/e2e/$f" ] || { say "missing $f — run: klh-seedling-wifi.sh build-uki + build-stick per variant"; exit 2; }
+	if [ "$f" != none ]; then
+		[ -s "$SEEDLING_DIR/e2e/$f" ] || { say "missing $f — run: klh-seedling-wifi.sh build-uki + build-stick per variant"; exit 2; }
+	fi
 done
 
 tamper_restore() {
@@ -654,6 +657,73 @@ run_stage_remote() {
 	fi
 }
 
+
+# fleet stage (M4): the registry view. No boot needed — the birth/claim
+# machinery is the same code the boot uses; this proves the OWNER-SIDE
+# registry: birth a machine host-side, claim it, and bfleet must list it
+# with the right serial and claim state.
+run_stage_fleet() {
+	local serial="KLH-FLEET-$TS"
+	local sf="$LOGDIR/fleet-$TS.serial"
+	printf '%s\n' "$serial" > "$sf"
+
+	if ! env BBOOT_NSEC="$(cat "$SEEDLING_DIR/.m1-nsec")" \
+		SSL_CERT_FILE="$SEEDLING_DIR/testenv-m1/pki/ca.crt" \
+		"$SEEDLING_DIR/bin/bbirth" \
+			-relay wss://127.0.0.1:8443 -serial "$sf" \
+			>"$LOGDIR/fleet-$TS.birth.log" 2>&1; then
+		say "fleet: FAILED — host-side birth failed"
+		tail -2 "$LOGDIR/fleet-$TS.birth.log" | sed 's/^/    /'
+		fail=$((fail + 1)); failed_stages+=(fleet); return 1
+	fi
+	local npub
+	npub=$(grep -o 'npub1[a-z0-9]*' "$LOGDIR/fleet-$TS.birth.log" | head -1)
+	[ -n "$npub" ] || { say "fleet: FAILED — no npub from bbirth"; fail=$((fail+1)); failed_stages+=(fleet); return 1; }
+
+	if ! env BBOOT_NSEC="$(cat "$SEEDLING_DIR/.m1-nsec")" \
+		SSL_CERT_FILE="$SEEDLING_DIR/testenv-m1/pki/ca.crt" \
+		"$SEEDLING_DIR/bin/bclaim" \
+			-relay wss://127.0.0.1:8443 -machine "$npub" \
+			>>"$LOGDIR/fleet-$TS.claim.log" 2>&1; then
+		say "fleet: FAILED — claim failed"
+		fail=$((fail + 1)); failed_stages+=(fleet); return 1
+	fi
+
+	local reg
+	reg=$(SSL_CERT_FILE="$SEEDLING_DIR/testenv-m1/pki/ca.crt" \
+		"$SEEDLING_DIR/bin/bfleet" -relay wss://127.0.0.1:8443 --json 2>/dev/null)
+	local found
+	found=$(printf '%s' "$reg" | python3 -c "
+import json,sys
+serial='$serial'
+for m in json.load(sys.stdin):
+    if m.get('serial')==serial:
+        print(m.get('claimed_by','')!='' and 'yes' or 'no')
+        break
+" 2>/dev/null)
+	case "$found" in
+	yes)
+		say "fleet: PASS — registry shows $serial claimed:"
+		printf '%s\n' "$reg" | python3 -c "
+import json,sys
+serial='$serial'
+for m in json.load(sys.stdin):
+    if m.get('serial')==serial:
+        print('   npub', m['npub'][:24]+'…', '| claimed by', m.get('claimed_by','')[:24]+'…')
+" 2>/dev/null
+		pass=$((pass + 1))
+		;;
+	no)
+		say "fleet: FAILED — listed but unclaimed"
+		fail=$((fail + 1)); failed_stages+=(fleet)
+		;;
+	*)
+		say "fleet: FAILED — serial never appeared in the registry"
+		fail=$((fail + 1)); failed_stages+=(fleet)
+		;;
+	esac
+}
+
 for st in $STAGES; do
 
 	case $st in
@@ -667,6 +737,7 @@ for st in $STAGES; do
 	fallback) run_stage fallback "$SEEDLING_DIR/e2e/stick-fallback.img" 'bboot: image "m1"' 1 'login:' ;;
 	update) run_stage_update ;;
 	remote) run_stage_remote ;;
+	fleet) run_stage_fleet ;;
 	esac
 done
 # nowifi must show ZERO wifi-script lines — absence assert with non-empty
