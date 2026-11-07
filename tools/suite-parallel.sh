@@ -27,7 +27,8 @@ while [ $# -gt 0 ]; do
     --iso)    ISO_ARG="--iso ${2:?}"; shift ;;
     --jobs)   JOBS="${2:?}"; shift ;;
     --stages) STAGES="${2:?}"; shift ;;
-    *) echo "unknown arg: $1" >&2; exit 2 ;;
+    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown arg: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift
 done

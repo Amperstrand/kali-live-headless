@@ -22,7 +22,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --host) HOST=$2; shift 2 ;;
     --lan)  LAN_CIDR=$2; shift 2 ;;
-    *) echo "unknown: $1"; exit 1 ;;
+    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown: $1 (see --help)"; exit 1 ;;
   esac
 done
 [ -n "$HOST" ] || { echo "usage: $0 --host <stick>"; exit 1; }
