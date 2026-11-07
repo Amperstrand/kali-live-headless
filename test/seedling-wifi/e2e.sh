@@ -115,6 +115,16 @@ run_stage() {
 	if [ -n "$evidence" ]; then
 		say "stage $name: PASS:"
 		printf '%s\n' "$evidence" | sed 's/^/    /'
+		if [ "$name" = assoc ]; then
+			local deauths
+			deauths=$(grep -c 'deauthenticated' "$serial" 2>/dev/null || true)
+			if [ "$deauths" -gt 0 ]; then
+				say "stage $name: FAILED — $deauths deauth(s) despite reaching login (the #76 class: link flap under load)"
+				fail=$((fail + 1)); failed_stages+=("$name")
+				return 1
+			fi
+			say "stage $name: zero deauths (link stable under the chunk storm)"
+		fi
 		pass=$((pass + 1))
 	else
 		say "stage $name: FAILED — no '$post' after unlock. Serial tail:"
@@ -443,6 +453,20 @@ run_stage_birth() {
 		fi
 		local pk
 		pk=$(printf '%s' "$found" | python3 -c 'import json,sys; print(json.load(sys.stdin)["pubkey"])')
+		# address discovery: the birth event must carry the guest's IP
+		local ipfield
+		ipfield=$(printf '%s' "$found" | python3 -c '
+import json,sys
+ev=json.load(sys.stdin)
+ips=json.loads(ev["content"]).get("ips") or []
+print(next((x for x in ips if x.startswith("10.0.2.")), ""))' 2>/dev/null)
+		if [ -n "$ipfield" ]; then
+			say "birth: address discovery — event carries $ipfield"
+		else
+			say "birth: FAILED — birth event carries no 10.0.2.* address"
+			kill "${listeners[@]}" 2>/dev/null
+			fail=$((fail + 1)); failed_stages+=(birth); return 1
+		fi
 		if [ -z "$pubkeys" ]; then
 			pubkeys=$pk
 			say "birth: round 1 published (pubkey ${pk:0:16}…, id-verified):"
