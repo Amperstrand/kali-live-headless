@@ -23,7 +23,17 @@ REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$REPO_DIR/lib/common.sh"
 
 OUT_DIR="${OUT_DIR:-$REPO_DIR/output}"
-ISO_NAME="kali-linux-rolling-live-amd64.iso"
+ISO_NAME="${ISO_NAME:-kali-linux-rolling-live-amd64.iso}"
+# The ISO filename gained profiles over time (minimal/diet era); prefer
+# the configured name but fall back to any single live ISO in the dir.
+iso_in_dir() { # dir -> the ISO filename to use, or empty
+  if [ -f "$1/$ISO_NAME" ]; then printf '%s' "$ISO_NAME"; return; fi
+  local found
+  found=$(find "$1" -maxdepth 1 -name '*.iso' -size +100M 2>/dev/null | head -1)
+  [ -n "$found" ] && basename "$found"
+}
+
+
 
 LIST_ONLY=false DRY_RUN=true KEEP=""
 
@@ -47,7 +57,8 @@ builds=$(find "$OUT_DIR" -maxdepth 1 -type d -name 'iso-build*' 2>/dev/null \
 newest=$(echo "$builds" | tail -1)
 
 row() { # build -> one line of the table
-  local b=$1 d="$OUT_DIR/iso-build$1" iso="$OUT_DIR/iso-build$1/$ISO_NAME"
+  local b=$1 d="$OUT_DIR/iso-build$1" _n iso
+  _n=$(iso_in_dir "$d"); iso="$d/$_n"
   local size date verdict sha
   if [ -f "$iso" ]; then
     size=$(numfmt --to=iec "$(stat -c '%s' "$iso")")
@@ -80,7 +91,7 @@ for b in $builds; do row "$b"; done
 
 
 
-printf '\nslot: %s\n' "$(readlink "$OUT_DIR/kali-linux-rolling-live-amd64.iso" 2>/dev/null || echo '(not a symlink)')"
+printf '\nslot: %s\n' "$(readlink "$OUT_DIR"/*-live-*.iso 2>/dev/null | head -1 || echo '(not a symlink)')"
 [ "$LIST_ONLY" = true ] && exit 0
 
 # --------------------------------------------------------------- candidates
@@ -101,7 +112,7 @@ fi
 
 echo
 for b in "${candidates[@]}"; do
-  d="$OUT_DIR/iso-build$b" iso="$d/$ISO_NAME"
+  d="$OUT_DIR/iso-build$b"; iso="$d/$(iso_in_dir "$d")"
   state="ok"
   if [ -f "$iso" ] && [ -f "$iso.sha512sum" ]; then
     ( cd "$d" && sha512sum --check --quiet < "$(basename "$iso").sha512sum" ) >/dev/null 2>&1 \
