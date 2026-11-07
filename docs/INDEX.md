@@ -5,6 +5,14 @@ One line per document, grouped by what you're trying to do. The
 navigating the 30+ docs that accreted around it.
 
 ## Start here
+
+## Tools (`tools/`, all `--help`-documented)
+- **Build/archive**: `remote-build.sh` (LAN builder), `iso-archive.sh`, `iso-prune.sh` (disk reclaim), `iso-hotpatch.sh` (fast overlay path), `iso-content-diff.sh`, `deb-pool.sh` (offline reproduction), `live-host-setup.sh` (a stick as its own build box)
+- **Flash/media**: `usb-probe.sh` (health/quarantine), `medium-verify.sh`, flash.sh itself (repo root)
+- **VM hosting**: `vm-deploy.sh`, `vm-check.sh` (the security checklist), `vm-port-pick.sh` (hub-aware ports), `vm-egress-remote.sh`, `hub-enroll-stick.sh` / `hub-vm-forward.sh` (concentrator side), `derive-identities.sh`
+- **Testing**: `suite-parallel.sh`, `hw-check.sh` (real hardware), `firewall-lab.sh`, `feature-matrix.sh`, `verdict.sh` (run-level ledger), `run-logged.sh` (true-rc wrapper), `lane-audit.sh`
+- **Registry**: `stick-registry.sh` (per-stick salts, operator-side)
+- **CI**: `github-runner-install.sh` (register + `--verify`)
 - [`getting-started.md`](getting-started.md) — build → probe → flash → boot → VM → runner, with each step's verification command
 - [`tested-status.md`](tested-status.md) — what is proven vs open, with evidence
 - [`roadmap.md`](roadmap.md) — phases, open issues, the audited backlog
