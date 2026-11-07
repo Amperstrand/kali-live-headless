@@ -16,6 +16,7 @@ navigating the 30+ docs that accreted around it.
 - [`remote-build.md`](remote-build.md) — building on a remote host
 
 ## VM hosting & the runner fleet
+- [`ci-campaign-accounting.md`](ci-campaign-accounting.md) — what the hosted-CI reduction bought, measured
 - [`runner-ephemerality-decision.md`](runner-ephemerality-decision.md) — why the fleet stays persistent (#42: the evidence)
 - [`vm-host-legion.md`](vm-host-legion.md) — the operator runbook: host, store, network, security table, runners, ops
 - [`vm-checklist.md`](vm-checklist.md) — the id→property contract `vm-check` asserts after every boot
