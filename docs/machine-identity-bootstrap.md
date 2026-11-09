@@ -722,6 +722,21 @@ kvm-firewall, vm-forward, tollgate-watchdog, headless-provision. Serial
 log: `qemu-m1/serial-m1b.log` (~9 min wall: boot → unlock → 2.1G stream
 → login).
 
+**Full identity loop on the production image** (2026-11-10, second boot
+after the inject-surface fix): the network-booted Kali publishes its birth
+at init-bottom (`machine KLH-M1B-PROD announced as npub1v7gk…`),
+reports itself unclaimed, boots the whole stack (hostname-settle: "auto
+hostname 'pc-i440fx-11-1-3c4r1d' is unique on the LAN"), reaches login —
+and `bfleet` shows it with its ADDRESS (`10.0.2.15`), then the owner's
+`bclaim` flips it to claimed. The registry row for a production machine:
+identity, address, and ownership, captured over the wire.
+
+**The lost-lines incident (worth remembering)**: three inject-wifi install
+lines (report, banounce, EXTRA_CA) had been orphaned by earlier post-merge
+resets; the minbase chroot masked it by riding stale manual copies, and
+only the FRESH m1b chroot exposed the gap. Unit guards now assert the
+complete install surface by name.
+
 Found on the way: the testenv capped upload bodies at **256 MiB** — a
 415 MB full-firmware initramfs was silently truncated and the auth-tag
 mismatch read as `403 auth x tag does not match blob`. Limit raised to
