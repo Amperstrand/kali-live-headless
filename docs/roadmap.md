@@ -122,7 +122,7 @@ vm-store (restored + wired), zstd squashfs experiment (measured — see
 
 
 ## Seedling lane (2026-11-07)
-- M1 medium ✅ · M2 birth ✅ · M3 claim ✅ · M5 signed-pointer update ✅ (all QEMU)
+- M1 medium ✅ · M1b production-ISO conversion ✅ (2026-11-09: the full KLH stack boots from a 640MB stick) · M2 birth ✅ · M3 claim ✅ · M5 signed-pointer update ✅ (all QEMU)
 - M4 fleet audit ✅ (bfleet registry view + e2e stage, 2026-11-07)
 - Wi-Fi boot stick: repo-versioned overlay, unit 53/0 + e2e 10/11 (open: #76 wrapper regression)
 - Secure Boot: proven in QEMU (signed/unsigned/tampered matrix); real-hw enrollment pending
