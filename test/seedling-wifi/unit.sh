@@ -36,6 +36,14 @@ else
 fi
 
 echo "unit: regression guards (defects already found once)"
+# inject must install the COMPLETE overlay surface — the report-install
+# line was lost to a reset and only the fresh m1b chroot exposed it (the
+# minbase chroot had been riding a stale manual copy)
+for pat in script-bboot-wifi-report hook-bboot-wifi bbootd-wrapper \
+	bbirth banounce EXTRA_CA; do
+	grep -q "$pat" "$here/inject-wifi.sh" &&
+		ok "inject installs/handles $pat" || bad "inject installs/handles $pat"
+done
 # 2026-11-05: MODULES=most does NOT include vfat — the ESP mount failed
 # silently. The hook must name it.
 grep -q 'fat vfat nls_cp437' "$here/hook-bboot-wifi" &&
