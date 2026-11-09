@@ -42,9 +42,19 @@ fi
 if [ -x /src/bin/bannounce ]; then
 	install -D -m 0755 /src/bin/bannounce "$ROOT/usr/local/sbin/bannounce"
 fi
+if [ -x /src/bin/bannounce ]; then
+	install -D -m 0755 /src/bin/bannounce "$ROOT/usr/local/sbin/bannounce"
+fi
 install -D -m 0755 "$SRC/bbootd-wrapper" "$ROOT/etc/initramfs-tools/bbootd-wrapper"
+# the test/production CA for the boot-time relay+server TLS (bbootd's
+# initramfs hook copies /etc/bboot/* into the initrd)
+if [ -n "${EXTRA_CA:-}" ] && [ -f "$EXTRA_CA" ]; then
+	install -D -m 0644 "$EXTRA_CA" "$ROOT/etc/bboot/extra-ca.pem"
+fi
 install -D -m 0755 "$SRC/script-bboot-wifi" \
 	"$ROOT/etc/initramfs-tools/scripts/init-premount/bboot-wifi"
+install -D -m 0755 "$SRC/script-bboot-wifi-report" \
+	"$ROOT/etc/initramfs-tools/scripts/init-bottom/bboot-wifi-report"
 
 KVER=$(ls "$ROOT"/boot/vmlinuz-* | head -1 | sed 's|.*/vmlinuz-||')
 chroot "$ROOT" update-initramfs -u -k all
