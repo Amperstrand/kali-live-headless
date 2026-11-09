@@ -149,7 +149,8 @@ for s in $STAGES; do
 	fallback) f=stick-fallback.img ;;
 	update) f=stick-pointer.img ;;
 	remote) f=stick-remote.img ;;
-	fleet) f=none ;; # no boot: host-side registry proof # reuses the plain stick; corruption is server-side
+	fleet) f=none ;; # no boot: host-side registry proof
+	m1b) f=stick-m1b.img ;; # opt-in: the production image (slow) # reuses the plain stick; corruption is server-side
 	nowifi) f=stick-nowifi.img ;;
 	*) say "unknown stage $s"; exit 2 ;;
 	esac
@@ -748,6 +749,77 @@ for m in json.load(sys.stdin):
 	esac
 }
 
+
+# m1b stage (OPT-IN, slow ~12 min: the production image): boots the
+# converted Kali build (#53) — 517 chunks / 2GiB — and asserts the full
+# stack plus ITS OWN birth line. Not in the default STAGES list.
+run_stage_m1b() {
+	# bbirth refuses machines without a hardware serial (by design), so the
+	# stage boots with a unique -smbios serial like the birth stage does
+	local serial="KLH-M1B-$TS"
+	local serial_log="$LOGDIR/m1b-$TS.log"
+	local vars="$LOGDIR/m1b-$TS.vars.fd"
+	rm -f "$serial_log" "$vars"
+	cp /usr/share/edk2/x64/OVMF_VARS.4m.fd "$vars"
+	timeout 1500 qemu-system-x86_64 \
+		-m 4096 -smp 3 -enable-kvm \
+		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+		-drive if=pflash,format=raw,file="$vars" \
+		-drive file="$SEEDLING_DIR/e2e/stick-m1b.img",format=raw,if=virtio \
+		-smbios "type=1,serial=$serial" \
+		-display none -serial file:"$serial_log" \
+		-netdev user,id=n1 -device virtio-net-pci,netdev=n1 \
+		>/dev/null 2>&1 &
+	local qpid=$!
+
+	local waited=0 ev=""
+	while [ $waited -lt 480 ]; do
+		ev=$(grep -E 'bboot: image "m1b"' "$serial_log" 2>/dev/null | head -1)
+		[ -n "$ev" ] && break
+		kill -0 $qpid 2>/dev/null || break
+		sleep 10; waited=$((waited + 10))
+	done
+	[ -n "$ev" ] || { say "m1b: FAILED — no image line"; kill $qpid 2>/dev/null; fail=$((fail+1)); failed_stages+=(m1b); return 1; }
+	say "m1b: $ev"
+
+	local uri=""
+	waited=0
+	while [ $waited -lt 300 ]; do
+		uri=$(grep -m1 'nostrconnect://' "$serial_log" 2>/dev/null | sed 's/^bboot: //' | sed 's|10\.0\.2\.2|127.0.0.1|g')
+		[ -n "$uri" ] && break
+		kill -0 $qpid 2>/dev/null || break
+		sleep 10; waited=$((waited + 10))
+	done
+	[ -n "$uri" ] || { say "m1b: FAILED — no QR"; kill $qpid 2>/dev/null; fail=$((fail+1)); failed_stages+=(m1b); return 1; }
+	BBOOT_NSEC=$(cat "$SEEDLING_DIR/.m1-nsec") \
+		SSL_CERT_FILE="$SEEDLING_DIR/testenv-m1/pki/ca.crt" \
+		timeout 60 "$SEEDLING_DIR/bin/bboot-testsigner" -timeout 45s -uri "$uri" \
+		>>"$LOGDIR/m1b-$TS.signer.log" 2>&1 || true
+	grep -q 'released image key' "$LOGDIR/m1b-$TS.signer.log" || { say "m1b: FAILED — signer"; kill $qpid 2>/dev/null; fail=$((fail+1)); failed_stages+=(m1b); return 1; }
+
+	waited=0
+	while [ $waited -lt 420 ]; do
+		grep -q "bboot-birth: machine $serial announced" "$serial_log" 2>/dev/null && break
+		grep -q 'login:' "$serial_log" 2>/dev/null && break
+		kill -0 $qpid 2>/dev/null || break
+		sleep 10; waited=$((waited + 10))
+	done
+	kill $qpid 2>/dev/null
+	if grep -q "bboot-birth: machine $serial announced" "$serial_log"; then
+		say "m1b: PASS — production image booted AND announced its identity:"
+		grep -m1 "bboot-birth: machine $serial announced" "$serial_log" | sed 's/^/    /'
+		grep -m1 'login:' "$serial_log" >/dev/null && say "m1b: login reached"
+		pass=$((pass + 1))
+	elif grep -q 'login:' "$serial_log"; then
+		say "m1b: FAILED — login reached but no birth for $serial"
+		fail=$((fail + 1)); failed_stages+=(m1b)
+	else
+		say "m1b: FAILED — neither login nor birth"
+		fail=$((fail + 1)); failed_stages+=(m1b)
+	fi
+	return 0
+}
+
 for st in $STAGES; do
 
 	case $st in
@@ -762,6 +834,7 @@ for st in $STAGES; do
 	update) run_stage_update ;;
 	remote) run_stage_remote ;;
 	fleet) run_stage_fleet ;;
+	m1b) run_stage_m1b ;;
 	esac
 done
 # nowifi must show ZERO wifi-script lines — absence assert with non-empty
