@@ -1,1 +1,1 @@
-boot=bboot root=/dev/nbd0 @CONSOLES@ @EXTRA@ bb.manifest=@MANIFEST@ bb.npub=@NPUB@ bb.relays=@RELAYS@ bb.servers=@SERVERS@
+boot=bboot root=/dev/nbd0 @CONSOLES@ @EXTRA@ bb.manifest=@MANIFEST@ bb.npub=@NPUB@ bb.ntp=192.168.13.1,pool.ntp.org,time.cloudflare.com bb.relays=@RELAYS@ bb.servers=@SERVERS@
