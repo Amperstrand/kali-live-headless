@@ -188,6 +188,22 @@ EOF
 
 say "loading radio drivers"
 
+# RF-kill FIRST, before waiting for radios: Windows fast-start can leave
+# CNVi/AX2xx radios soft/hard-blocked in a state that survives warm
+# reboots — no interface appears, and the old unblock ran only after a
+# radio was detected (i.e., never when it was needed). Also rescan PCI in
+# case the card never enumerated.
+modprobe -q rfkill 2>/dev/null || true
+for i in 1 2 3; do
+	BB=/bin/busybox
+	$BB rfkill unblock all 2>/dev/null || true
+	echo 1 > /sys/bus/pci/rescan 2>/dev/null || true
+	sleep 1
+done
+say "rfkill state:"
+$BB rfkill list 2>/dev/null | while IFS= read -r l; do say "  $l"; done
+[ -e /sys/bus/pci/rescan ] && say "pci rescan done"
+
 # WPA2 crypto: the kernel refuses key installation without these
 for m in arc4 ecb cbc ccm cmac gcm aes_x86_64 aes_generic; do
 	modprobe -q "$m" 2>/dev/null || true
