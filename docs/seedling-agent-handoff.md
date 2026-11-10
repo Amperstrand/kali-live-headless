@@ -25,7 +25,51 @@ The seedling-wifi lane has **all milestones (M1, M1b, M2–M5) proven in QEMU** 
 - Key-only SSH: ed25519 authorized_keys, PasswordAuthentication no, build-time host keys
 - NTP on cmdline (LAN router first)
 
-## What to do next
+## What to do next (UPDATED 2026-11-11)
+
+The remote machine (t7a / S5004EAA / 192.0.2.225) is **up and running**
+via WiFi (5 GHz, SSID "5"). The autonomous loop is proven:
+- Reboot → auto-unlock → boot → SSH in **97 seconds**
+- Remote USB flash works (`remote-flash.sh`) — the USB never moves
+- Multi-SSID wifi.conf deployed (5 GHz primary, 2.4 GHz fallback)
+
+### Highest-value next actions:
+
+1. **Dedicated unlocker key** (#89) — the unlocker nsec is generated at
+   `~/src/seedling-m1/.unlocker-nsec` (npub1t298zxy…). Implementation:
+   pack to the unlocker npub, set bb.npub=unlocker on the cmdline, and
+   have bunlock use that key. The owner npub keeps signing authority only.
+   Add a QEMU stage asserting the owner nsec CANNOT unlock.
+
+2. **A/B partition watchdog** — two ESPs on the USB (BBOOT-A known-good,
+   BBOOT-B experimental); the firmware boot order prefers A; a script
+   swaps the order before rebooting to test B. See docs/trust-model.md.
+
+3. **Remote image update (M5 on hardware)** — publish a new pointer event
+   (`bboot publish -d bboot:m1 -manifest <new>`) and reboot the machine;
+   it should boot the new image without any stick change.
+
+4. **TPM measured boot** — if the desktop has a TPM2 chip, this upgrades
+   our soft birth-event attestation to hardware-bound attestation.
+   Requires tpm2-tools in the initramfs + provisioning. See docs/trust-model.md.
+
+5. **Upstream push** — the dogfood branch has 9+ tools/fixes ready.
+
+### The autonomous session commands:
+
+```sh
+# one-command loop (build → flash → reboot → verify):
+tools/seedling-wifi/autotest.sh hw
+
+# remote flash only (no rebuild):
+tools/seedling-wifi/remote-flash.sh <image.img> 192.0.2.225
+
+# manual reboot test:
+ssh -i ~/.ssh/klh-seedling root@192.0.2.225 reboot
+# (wait ~97s for it to come back)
+```
+
+## Original next steps (from the first session)
 
 1. **Boot the desktop** with the current stick (cold boot, F12 → UEFI DataTraveler)
 2. **Start the serial listener first**: `sudo socat -u UDP-RECV:514,reuseaddr -` (or `tools/seedling-wifi/serial-listen.sh`)
