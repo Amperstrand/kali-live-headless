@@ -51,6 +51,32 @@ install -D -m 0755 "$SRC/bbootd-wrapper" "$ROOT/etc/initramfs-tools/bbootd-wrapp
 if [ -n "${EXTRA_CA:-}" ] && [ -f "$EXTRA_CA" ]; then
 	install -D -m 0644 "$EXTRA_CA" "$ROOT/etc/bboot/extra-ca.pem"
 fi
+
+# ---- remote-research hardening: key-only SSH + self-service upgrade ----
+if [ -n "${SSH_PUBKEY:-}" ]; then
+	install -d -m 0700 "$ROOT/root/.ssh"
+	printf '%s\n' "$SSH_PUBKEY" > "$ROOT/root/.ssh/authorized_keys"
+	chmod 0600 "$ROOT/root/.ssh/authorized_keys"
+	install -d "$ROOT/etc/ssh/sshd_config.d"
+	cat > "$ROOT/etc/ssh/sshd_config.d/99-klh.conf" <<'SSHC'
+# key-only: no static password exists to guess (the console keeps its own
+# password — physical presence required)
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+SSHC
+	# pre-generate host keys at BUILD time: no boot-time keygen race
+	# (suspected in the port-22-refused case on real hardware)
+	chroot "$ROOT" ssh-keygen -A >/dev/null 2>&1 || true
+fi
+# the rootfs trusts the boot CA too (remote upgrades curl from the server)
+if [ -n "${EXTRA_CA:-}" ] && [ -f "$EXTRA_CA" ]; then
+	install -D -m 0644 "$EXTRA_CA" "$ROOT/usr/local/share/ca-certificates/bboot-testenv.crt"
+	chroot "$ROOT" update-ca-certificates >/dev/null 2>&1 || true
+fi
+# self-service stick upgrade: these build the ESP from a fetched UKI
+chroot "$ROOT" apt-get install -y -qq --no-install-recommends \
+	curl sgdisk mtools >/dev/null 2>&1 || true
 install -D -m 0755 "$SRC/script-bboot-wifi" \
 	"$ROOT/etc/initramfs-tools/scripts/init-premount/bboot-wifi"
 install -D -m 0755 "$SRC/script-bboot-wifi-report" \

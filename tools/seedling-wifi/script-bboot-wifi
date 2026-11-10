@@ -55,6 +55,33 @@ done
 
 say "wi-fi boot stick v4 (overlay 2026-11-06)"
 
+# ---- remote serial console (bb.debug=<workstation-ip>) ----
+# Captures everything from here on and mirrors it to the workstation via
+# UDP syslog (port 514). A "serial cable" over whatever network the machine
+# has. Enable with bb.debug=192.0.2.206 on the cmdline.
+DBG_TARGET=""
+for x in $(cat /proc/cmdline 2>/dev/null); do
+	case "$x" in bb.debug=*) DBG_TARGET="${x#bb.debug=}" ;; esac
+done
+if [ -n "$DBG_TARGET" ] && [ -p /run/bboot-dbg.out ] 2>/dev/null; then
+	: # already set up (idempotent)
+elif [ -n "$DBG_TARGET" ]; then
+	mkfifo /run/bboot-dbg.out 2>/dev/null || true
+	if [ -p /run/bboot-dbg.out ]; then
+		# reader FIRST (fifo write-open blocks until a reader exists)
+		(
+			BBC=/bin/busybox
+			while IFS= read -r l; do
+				echo "bboot: $l" | $BBC nc -u -w 1 "$DBG_TARGET" 514 2>/dev/null
+			done < /run/bboot-dbg.out
+		) </dev/null >/dev/null 2>&1 &
+		# redirect our stderr through the fifo — everything we say from now
+		# on also goes to the workstation
+		exec 2>/run/bboot-dbg.out
+		say "remote serial console active -> $DBG_TARGET:514 (UDP)"
+	fi
+fi
+
 # Remote-unlock setup ("leave the stick in the machine" mode): route all
 # further init output through tee so the unlock URI lands in
 # /run/bboot.log (bbootd honors BBOOT_CONSOLE=stdout; we are sourced into
@@ -188,6 +215,22 @@ EOF
 
 say "loading radio drivers"
 
+# RF-kill FIRST, before waiting for radios: Windows fast-start can leave
+# CNVi/AX2xx radios soft/hard-blocked in a state that survives warm
+# reboots — no interface appears, and the old unblock ran only after a
+# radio was detected (i.e., never when it was needed). Also rescan PCI in
+# case the card never enumerated.
+modprobe -q rfkill 2>/dev/null || true
+for i in 1 2 3; do
+	BB=/bin/busybox
+	$BB rfkill unblock all 2>/dev/null || true
+	echo 1 > /sys/bus/pci/rescan 2>/dev/null || true
+	sleep 1
+done
+say "rfkill state:"
+$BB rfkill list 2>/dev/null | while IFS= read -r l; do say "  $l"; done
+[ -e /sys/bus/pci/rescan ] && say "pci rescan done"
+
 # WPA2 crypto: the kernel refuses key installation without these
 for m in arc4 ecb cbc ccm cmac gcm aes_x86_64 aes_generic; do
 	modprobe -q "$m" 2>/dev/null || true
@@ -295,10 +338,68 @@ while [ "$i" -lt 90 ]; do
 done
 if [ "$ok" -eq 0 ]; then
 	say "associated"
+	# CRITICAL for real hardware: disable WiFi power save. CNVi/AX2xx default
+	# to aggressive PS; under heavy streaming the radio sleeps through
+	# beacons, the AP declares the station dead and deauths (Reason: 2 =
+	# PREV_AUTH_NOT_VALID — the exact loop seen on the desktop 2026-11-10).
+	iw "$DEV" set power_save off 2>/dev/null || true
+	say "power_save off (streaming-safe)"
 	if [ "$WIFI_DHCP" -eq 1 ]; then
 		wifi_dhcp "$DEV" || true
 	else
 		say "bb.wifi.dhcp=off — DHCP left to the normal path"
+	fi
+	# HANDOFF: copy the wifi config into the mounted rootfs so the real
+	# system can reconnect after switch_root (the initramfs's wpa_supplicant
+	# dies with the switch; without this, the rootfs has no idea how to
+	# re-associate and the machine cycles forever — found live on the
+	# desktop, 2026-11-10)
+	LOWER=/run/bboot/lower
+	if [ -d "$LOWER" ] && [ -f "$CONF" ]; then
+		mkdir -p "$LOWER/etc/wpa_supplicant" "$LOWER/etc/systemd/system" 2>/dev/null
+		cp "$CONF" "$LOWER/etc/wpa_supplicant/wifi.conf" 2>/dev/null || true
+		# udhcpc needs an event script to apply the lease
+		install -D -m 0755 /dev/null "$LOWER/usr/local/sbin/klh-udhcpc-script" 2>/dev/null
+		cat > "$LOWER/usr/local/sbin/klh-udhcpc-script" <<'UDH'
+#!/bin/sh
+# busybox udhcpc event script: apply the lease
+case "$1" in
+bound|renew)
+	ip addr flush dev "$interface" 2>/dev/null
+	ip addr add "$ip/$mask" dev "$interface" 2>/dev/null
+	ip link set "$interface" up
+	[ -n "$router" ] && ip route add default via "${router%% *}" dev "$interface" 2>/dev/null
+	: > /etc/resolv.conf
+	for d in $dns; do echo "nameserver $d" >> /etc/resolv.conf; done
+	echo "Wi-Fi handoff: lease $ip via $router"
+	;;
+deconfig)
+	ip addr flush dev "$interface" 2>/dev/null
+	;;
+esac
+exit 0
+UDH
+		chmod 0755 "$LOWER/usr/local/sbin/klh-udhcpc-script" 2>/dev/null || true
+		cat > "$LOWER/etc/systemd/system/klh-wifi-handoff.service" <<UNIT
+[Unit]
+Description=Wi-Fi handoff from initramfs (re-associate after switch_root)
+After=systemd-modules-load.service
+Before=network.target
+Wants=network.target
+ConditionPathExists=/etc/wpa_supplicant/wifi.conf
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '/sbin/wpa_supplicant -B -q -i \$(ls /sys/class/net/ | grep -E "^wl" | head -1) -c /etc/wpa_supplicant/wifi.conf && sleep 2 && /bin/busybox udhcpc -i \$(ls /sys/class/net/ | grep -E "^wl" | head -1) -n -q -t 10 -T 3 -s /usr/local/sbin/klh-udhcpc-script'
+ExecStartPost=/bin/sh -c 'ip addr show \$(ls /sys/class/net/ | grep -E "^wl" | head -1) | grep -q "inet " && echo "Wi-Fi handoff: connected"'
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+		ln -sf /etc/systemd/system/klh-wifi-handoff.service \
+			"$LOWER/etc/systemd/system/multi-user.target.wants/klh-wifi-handoff.service" 2>/dev/null || true
+		say "Wi-Fi handoff: config + service installed into the rootfs"
 	fi
 else
 	say "association TIMED OUT after 90s. Last wpa_supplicant messages:"
