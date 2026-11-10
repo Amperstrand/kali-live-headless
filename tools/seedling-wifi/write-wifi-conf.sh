@@ -18,9 +18,17 @@ if findmnt -rn "$PART" >/dev/null 2>&1; then
 fi
 command -v mcopy >/dev/null || { echo "need mtools" >&2; exit 1; }
 
-read -rp "SSID: " SSID
-[ -n "$SSID" ] || { echo "empty SSID" >&2; exit 1; }
-read -rsp "PSK: " PSK; echo
+if [ -t 0 ]; then
+	read -rp "SSID: " SSID
+	[ -n "$SSID" ] || { echo "empty SSID" >&2; exit 1; }
+	read -rsp "PSK: " PSK; echo
+else
+	# non-interactive provisioning: two lines on stdin (ssid, then psk) —
+	# lets automation feed a 0600 credentials file without the secret ever
+	# appearing in argv or process listings
+	IFS= read -r SSID
+	IFS= read -r PSK
+fi
 [ "${#PSK}" -ge 8 ] || { echo "WPA2 PSK must be at least 8 characters" >&2; exit 1; }
 
 esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
