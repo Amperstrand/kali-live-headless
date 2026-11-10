@@ -40,7 +40,7 @@ echo "unit: regression guards (defects already found once)"
 # line was lost to a reset and only the fresh m1b chroot exposed it (the
 # minbase chroot had been riding a stale manual copy)
 for pat in script-bboot-wifi-report hook-bboot-wifi bbootd-wrapper \
-	bbirth bannounce EXTRA_CA; do
+	bbirth bannounce EXTRA_CA SSH_PUBKEY authorized_keys ssh-keygen; do
 	grep -q "$pat" "$here/inject-wifi.sh" &&
 		ok "inject installs/handles $pat" || bad "inject installs/handles $pat"
 done
