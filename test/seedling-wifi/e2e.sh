@@ -27,6 +27,13 @@ declare -a failed_stages=()
 say() { echo "e2e: $*"; }
 
 need() {
+	# a running bunlock daemon races the stages' own unlockers and steals
+	# handshakes — found via the remote stage failing while the machine
+	# actually booted (the daemon had unlocked it)
+	if pgrep -x bunlock >/dev/null 2>&1; then
+		say "a bunlock daemon is running — kill it before the suite (it races the stages)"
+		exit 2
+	fi
 	[ -n "${MANIFEST:-}" ] || { say "MANIFEST missing (wifi-env.sh)"; exit 2; }
 	command -v qemu-system-x86_64 >/dev/null || { say "qemu-system-x86_64 missing"; exit 2; }
 	ss -ltn 2>/dev/null | grep -q ':8443' || { say "testenv not listening on :8443"; exit 2; }
