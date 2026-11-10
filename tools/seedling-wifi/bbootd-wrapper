@@ -35,18 +35,31 @@ if [ -n "$R" ] && [ -x /usr/local/sbin/bannounce ]; then
 			sleep 2
 			n=$((n + 1))
 		done
-		[ -s /run/bboot.uri ] || exit 0
-		URI=$(cat /run/bboot.uri)
-		a=0
-		while [ $a -lt 5 ]; do
-			if timeout 25 /usr/local/sbin/bannounce -relay "$R" -owner "$OWNER" -uri "$URI"; then
-				exit 0
+		# bbootd retries its signer round up to 5x and each round is a NEW
+		# session — so announce EVERY URI change, not just the first
+		# (the first generation exited after one publish and attempts 2..5
+		# were never announced; found live on the first desktop boot)
+		last=""
+		pubs=0
+		while [ $pubs -lt 12 ]; do
+			if [ -s /run/bboot.uri ]; then
+				URI=$(cat /run/bboot.uri)
+				if [ "$URI" != "$last" ]; then
+					a=0
+					while [ $a -lt 5 ]; do
+						if timeout 25 /usr/local/sbin/bannounce -relay "$R" -owner "$OWNER" -uri "$URI"; then
+							last=$URI
+							pubs=$((pubs + 1))
+							break
+						fi
+						a=$((a + 1))
+						sleep 5
+					done
+				fi
 			fi
-			a=$((a + 1))
-			sleep 5
+			sleep 3
 		done
-		echo "bboot-wifi: announce gave up after $a attempts (boot continues)"
-		exit 1
+		exit 0
 	) </dev/null >/dev/console 2>&1 &
 fi
 
