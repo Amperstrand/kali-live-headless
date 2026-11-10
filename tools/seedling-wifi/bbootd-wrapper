@@ -15,7 +15,10 @@ fi
 : > /run/bboot.remote-done
 
 case " $(cat /proc/cmdline 2>/dev/null) " in
-*" bb.noremote=1 "*) exec /sbin/bbootd.real "$@" ;;
+*" bb.noremote=1 "*|*" bb.nowifi=1 "*)
+	# bb.nowifi disables the whole wifi/remote machinery, this reader
+	# included — the nowifi stage caught it running anyway
+	exec /sbin/bbootd.real "$@" ;;
 esac
 
 mkdir -p /run 2>/dev/null
