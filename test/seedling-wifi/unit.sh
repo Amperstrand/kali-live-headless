@@ -152,6 +152,32 @@ else
 	echo "  skip  write-wifi-conf needs sudo+losetup"
 fi
 
+echo "unit: write-wifi-conf stdin mode"
+T2=$(mktemp -d)
+printf 'ssidtwo\npassphrase8chars\n' > "$T2/in"
+# shellcheck disable=SC2016
+if command -v mcopy >/dev/null 2>&1; then
+	# exercise the non-tty path through a shimmed block device check via bash -c
+	printf '#!/bin/sh\nexit 0\n' > "$T2/stat-shim"
+	# feed stdin; expect the tool to pass the -b check against a loop of the stick image
+	if [ -s "$BIN/stick.img" ]; then
+		L2=$(sudo -n losetup -f --show -o $((2048 * 512)) --sizelimit $((63 * 1024 * 1024)) "$BIN/stick.img" 2>/dev/null || true)
+		if [ -n "${L2:-}" ]; then
+			PATH="$T2/stat-shim:$PATH" bash "$here/write-wifi-conf.sh" "$L2" < "$T2/in" >/dev/null 2>&1
+			sudo -n mcopy -i "$L2" ::/wifi.conf "$T2/out" 2>/dev/null
+			if grep -q 'ssid="ssidtwo"' "$T2/out" 2>/dev/null && grep -q 'passphrase8chars' "$T2/out" 2>/dev/null; then
+				ok "write-wifi-conf stdin mode writes the same config shape"
+			else
+				bad "write-wifi-conf stdin mode writes the same config shape"
+			fi
+			sudo -n losetup -d "$L2"
+		else
+			echo "  skip  no loop device for the stdin-mode test"
+		fi
+	fi
+	rm -rf "$T2"
+fi
+
 echo "unit: stick image layout"
 command -v sgdisk >/dev/null 2>&1 && command -v mdir >/dev/null 2>&1 || {
 	echo "  skip  sgdisk/mtools not installed"
