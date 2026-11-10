@@ -35,13 +35,14 @@ if [ -n "$R" ] && [ -x /usr/local/sbin/bannounce ]; then
 			sleep 2
 			n=$((n + 1))
 		done
-		# bbootd retries its signer round up to 5x and each round is a NEW
-		# session — so announce EVERY URI change, not just the first
-		# (the first generation exited after one publish and attempts 2..5
-		# were never announced; found live on the first desktop boot)
+		# bounded life: the announcer must not outlive its usefulness —
+		# after switch_root the initramfs's busybox vanishes and `sleep`
+		# breaks, spraying errors forever (found live on the desktop)
 		last=""
 		pubs=0
-		while [ $pubs -lt 12 ]; do
+		ticks=0
+		while [ $ticks -lt 400 ] && [ $pubs -lt 12 ]; do
+			command -v sleep >/dev/null 2>&1 || exit 0
 			if [ -s /run/bboot.uri ]; then
 				URI=$(cat /run/bboot.uri)
 				if [ "$URI" != "$last" ]; then
@@ -58,6 +59,7 @@ if [ -n "$R" ] && [ -x /usr/local/sbin/bannounce ]; then
 				fi
 			fi
 			sleep 3
+			ticks=$((ticks + 1))
 		done
 		exit 0
 	) </dev/null >/dev/console 2>&1 &
