@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # rescue-smoke.sh — daemon-free VM proofs for the two-stick rescue design.
 #
-#   rescue-smoke.sh banner|fallback|bootnext|soak
+#   rescue-smoke.sh banner|fallback|bootnext|offline|soak
+#
+# The OFFLINE rescue (stick-rescue-local.img, boot=klhrescue static
+# rootfs) is the rescue of record — fallback/bootnext/soak exercise the
+# production pair. `banner` is the one knob-level proof of the older
+# pinned-manifest network variant (bb.rescue=1, wrapper banner), kept
+# because the knob still ships on normal sticks.
 #
 # Every boot runs with -nic none: no unlocker, no relay, no bunlock race —
 # these proofs coexist with a standing lab daemon (unlike the full e2e).
@@ -36,6 +42,9 @@ bad() { echo "  FAIL  $1"; fail=$((fail + 1)); }
 say() { echo "smoke: $*"; }
 
 RESUE_STICK="$SEEDLING_DIR/e2e/stick-rescue.img"
+# the OFFLINE rescue (boot=klhrescue static rootfs) — the rescue of
+# record; fallback/bootnext/soak exercise the production pair
+OFFLINE_STICK="$SEEDLING_DIR/e2e/stick-rescue-local.img"
 PRIMARY_STICK="$SEEDLING_DIR/e2e/stick-qemu.img"
 
 # boot_until SERIAL SENTINEL TIMEOUT_S [EXTRA_DRIVE] — PRESERVE=1 keeps the
@@ -111,19 +120,19 @@ banner)
 	;;
 
 fallback)
-	need_stick "$RESUE_STICK" rescue
+	need_stick "$SEEDLING_DIR/e2e/stick-rescue-local.img" rescue-local
 	need_stick "$PRIMARY_STICK" qemu
 	make_broken_primary "$WORK/broken.img"
 	BOOT_IMG="$WORK/broken.img"
-	say "fallback: dead primary UKI + rescue stick, no network"
+	say "fallback: dead primary UKI + offline rescue stick, no network"
 	# NOTE: with a fresh varstore the enumeration order of the two media
 	# is NOT deterministic (observed 2026-11-11: primary-first in one run,
 	# rescue-first in another). The order-independent property is what we
 	# assert: the rescue booted, the primary did not. The explicit
 	# fail-through (BdsDxe rejection) is asserted informationally when
 	# enumeration happens to put the dead primary first.
-	if boot_until "$WORK/s.log" 'RESCUE MEDIUM' 480 "$RESUE_STICK"; then
-		ok "rescue booted unattended"
+	if boot_until "$WORK/s.log" 'klh-rescue: LOCAL ROOTFS' 240 "$SEEDLING_DIR/e2e/stick-rescue-local.img"; then
+		ok "offline rescue booted unattended"
 	else
 		bad "no rescue banner — neither medium produced a boot"; tail -5 "$WORK/s.log" 2>/dev/null | sed 's/^/    /'
 	fi
@@ -141,7 +150,7 @@ fallback)
 	;;
 
 bootnext)
-	need_stick "$RESUE_STICK" rescue
+	need_stick "$OFFLINE_STICK" rescue-local
 	need_stick "$PRIMARY_STICK" qemu
 	for t in sgdisk mcopy virt-fw-vars python3; do
 		command -v $t >/dev/null || { say "need $t"; exit 2; }
@@ -150,7 +159,7 @@ bootnext)
 
 	say "bootnext: boot 1 — enumerate (kill at first BdsDxe start)"
 	BOOT_IMG="$PRIMARY_STICK"
-	if boot_until "$WORK/s1.log" 'BdsDxe: starting' 120 "$RESUE_STICK"; then
+	if boot_until "$WORK/s1.log" 'BdsDxe: starting' 120 "$OFFLINE_STICK"; then
 		ok "firmware enumerated the two sticks"
 	else
 		bad "no BdsDxe start within 120s"; exit 1
@@ -202,7 +211,7 @@ PYEOF
 	say "bootnext: boot 2 — one-shot override must boot the RESCUE"
 	BOOT_IMG="$PRIMARY_STICK"
 	PRESERVE=1
-	if boot_until "$WORK/s2.log" 'RESCUE MEDIUM' 420 "$RESUE_STICK"; then
+	if boot_until "$WORK/s2.log" 'klh-rescue: LOCAL ROOTFS' 420 "$OFFLINE_STICK"; then
 		ok "BootNext override: rescue booted out of BootOrder"
 	else
 		PRESERVE=0
@@ -211,14 +220,14 @@ PYEOF
 
 	say "bootnext: boot 3 — BootNext must be consumed (BootOrder default returns)"
 	BOOT_IMG="$PRIMARY_STICK"
-	if boot_until "$WORK/s3.log" 'NO RADIO APPEARED' 420 "$RESUE_STICK"; then
+	if boot_until "$WORK/s3.log" 'NO RADIO APPEARED' 420 "$OFFLINE_STICK"; then
 		ok "primary booted again (its radio-probe evidence on serial)"
 	else
 		PRESERVE=0
 		bad "boot 3 did not show primary identity"; exit 1
 	fi
 	PRESERVE=0
-	if ! grep -aq 'RESCUE MEDIUM' "$WORK/s3.log"; then
+	if ! grep -aq 'klh-rescue: LOCAL ROOTFS' "$WORK/s3.log"; then
 		ok "one-shot confirmed: no rescue banner on the post-consumption boot"
 	else
 		bad "rescue banner on boot 3 — BootNext was NOT consumed"
@@ -230,7 +239,7 @@ soak)
 	# N cycles of kill-QEMU-at-a-random-moment against persistent vars,
 	# dead primary + rescue. Property: repeated interruption never wedges
 	# the machine — a subsequent full boot still converges to rescue.
-	need_stick "$RESUE_STICK" rescue
+	need_stick "$OFFLINE_STICK" rescue-local
 	need_stick "$PRIMARY_STICK" qemu
 	make_broken_primary "$WORK/broken.img"
 	BOOT_IMG="$WORK/broken.img"
@@ -245,7 +254,7 @@ soak)
 		# every cycle would die instantly (found via the empty counters)
 		if [ $i -eq 1 ]; then PRESERVE=0; else PRESERVE=1; fi
 		t=$((RANDOM % 90 + 10))
-		boot_until "$WORK/soak-$i.log" '__SENTINEL_NEVER_MATCHES__' "$t" "$RESUE_STICK" || true
+		boot_until "$WORK/soak-$i.log" '__SENTINEL_NEVER_MATCHES__' "$t" "$OFFLINE_STICK" || true
 		kill_line=$(grep -acE 'BdsDxe: starting' "$WORK/soak-$i.log" 2>/dev/null || true)
 		[ "$kill_line" -gt 0 ] && cut_seen=$((cut_seen + 1))
 		say "soak: cycle $i/$CYCLES cut at ~${t}s (firmware had started: $kill_line)"
@@ -253,8 +262,8 @@ soak)
 	done
 	# convergence boot uses the INTERRUPTED vars — that is the power-cut
 	# scenario: the machine reboots on whatever state the cuts left behind
-	if boot_until "$WORK/soak-final.log" 'RESCUE MEDIUM' 480 "$RESUE_STICK"; then
-		grep -a 'RESCUE MEDIUM' "$WORK/soak-final.log" | head -1 | sed 's/^/    /'
+	if boot_until "$WORK/soak-final.log" 'klh-rescue: LOCAL ROOTFS' 480 "$OFFLINE_STICK"; then
+		grep -a 'klh-rescue: LOCAL ROOTFS' "$WORK/soak-final.log" | head -1 | sed 's/^/    /'
 		ok "convergence: full boot after $CYCLES interruptions reaches rescue"
 	else
 		bad "no convergence — machine wedged after interruption cycles"

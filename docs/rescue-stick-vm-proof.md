@@ -132,6 +132,21 @@ Two hard-won lessons baked in:
   deterministic false "hang". The wait sentinel must be the final
   evidence you assert. Evidence first, kills second.
 
+## 6. Post-proof consolidation (2026-11-11, later)
+
+Applying the overengineering review: **rescue-local is THE rescue of
+record** — it boots with or without network and is what the fallback,
+bootnext and soak proofs now exercise (fallback re-proven 3/0 with the
+offline stick including BdsDxe rejection evidence; bootnext re-proven
+4/0 on the production pair). The older `bb.rescue=1` pinned-manifest
+*network* variant is demoted to what it really is — a ~10-line cmdline
+knob on normal sticks (useful when you suspect a poisoned pointer but
+have network) — its `banner` smoke mode remains as the knob's boot-level
+proof. An `announced-rescue` variant (wifi+sshd on the offline root) was
+**parked** with an explicit un-park condition: build it when a real
+incident shows that serial-console-via-labgrid is not enough to fix a
+machine remotely. One rescue image, boot it anywhere.
+
 ## What this settles
 
 | claim | status |

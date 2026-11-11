@@ -859,10 +859,12 @@ run_stage_rescue_fallback() {
 	dd if="$esp" of="$broken" bs=512 seek=$ss conv=notrunc status=none
 	say "rescue-fallback: primary UKI destroyed ($(stat -c%s "$LOGDIR/broken-$TS.bad") bytes of garbage in its place)"
 
-	run_stage rescue-fallback "$broken" 'RESCUE MEDIUM' 1 'login:' \
-		"$SEEDLING_DIR/e2e/stick-rescue.img"
-	# the assert above is the banner: it can only print from the rescue
-	# image, so reaching login proves the machine failed over media
+	run_stage rescue-fallback "$broken" 'klh-rescue: LOCAL ROOTFS' 0 'login:' \
+		"$SEEDLING_DIR/e2e/stick-rescue-local.img"
+	# the pre-sentinel is the offline rescue's own banner — only that
+	# image can print it; reaching login (no signer needed: the static
+	# rootfs has nothing to unlock) proves the machine failed over media
+	# onto the rescue of record
 }
 
 for st in $STAGES; do
@@ -880,8 +882,23 @@ for st in $STAGES; do
 	remote) run_stage_remote ;;
 	fleet) run_stage_fleet ;;
 	m1b) run_stage_m1b ;;
-	rescue) run_stage rescue "$SEEDLING_DIR/e2e/stick-rescue.img" 'RESCUE MEDIUM' 1 'login:' ;;
-	rescue-fallback) run_stage_rescue_fallback ;;
+	rescue)
+		# the pinned-manifest network rescue — a bboot cmdline MODE, not
+		# the rescue of record (that is rescue-local's static rootfs).
+		# Kept as a stage because it proves the knob end-to-end; skips
+		# loudly when the stick variant wasn't built (visible skip, not
+		# a silent vacuous pass)
+		if [ -s "$SEEDLING_DIR/e2e/stick-rescue.img" ]; then
+			run_stage rescue "$SEEDLING_DIR/e2e/stick-rescue.img" 'RESCUE MEDIUM' 1 'login:'
+		else
+			say "stage rescue: SKIP — no $SEEDLING_DIR/e2e/stick-rescue.img (build-stick --variant rescue)"
+		fi ;;
+	rescue-fallback)
+		if [ -s "$SEEDLING_DIR/e2e/stick-rescue-local.img" ] && [ -s "$SEEDLING_DIR/e2e/stick-qemu.img" ]; then
+			run_stage_rescue_fallback
+		else
+			say "stage rescue-fallback: SKIP — build-stick --variant rescue-local (and qemu) first"
+		fi ;;
 	esac
 done
 # nowifi must show ZERO wifi-script lines — absence assert with non-empty
