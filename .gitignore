@@ -21,3 +21,8 @@ output/
 test/scratch/
 .klh-test-*
 __pycache__/
+
+# Wi-Fi provisioning — credentials NEVER enter the repo
+wifi-creds
+wifi-env
+test-host

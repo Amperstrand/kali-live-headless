@@ -13,7 +13,10 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 SEEDLING_DIR=${SEEDLING_DIR:-$HOME/src/seedling-m1}
 SSH_KEY=${SSH_KEY:-$HOME/.ssh/klh-seedling}
-HOST=${HOST:-192.0.2.225}
+# HOST: no LAN address belongs in the public repo — set it in the
+# environment or $SEEDLING_DIR/test-host (one IP/hostname, 0600).
+HOST=${HOST:-$(cat "$SEEDLING_DIR/test-host" 2>/dev/null || true)}
+[ -n "$HOST" ] || { echo "autotest: FAIL — no target host: set HOST or \$SEEDLING_DIR/test-host (0600, outside the repo)" >&2; exit 1; }
 VARIANT=${1:-hw}
 
 # --- checks ---
@@ -48,7 +51,7 @@ bash "$here/remote-flash.sh" "$SEEDLING_DIR/e2e/stick-$VARIANT.img" "$HOST" || f
 say "writing wifi.conf on the stick..."
 # read credentials from the protected wifi-env (never in argv or output)
 if [ ! -f "$SEEDLING_DIR/wifi-creds" ]; then
-  say "credential file missing: $SEEDLING_DIR/wifi-creds (create with 0600, one SSID:PSK per line)"
+  say "credential file missing: $SEEDLING_DIR/wifi-creds (create with 0600; full wpa_supplicant wifi.conf content — network={...} blocks, one per SSID)"
   fail "no Wi-Fi credentials available — refusing to fall back to hardcoded values"
 fi
 CRED_FILE="$SEEDLING_DIR/wifi-creds"

@@ -58,7 +58,7 @@ say "wi-fi boot stick v4 (overlay 2026-11-06)"
 # ---- remote serial console (bb.debug=<workstation-ip>) ----
 # Captures everything from here on and mirrors it to the workstation via
 # UDP syslog (port 514). A "serial cable" over whatever network the machine
-# has. Enable with bb.debug=192.0.2.206 on the cmdline.
+# has. Enable with bb.debug=<syslog-collector-ip> on the cmdline.
 DBG_TARGET=""
 for x in $(cat /proc/cmdline 2>/dev/null); do
 	case "$x" in bb.debug=*) DBG_TARGET="${x#bb.debug=}" ;; esac

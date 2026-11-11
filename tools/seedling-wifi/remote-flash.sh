@@ -8,8 +8,11 @@
 set -euo pipefail
 
 SSH_KEY=${SSH_KEY:-$HOME/.ssh/klh-seedling}
-HOST=${2:-192.0.2.225}
+# HOST: no LAN address in the public repo — pass it, export it, or put it
+# in $SEEDLING_DIR/test-host (0600, outside the repo).
+HOST=${2:-${HOST:-$(cat "$HOME/src/seedling-m1/test-host" 2>/dev/null || true)}}
 IMAGE=${1:?usage: remote-flash.sh image.img [host]}
+[ -n "$HOST" ] || { echo "no target host: pass it as \$2, or HOST env, or \$SEEDLING_DIR/test-host (0600)" >&2; exit 1; }
 
 [ -s "$IMAGE" ] || { echo "no such image: $IMAGE" >&2; exit 1; }
 SIZE=$(stat -c%s "$IMAGE")

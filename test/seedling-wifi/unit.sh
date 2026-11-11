@@ -89,12 +89,30 @@ grep -q "wpa_passphrase=$fxpsk" "$here/script-bboot-wifi" &&
 	bad "hwsim AP passphrase matches the fixture"
 
 echo "unit: no hardcoded credentials anywhere"
-# scan ALL tracked shell/python files for the known-exposed pattern
-LEAKS=$(grep -rn "apekat" "$here" "$repo/test" "$repo/tools" 2>/dev/null | grep -v ".git" | wc -l)
-[ "$LEAKS" -eq 0 ] && ok "no hardcoded Wi-Fi credentials in tools/tests" || bad "hardcoded credential found ($LEAKS occurrences)"
-# also scan for any PSK-like assignment outside write-wifi-conf.sh
-SUSPECT=$(grep -rn "psk=" "$here" "$repo/tools" 2>/dev/null | grep -v ".git" | grep -v "write-wifi-conf" | grep -v "wifi-creds" | wc -l || echo 0)
-[ "$SUSPECT" -eq 0 ] && ok "no PSK assignments outside the provisioning tool" || bad "PSK assignment outside provisioning ($SUSPECT)"
+# Guard 1 (shape): production tools must never carry a literal PSK assignment.
+# Matches psk="<literal>" (8+ chars, not a variable) — synthetic fixtures in
+# test/ are excluded on purpose; tools/ has no legitimate literal PSKs.
+LEAKS=$(grep -rnE 'psk="[^"$}{]{8,}"' "$repo/tools" 2>/dev/null | grep -v '.git' | wc -l)
+[ "$LEAKS" -eq 0 ] && ok "no literal PSK assignments in tools/" || bad "literal PSK assignment in tools/ ($LEAKS occurrences)"
+# Guard 2 (exact value): if the operator keeps a private needle file
+# (~/.local/share/kali-live-headless/leak-needle, 0600, one value per line —
+# NEVER committed), scan the whole tree for each value so a reintroduction of
+# any known-exposed secret fails the suite. Absent needle file = skip-ok
+# (synthetic CI environments have nothing to check against).
+NEEDLE=~/.local/share/kali-live-headless/leak-needle
+if [ -r "$NEEDLE" ]; then
+	HITS=0
+	while IFS= read -r v || [ -n "$v" ]; do
+		[ -n "$v" ] || continue
+		HITS=$((HITS + $(grep -rF -- "$v" "$here" "$repo/tools" "$repo/docs" 2>/dev/null | grep -v '.git' | wc -l)))
+	done < "$NEEDLE"
+	[ "$HITS" -eq 0 ] && ok "no known-exposed secret values present" || bad "known-exposed secret value found ($HITS occurrences)"
+else
+	echo "unit: leak-needle absent — exact-value scan skipped (ok)"
+fi
+# Guard 3: any psk= reference outside the provisioning tooling is suspect
+SUSPECT=$(grep -rn 'psk=' "$repo/tools" 2>/dev/null | grep -v '.git' | grep -v 'write-wifi-conf' | grep -v 'wifi-creds' | grep -vE 'psk="?\$|psk=.*\$\{|psk=<|psk=\?' | wc -l || echo 0)
+[ "$SUSPECT" -eq 0 ] && ok "no PSK handling outside the provisioning tool" || bad "PSK handling outside provisioning ($SUSPECT)"
 
 echo "unit: render-cmdline"
 T=$(mktemp -d)

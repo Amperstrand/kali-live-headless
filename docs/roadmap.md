@@ -123,7 +123,7 @@ vm-store (restored + wired), zstd squashfs experiment (measured — see
 
 ## Seedling lane (2026-11-10 session end)
 - M1 medium ✅ · M1b production-ISO conversion ✅ · M2 birth ✅ · M3 claim ✅ · M4 fleet registry ✅ · M5 signed-pointer update ✅ (all QEMU)
-- **First real-hardware boot completed**: machine S5004EAA (t7a) birthed, claimed, was reachable at 192.0.2.225
+- **First real-hardware boot completed**: machine S5004EAA (t7a) birthed, claimed, was reachable at <LAN-HOST>
 - WiFi on real hardware: associated + streamed on first attempt, but **deauth under sustained streaming load** — power_save fix built and flashed, awaiting boot test
 - Suite: unit 62/0, e2e 12/0 (power_save + remote serial + wifi handoff not yet in suite)
 - Secure Boot: proven in QEMU; real-hw enrollment pending

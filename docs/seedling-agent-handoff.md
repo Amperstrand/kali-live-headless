@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-The seedling-wifi lane has **all milestones (M1, M1b, M2–M5) proven in QEMU** and **the first real hardware boot completed** (machine S5004EAA / t7a birthed, was claimed, and was reachable at 192.0.2.225). The remaining gap is **WiFi stability on real hardware under streaming load** — the fix (power_save off) is built, flashed, and awaiting one more boot test.
+The seedling-wifi lane has **all milestones (M1, M1b, M2–M5) proven in QEMU** and **the first real hardware boot completed** (machine S5004EAA / t7a birthed, was claimed, and was reachable at <LAN-HOST>). The remaining gap is **WiFi stability on real hardware under streaming load** — the fix (power_save off) is built, flashed, and awaiting one more boot test.
 
 ## Where everything lives
 
@@ -20,14 +20,14 @@ The seedling-wifi lane has **all milestones (M1, M1b, M2–M5) proven in QEMU** 
 
 - WiFi: full driver tree + firmware, phy80211 detection, rfkill-first, **power_save off after association** (THE deauth fix)
 - Remote unlock: wrapper captures URI → banounce (NIP-44 to owner) → bunlock answers
-- Remote serial: `bb.debug=192.0.2.206` on the cmdline — all initramfs console output mirrors to UDP :514
+- Remote serial: `bb.debug=<syslog-collector-ip>` on the cmdline — all initramfs console output mirrors to UDP :514
 - WiFi handoff: credentials copied into rootfs; systemd re-associates after switch_root
 - Key-only SSH: ed25519 authorized_keys, PasswordAuthentication no, build-time host keys
 - NTP on cmdline (LAN router first)
 
 ## What to do next (UPDATED 2026-11-11)
 
-The remote machine (t7a / S5004EAA / 192.0.2.225) is **up and running**
+The remote machine (t7a / S5004EAA / <LAN-HOST>) is **up and running**
 via WiFi (5 GHz, SSID "5"). The autonomous loop is proven:
 - Reboot → auto-unlock → boot → SSH in **97 seconds**
 - Remote USB flash works (`remote-flash.sh`) — the USB never moves
@@ -62,10 +62,11 @@ via WiFi (5 GHz, SSID "5"). The autonomous loop is proven:
 tools/seedling-wifi/autotest.sh hw
 
 # remote flash only (no rebuild):
-tools/seedling-wifi/remote-flash.sh <image.img> 192.0.2.225
+tools/seedling-wifi/remote-flash.sh <image.img> <LAN-HOST>
+
 
 # manual reboot test:
-ssh -i ~/.ssh/klh-seedling root@192.0.2.225 reboot
+ssh -i ~/.ssh/klh-seedling root@<LAN-HOST> reboot
 # (wait ~97s for it to come back)
 ```
 
@@ -86,7 +87,7 @@ cd ~/src/kali-debian-spike
 
 # 1. testenv must be running (check: ss -ltn | grep 8443)
 #    if dead: cd ~/src/seedling-m1 && nohup ./bin/bboot-testenv -listen :8443 \
-#      -hosts "192.0.2.206,10.0.2.2,127.0.0.1,localhost,blossom.test" \
+#      -hosts "<LAN-SYSLOG-HOST>,10.0.2.2,127.0.0.1,localhost,blossom.test" \
 #      -allow 98cf1bfe1cc7dd1409b256950ee35c416a6f20abc7d3917a6b3af55eb9cb0997 \
 #      -dir ./testenv-m1 &
 
@@ -157,3 +158,29 @@ Dogfood branch (`wifi-boot-dogfood` in the seedling clone) carries:
 
 - Private: `~/.ssh/klh-seedling` (NEVER leave this laptop)
 - Public: `~/.ssh/klh-seedling.pub` (baked into the rootfs at build time)
+
+## Git recovery (2026-11-11, recovery session)
+
+The morning's force-push churn removed the refactor lineage from `main`
+twice (08:29 sanitized rewrite clobbered at ~10:45; spike line re-advanced
+at 14:25). A dedicated recovery session then:
+
+- restored BOTH lines as a true merge (this history): the A/B spike +
+  docs line and the refactor lineage (PRs #81–#91) — no cherry-picks,
+  merge topology preserved
+- published a sanitized history: the exposed Wi-Fi PSK is text-replaced
+  in every published blob (git-filter-repo)
+- `autotest.sh` reads credentials from `$SEEDLING_DIR/wifi-creds`
+  (0600, outside the repo, gitignored as belt-and-braces) — multi-SSID,
+  one `SSID:PSK` per line; refuses to run without it
+- `HOST` has no in-tree default: set `HOST` env or `$SEEDLING_DIR/test-host`
+- `unit.sh` guards: literal-PSK shape scan over `tools/` + optional
+  exact-value scan via `~/.local/share/kali-live-headless/leak-needle`
+  (0600, never committed)
+
+**Still outstanding:**
+1. **Rotate the lab AP PSK (both SSIDs)** — the old value is compromised
+   and lives in GitHub PR caches and any pre-recovery clones
+2. PR refs #90/#91 still serve pre-rewrite commits (read-only refs) —
+   GitHub Support must purge cached views
+3. Collaborator clones: re-clone; never merge old refs back
