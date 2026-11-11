@@ -152,6 +152,7 @@ run_hwsim_test() {
 	[ "$n" -ge 2 ] || { say "hwsim: radios did not appear"; return 1; }
 	HWSIM_AP=$(radios | sed -n 1p)
 	DEV=$(radios | sed -n 2p)
+	HWSIM_PSK='not-a-real-psk-8chars' # leak-ok: hwsim test-AP passphrase — synthetic, coordinated with the unit fixture
 	say "hwsim: AP on $HWSIM_AP, station on $DEV"
 	cat > /run/hostapd-hwsim.conf <<EOF
 driver=nl80211
@@ -161,7 +162,7 @@ hw_mode=g
 channel=6
 auth_algs=1
 wpa=2
-wpa_passphrase=not-a-real-psk-8chars
+wpa_passphrase=$HWSIM_PSK
 wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 EOF

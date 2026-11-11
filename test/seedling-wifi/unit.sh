@@ -84,18 +84,30 @@ grep -q 'ssid=' "$fx" && grep -q 'psk=' "$fx" &&
 grep -q 'ssid=' "$fx" && grep -q 'psk=' "$fx" && [ "$(wc -c < "$fx")" -gt 40 ] &&
 	ok "wifi-test.conf is a sane wpa_supplicant config" ||
 	bad "wifi-test.conf is a sane wpa_supplicant config"
-# the fixture PSK must match what the hwsim AP broadcasts
+# the fixture PSK must match what the hwsim AP broadcasts (via HWSIM_PSK)
 fxpsk=$(sed -n 's/.*psk="\(.*\)".*/\1/p' "$fx")
-grep -q "wpa_passphrase=$fxpsk" "$here/script-bboot-wifi" &&
-	ok "hwsim AP passphrase matches the fixture" ||
-	bad "hwsim AP passphrase matches the fixture"
+grep -q "HWSIM_PSK='$fxpsk'" "$here/script-bboot-wifi" &&
+	grep -q 'wpa_passphrase=$HWSIM_PSK' "$here/script-bboot-wifi" &&
+	ok "hwsim AP passphrase matches the fixture (via leak-ok'd HWSIM_PSK)" ||
+	bad "hwsim AP passphrase matches the fixture (via leak-ok'd HWSIM_PSK)"
 
 echo "unit: no hardcoded credentials anywhere"
-# Guard 1 (shape): production tools must never carry a literal PSK assignment.
-# Matches psk="<literal>" (8+ chars, not a variable) — synthetic fixtures in
-# test/ are excluded on purpose; tools/ has no legitimate literal PSKs.
-LEAKS=$(grep -rnE 'psk="[^"$}{]{8,}"' "$repo/tools" 2>/dev/null | grep -v '.git' | wc -l)
+# Guard 1 (shape): production tools must never carry a literal passphrase
+# assignment — plain quotes, escaped quotes (the 2026-11-11 leak form),
+# single quotes; variables and <placeholders> are always fine.
+LEAKPAT='(psk|wpa_passphrase)=\\{0,2}["'"'"'][^"$}'"'"'{]{8,}["'"'"']'
+LEAKS=$(grep -rnE "$LEAKPAT" "$repo/tools" 2>/dev/null | grep -v '.git' | wc -l)
 [ "$LEAKS" -eq 0 ] && ok "no literal PSK assignments in tools/" || bad "literal PSK assignment in tools/ ($LEAKS occurrences)"
+# Guard 1b: the shape regex MUST catch the historical leak form — if this
+# ever fails, the guard itself regressed and the door is open again.
+# (fixture assembled from pieces so no line of this file is itself matchable)
+P1='psk=\\'
+P2='"leaked-'
+P3='secret-20-chars"'
+T=$(mktemp)
+printf '%s%s%s\n' "$P1" "$P2" "$P3" > "$T"
+grep -qE "$LEAKPAT" "$T" && ok "shape regex catches the escaped-quote leak form" || bad "shape regex regressed — would miss the 2026-11-11 leak form"
+rm -f "$T"
 # Guard 2 (exact value): if the operator keeps a private needle file
 # (~/.local/share/kali-live-headless/leak-needle, 0600, one value per line —
 # NEVER committed), scan the whole tree for each value so a reintroduction of
