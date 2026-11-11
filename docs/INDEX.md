@@ -38,6 +38,12 @@ navigating the 30+ docs that accreted around it.
 - [`klhconfig-design.md`](klhconfig-design.md) — the config partition contract
 - [`x280-test-host.md`](x280-test-host.md) — a stick as its own test host (measured)
 
+## Seedling lane (the Wi-Fi UKI stick that streams its rootfs)
+- [`seedling-wifi-boot.md`](seedling-wifi-boot.md) — the Wi-Fi UKI stick: architecture, overlay, e2e proof
+- [`seedling-comparison.md`](seedling-comparison.md) — how this repo's stick and Seedling's differ
+- [`research/ab-boot-recovery-patterns.md`](research/ab-boot-recovery-patterns.md) — is A/B booting the stick over-engineering? (survey: PXE/ChromeOS/Android, BootNext, watchdogs; verdict: no — watchdog + pointer rollback + spare stick)
+- [`seedling-ab-boot-spike.md`](seedling-ab-boot-spike.md) — the OVMF spike that confirmed boot counting doesn't fall back; decision record
+
 ## History / postmortems (read before touching the related code)
 - [`wifi-drop-postmortem-2026-10-21.md`](wifi-drop-postmortem-2026-10-21.md)
 - [`upstream-drift-precheck-2026-10-22.md`](upstream-drift-precheck-2026-10-22.md)

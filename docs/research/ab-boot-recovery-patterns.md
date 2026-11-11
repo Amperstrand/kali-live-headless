@@ -5,6 +5,11 @@
 mechanisms, UEFI BootNext, hardware watchdogs, and bootloader fallback schemes, applied to
 Seedling's architecture (frozen UKI on USB + network-fetched verified rootfs dictated by a
 signed Nostr pointer event).
+**Status:** decision evidence, and the decision is made — A/B on the stick is REJECTED.
+The spike ([`seedling-ab-boot-spike.md`](../seedling-ab-boot-spike.md)) independently
+confirmed systemd-boot boot counting does not fall back under OVMF, and the recommendation
+was adopted: a progress-gated boot watchdog (`bb.watchdog-sec=N` in
+`tools/seedling-wifi/bbootd-wrapper`) plus pointer rollback plus a spare stick replace A/B.
 
 ---
 
