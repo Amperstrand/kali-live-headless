@@ -195,8 +195,12 @@ if command -v mkfs.vfat >/dev/null && command -v mcopy >/dev/null; then
 	bash "$here/make-rescue-stick.sh" "$TO/fake.efi" "$TO/fake.erofs" "$TO/stick.img" 16 >/dev/null 2>&1 &&
 		mdir -i "$TO/stick.img@@2048s" ::/rescue 2>/dev/null | grep -q rootfs.erofs &&
 		mdir -i "$TO/stick.img@@2048s" ::/EFI/BOOT 2>/dev/null | grep -q BOOTX64 &&
-		ok "make-rescue-stick lays out UKI + rescue/rootfs.erofs" ||
+		mtype -i "$TO/stick.img@@2048s" ::/rescue/STAMP 2>/dev/null | grep -q '^repo: ' &&
+		ok "make-rescue-stick lays out UKI + rescue/rootfs.erofs + STAMP" ||
 		bad "make-rescue-stick layout wrong"
+	bash "$here/rescue-stick-info.sh" "$TO/stick.img" >/dev/null 2>&1 &&
+		ok "rescue-stick-info reads the STAMP and verifies the UKI" ||
+		bad "rescue-stick-info failed on a fresh stick"
 	rm -rf "$TO"
 else
 	echo "  skip  make-rescue-stick layout test (mtools absent)"
