@@ -88,6 +88,14 @@ grep -q "wpa_passphrase=$fxpsk" "$here/script-bboot-wifi" &&
 	ok "hwsim AP passphrase matches the fixture" ||
 	bad "hwsim AP passphrase matches the fixture"
 
+echo "unit: no hardcoded credentials anywhere"
+# scan ALL tracked shell/python files for the known-exposed pattern
+LEAKS=$(grep -rn "apekat" "$here" "$repo/test" "$repo/tools" 2>/dev/null | grep -v ".git" | wc -l)
+[ "$LEAKS" -eq 0 ] && ok "no hardcoded Wi-Fi credentials in tools/tests" || bad "hardcoded credential found ($LEAKS occurrences)"
+# also scan for any PSK-like assignment outside write-wifi-conf.sh
+SUSPECT=$(grep -rn "psk=" "$here" "$repo/tools" 2>/dev/null | grep -v ".git" | grep -v "write-wifi-conf" | grep -v "wifi-creds" | wc -l || echo 0)
+[ "$SUSPECT" -eq 0 ] && ok "no PSK assignments outside the provisioning tool" || bad "PSK assignment outside provisioning ($SUSPECT)"
+
 echo "unit: render-cmdline"
 T=$(mktemp -d)
 export MANIFEST=aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111

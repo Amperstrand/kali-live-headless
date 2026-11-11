@@ -46,14 +46,21 @@ bash "$here/remote-flash.sh" "$SEEDLING_DIR/e2e/stick-$VARIANT.img" "$HOST" || f
 
 # --- write wifi.conf (remote) ---
 say "writing wifi.conf on the stick..."
+# read credentials from the protected wifi-env (never in argv or output)
+if [ ! -f "$SEEDLING_DIR/wifi-creds" ]; then
+  say "credential file missing: $SEEDLING_DIR/wifi-creds (create with 0600, one SSID:PSK per line)"
+  fail "no Wi-Fi credentials available — refusing to fall back to hardcoded values"
+fi
+CRED_FILE="$SEEDLING_DIR/wifi-creds"
+[ "$(stat -c%a "$CRED_FILE")" = "600" ] || fail "credential file must be 0600"
+# stream the credential file to the remote machine without exposing it in argv
+dd if="$CRED_FILE" bs=4096 status=none | \
 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-  -o ConnectTimeout=5 root@"$HOST" '
-STICK=$(ls /sys/block/*/ | head -1)
-PART=$(lsblk -no NAME,LABEL | grep BBOOT | sed "s/[│├└─]*//g" | awk "{print \$1}" | head -1)
-[ -n "$PART" ] && mount -t vfat "/dev/$PART" /mnt 2>/dev/null && \
-  printf "network={\n  ssid=\"5\"\n  psk=\"REDACTED-WIFI-PSK\"\n  key_mgmt=WPA-PSK\n  scan_ssid=1\n}\nnetwork={\n  ssid=\"2\"\n  psk=\"REDACTED-WIFI-PSK\"\n  key_mgmt=WPA-PSK\n  scan_ssid=1\n}\n" > /mnt/wifi.conf && \
-  sync && umount /mnt && echo "wifi.conf written"
-' 2>/dev/null || say "WARNING: wifi.conf write may have failed"
+  -o ConnectTimeout=5 root@"$HOST" \
+  'PART=$(lsblk -rno NAME,LABEL | grep BBOOT | awk "{print \$1}" | head -1);
+   [ -n "$PART" ] && mkdir -p /tmp/wusb && mount -t vfat "/dev/$PART" /tmp/wusb 2>/dev/null &&
+   cat > /tmp/wusb/wifi.conf && sync && umount /tmp/wusb && echo "wifi.conf written from protected source"' \
+  2>/dev/null || say "WARNING: wifi.conf write may have failed"
 
 # --- reboot + wait ---
 say "rebooting $HOST..."
