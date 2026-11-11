@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# labgrid-ssh — tunnel to the labgrid coordinator via SSH (zero Nostr code needed)
+# Usage: labgrid-ssh [command...]
+#   labgrid-ssh labgrid-client places
+#   labgrid-ssh labgrid-client -p t7a acquire
+set -euo pipefail
+HOST=${LABGRID_HOST:-192.168.13.206}
+PORT=${LABGRID_PORT:-20408}
+SSH_KEY=${SSH_KEY:-$HOME/.ssh/klh-seedling}
+
+# set up the tunnel (background, auto-close)
+TUNNEL_PORT=$(shuf -i 21000-21999 -n 1)
+ssh -i "$SSH_KEY" -f -N -L "${TUNNEL_PORT}:127.0.0.1:${PORT}" \
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+  -o ExitOnForwardFailure=yes root@"$HOST" 2>/dev/null
+trap "kill %1 2>/dev/null" EXIT
+
+# run the command through the tunnel
+export LG_COORDINATOR="127.0.0.1:${TUNNEL_PORT}"
+"$@"
