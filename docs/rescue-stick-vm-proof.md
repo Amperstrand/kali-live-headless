@@ -142,6 +142,7 @@ Two hard-won lessons baked in:
 | rescue fails cleanly when the network is gone | ✅ proven (BusyBox terminal) |
 | watchdog fires on hang / no-fires on clean outcomes | ✅ unit-proven; VM hang fixture owed |
 | rescue boots to login offline (no unlocker) | ✅ **proven** — `boot=klhrescue` static-rootfs mode, 4/0 twice (rescue-v2) |
+| repeated power-cuts never wedge the machine | ✅ proven — `soak` 2/0: 6/6 mid-boot cuts, convergence to rescue on the interrupted vars |
 
 Still hardware-only: USB port→device-path stability, TCO watchdog, real
 firmware quirks, out-of-band power.

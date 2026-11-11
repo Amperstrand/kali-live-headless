@@ -239,7 +239,11 @@ soak)
 	cut_seen=0
 	i=1
 	while [ $i -le "$CYCLES" ]; do
-		PRESERVE=1
+		# cycle 1 is the machine's FIRST boot (fresh vars = provision);
+		# the cuts then hit an already-enumerated machine. PRESERVE=1 on
+		# a fresh WORK dir would hand QEMU a nonexistent vars file and
+		# every cycle would die instantly (found via the empty counters)
+		if [ $i -eq 1 ]; then PRESERVE=0; else PRESERVE=1; fi
 		t=$((RANDOM % 90 + 10))
 		boot_until "$WORK/soak-$i.log" '__SENTINEL_NEVER_MATCHES__' "$t" "$RESUE_STICK" || true
 		kill_line=$(grep -acE 'BdsDxe: starting' "$WORK/soak-$i.log" 2>/dev/null || true)
