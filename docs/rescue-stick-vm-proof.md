@@ -147,6 +147,36 @@ proof. An `announced-rescue` variant (wifi+sshd on the offline root) was
 incident shows that serial-console-via-labgrid is not enough to fix a
 machine remotely. One rescue image, boot it anywhere.
 
+## 7. The watchdog fires on a real hang — `stall` (hardening session)
+
+The last "believed but never witnessed" row. Fixture:
+`tools/seedling-wifi/stall-proxy.py` — a TLS proxy (reusing the testenv's
+own cert, trusted by the guest's baked CA) that serves the manifest
+fully then **freezes mid-body** once a response stream passes 16 KiB:
+the first 4 MiB chunk gets ~16 KiB in and then silence, socket held
+open. bbootd's body read has no deadline → true hang, no
+`/run/bboot/ready`, no `/run/bboot/failed`.
+
+The `stall` UKI variant boots with `bb.watchdog-sec=60` and
+`bb.noremote=1` (the wrapper stays silent — zero announcer traffic, no
+relay contact, coexists with the standing lab; the watchdog arms before
+the noremote gate). Result (4/0):
+
+```
+bboot-wifi: watchdog armed (60s)
+bboot: manifest <hash>: ok
+stall-proxy: response stream hit the 16384-byte cap — FREEZING mid-body
+bboot-wifi: watchdog expired after 60s — rebooting
+<reboot> ... bboot-wifi: watchdog armed (60s)   <- cycle 2
+```
+
+Asserted: expiry fired; two armed-lines (the machine rebooted and
+re-armed within the window); ZERO `bboot: FAILED` lines (a hang, not a
+clean failure — that's `bb.reboot-on-fail`'s case, and the two compose
+without double-firing). Harness lesson: killing QEMU at the first
+expiry beheads cycle 2 before it can re-arm — the stall mode runs a
+fixed window and lets the machine live through its own reboot.
+
 ## What this settles
 
 | claim | status |
@@ -155,7 +185,7 @@ machine remotely. One rescue image, boot it anywhere.
 | BootNext one-shot override + consumption | ✅ proven (3-boot chain) |
 | rescue medium: pinned manifest, wifi off, serial-identifiable | ✅ proven |
 | rescue fails cleanly when the network is gone | ✅ proven (BusyBox terminal) |
-| watchdog fires on hang / no-fires on clean outcomes | ✅ unit-proven; VM hang fixture owed |
+| watchdog fires on hang / no-fires on clean outcomes | ✅ **proven at boot level** — `stall` 4/0: mid-chunk freeze, expiry, reboot, re-arm; bbootd never wrote FAILED |
 | rescue boots to login offline (no unlocker) | ✅ **proven** — `boot=klhrescue` static-rootfs mode, 4/0 twice (rescue-v2) |
 | repeated power-cuts never wedge the machine | ✅ proven — `soak` 2/0: 6/6 mid-boot cuts, convergence to rescue on the interrupted vars |
 

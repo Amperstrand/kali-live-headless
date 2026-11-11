@@ -47,7 +47,7 @@ build-uki)
 	variant=qemu
 	[ "${1:-}" = "--variant" ] && variant=${2:?variant name}
 	case "$variant" in
-	qemu|hwsim|nowifi|isolated|remote|fallback|pointer|rescue|rescue-local|hw|hwsafe) ;;
+	qemu|hwsim|nowifi|isolated|remote|fallback|pointer|stall|rescue|rescue-local|hw|hwsafe) ;;
 	*) echo "variant must be qemu|hwsim|nowifi|rescue|hw" >&2; exit 1 ;;
 	esac
 	mkdir -p "$SEEDLING_DIR/out" "$SEEDLING_DIR/cmdlines"

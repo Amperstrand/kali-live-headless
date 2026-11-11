@@ -158,6 +158,16 @@ grep -q '\*" bb\.rescue=1 "\*' "$here/bbootd-wrapper" &&
 grep -q 'bb.rescue=1) exit 0' "$here/script-bboot-wifi" &&
 	ok "initramfs wifi path exits on rescue" || bad "initramfs rescue exit missing"
 
+echo "unit: stall variant (watchdog-hang fixture)"
+bash "$here/render-cmdline.sh" stall "$T/stall.txt" >/dev/null 2>&1 &&
+	grep -q 'bb.watchdog-sec=60' "$T/stall.txt" &&
+	grep -q 'bb.noremote=1' "$T/stall.txt" &&
+	grep -q '10\.0\.2\.2:8453' "$T/stall.txt" &&
+	ok "stall variant: watchdog armed, wrapper silent, proxy port" ||
+	bad "stall variant render"
+command -v python3 >/dev/null && python3 -m py_compile "$here/stall-proxy.py" &&
+	ok "stall-proxy.py compiles" || bad "stall-proxy.py does not compile"
+
 echo "unit: rescue-local (offline rescue, rescue-v2)"
 bash "$here/render-cmdline.sh" rescue-local "$T/rescue-local.txt" >/dev/null 2>&1 &&
 	grep -q 'boot=klhrescue' "$T/rescue-local.txt" &&

@@ -77,6 +77,16 @@ case "$variant" in
 		extra="bb.d=bboot:m1"
 		server=$gateway:8443
 		;;
+	stall)
+		# watchdog-hang fixture: boots via the stall-proxy (10.0.2.2:8453)
+		# which serves the manifest then FREEZES mid-chunk — bbootd hangs
+		# without writing ready/failed, and bb.watchdog-sec must fire.
+		# bb.noremote keeps the wrapper silent (no announcer -> zero
+		# relay contact; the watchdog arms before the noremote gate).
+		consoles="console=ttyS0,115200"
+		extra="bb.noremote=1 bb.watchdog-sec=60"
+		server=$gateway:8453
+		;;
 	rescue)
 		# rescue medium (two-stick design, recovery report §4): PINNED
 		# manifest — never chases the pointer event, so a poisoned or

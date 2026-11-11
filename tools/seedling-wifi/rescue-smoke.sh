@@ -27,6 +27,7 @@
 # --variant rescue and qemu), OVMF 4m firmware, KVM, sgdisk+mtools for the
 # broken-stick construction, virt-fw-vars for the surgery.
 set -u
+here=$(cd "$(dirname "$0")" && pwd)
 SEEDLING_DIR=${SEEDLING_DIR:-$HOME/src/seedling-m1}
 OVMF_CODE=/usr/share/edk2/x64/OVMF_CODE.4m.fd
 OVMF_VARS=/usr/share/edk2/x64/OVMF_VARS.4m.fd
@@ -49,8 +50,10 @@ PRIMARY_STICK="$SEEDLING_DIR/e2e/stick-qemu.img"
 
 # boot_until SERIAL SENTINEL TIMEOUT_S [EXTRA_DRIVE] — PRESERVE=1 keeps the
 # vars file across calls (needed for multi-boot tests: enumeration and
-# BootNext surgery live in the varstore). Kills QEMU once SENTINEL appears
-# or the timeout expires (timeout+30 hard ceiling).
+# BootNext surgery live in the varstore). NET=1 attaches the QEMU user
+# NIC (the stall fixture needs 10.0.2.2; every other mode stays -nic
+# none). Kills QEMU once SENTINEL appears or the timeout expires
+# (timeout+30 hard ceiling).
 boot_until() {
 	local serial=$1 sentinel=$2 tmo=$3 extra=${4:-}
 	rm -f "$serial"
@@ -62,6 +65,7 @@ boot_until() {
 	timeout $((tmo + 30)) qemu-system-x86_64 \
 		-m 2048 -smp 2 -enable-kvm -nic none \
 		-device virtio-rng-pci \
+		${NET:+-netdev user,id=n1 -device virtio-net-pci,netdev=n1} \
 		-drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
 		-drive if=pflash,format=raw,file="$WORK/vars.fd" \
 		-drive file="$BOOT_IMG",format=raw,if=virtio \
@@ -311,7 +315,71 @@ offline)
 	fi
 	;;
 
-*) sed -n '2,8p' "$0"; exit 1 ;;
+stall)
+	# watchdog-hang proof: boot behind the stall-proxy — the manifest
+	# arrives, the first chunk freezes mid-body, bbootd hangs without
+	# writing ready/failed, and the watchdog must FIRE (reboot -f) and
+	# the machine must begin a fresh boot. Proxy lifecycle is ours.
+	need_stick "$SEEDLING_DIR/e2e/stick-stall.img" stall
+	command -v python3 >/dev/null || { say "stall: need python3"; exit 2; }
+	PROXY_LOG="$WORK/stall-proxy.log"
+	python3 "$here/stall-proxy.py" 8453 16384 > "$PROXY_LOG" 2>&1 &
+	local_proxy_pid=$!
+	say "stall: proxy up (pid $local_proxy_pid), booting with the network"
+	NET=1
+	BOOT_IMG="$SEEDLING_DIR/e2e/stick-stall.img"
+	# run a fixed window and let the machine LIVE through the reboot —
+	# killing at the first expiry (boot_until's job) beheads the second
+	# cycle before it can re-arm (found the hard way, 3/1)
+	rm -f "$WORK/vars.fd"
+	cp "$OVMF_VARS" "$WORK/vars.fd"
+	# shellcheck disable=SC2086
+	timeout 330 qemu-system-x86_64 \
+		-m 2048 -smp 2 -enable-kvm \
+		-device virtio-rng-pci \
+		-netdev user,id=n1 -device virtio-net-pci,netdev=n1 \
+		-drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+		-drive if=pflash,format=raw,file="$WORK/vars.fd" \
+		-drive file="$BOOT_IMG",format=raw,if=virtio \
+		-display none -serial file:"$WORK/s.log" >/dev/null 2>&1 &
+	qpid=$! waited=0
+	while [ $waited -lt 300 ]; do
+		armed=$(grep -ac 'watchdog armed' "$WORK/s.log" 2>/dev/null || true)
+		[ "${armed:-0}" -ge 2 ] && break
+		kill -0 $qpid 2>/dev/null || break
+		sleep 10; waited=$((waited + 10))
+	done
+	kill $qpid 2>/dev/null; wait $qpid 2>/dev/null
+	NET=
+	if grep -aq 'watchdog expired after 60s' "$WORK/s.log"; then
+		grep -a 'watchdog expired' "$WORK/s.log" | head -1 | sed 's/^/    /'
+		ok "watchdog FIRED on a hung boot (mid-chunk stall)"
+	else
+		kill "$local_proxy_pid" 2>/dev/null
+		bad "watchdog never fired — the hung boot stayed hung"
+		tail -6 "$WORK/s.log" 2>/dev/null | sed 's/^/    /'
+	fi
+	if grep -aq 'watchdog armed (60s)' "$WORK/s.log"; then
+		ok "watchdog armed at boot (serial evidence)"
+	else
+		bad "no 'watchdog armed' line — wrapper did not run the watchdog block"
+	fi
+	armed=$(grep -ac 'watchdog armed' "$WORK/s.log" 2>/dev/null || true)
+	if [ "${armed:-0}" -ge 2 ]; then
+		ok "machine rebooted and re-armed ($armed armed-lines = fresh boot cycles)"
+	else
+		bad "no second boot cycle after the expiry ($armed armed-line)"
+	fi
+	if grep -aq 'bboot: FAILED' "$WORK/s.log"; then
+		bad "bbootd clean-failed instead of hanging (fixture defeated by a deadline)"
+	else
+		ok "bbootd never wrote FAILED — a true hang, exactly the watchdog's case"
+	fi
+	grep -a 'FREEZING' "$PROXY_LOG" 2>/dev/null | head -1 | sed 's/^/    proxy: /'
+	kill "$local_proxy_pid" 2>/dev/null
+	;;
+
+*) sed -n '2,12p' "$0"; exit 1 ;;
 esac
 echo "RESULT: rescue-smoke $1 pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
