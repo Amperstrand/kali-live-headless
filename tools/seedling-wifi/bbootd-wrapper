@@ -12,10 +12,34 @@ set -u
 if [ -e /run/bboot.remote-done ] || [ ! -x /sbin/bbootd.real ]; then
 	exec /sbin/bbootd.real "$@"
 fi
+
+# bb.reboot-on-fail: if the Seedling boot fails, force an immediate reboot
+# instead of letting the initramfs panic handler drop to a BusyBox shell.
+# This is what enables A/B boot assessment — the reboot decrements the
+# boot counter and eventually falls back to the known-good entry.
+REBOOT_ON_FAIL=0
+for x in $(cat /proc/cmdline 2>/dev/null); do
+	case "$x" in bb.reboot-on-fail=1) REBOOT_ON_FAIL=1 ;; esac
+done
+if [ "$REBOOT_ON_FAIL" = 1 ]; then
+	# watch for bbootd's failure marker and reboot when it appears
+	(
+		while [ ! -e /run/bboot/failed ]; do
+			sleep 2
+		done
+		echo "bboot-wifi: boot FAILED — rebooting (bb.reboot-on-fail=1)" > /dev/console 2>&1
+		sync
+		sleep 1
+		reboot -f
+	) </dev/null >/dev/null 2>&1 &
+fi
 : > /run/bboot.remote-done
 
 case " $(cat /proc/cmdline 2>/dev/null) " in
-*" bb.noremote=1 "*) exec /sbin/bbootd.real "$@" ;;
+*" bb.noremote=1 "*|*" bb.nowifi=1 "*)
+	# bb.nowifi disables the whole wifi/remote machinery, this reader
+	# included — the nowifi stage caught it running anyway
+	exec /sbin/bbootd.real "$@" ;;
 esac
 
 mkdir -p /run 2>/dev/null
@@ -35,18 +59,33 @@ if [ -n "$R" ] && [ -x /usr/local/sbin/bannounce ]; then
 			sleep 2
 			n=$((n + 1))
 		done
-		[ -s /run/bboot.uri ] || exit 0
-		URI=$(cat /run/bboot.uri)
-		a=0
-		while [ $a -lt 5 ]; do
-			if timeout 25 /usr/local/sbin/bannounce -relay "$R" -owner "$OWNER" -uri "$URI"; then
-				exit 0
+		# bounded life: the announcer must not outlive its usefulness —
+		# after switch_root the initramfs's busybox vanishes and `sleep`
+		# breaks, spraying errors forever (found live on the desktop)
+		last=""
+		pubs=0
+		ticks=0
+		while [ $ticks -lt 400 ] && [ $pubs -lt 12 ]; do
+			command -v sleep >/dev/null 2>&1 || exit 0
+			if [ -s /run/bboot.uri ]; then
+				URI=$(cat /run/bboot.uri)
+				if [ "$URI" != "$last" ]; then
+					a=0
+					while [ $a -lt 5 ]; do
+						if timeout 25 /usr/local/sbin/bannounce -relay "$R" -owner "$OWNER" -uri "$URI"; then
+							last=$URI
+							pubs=$((pubs + 1))
+							break
+						fi
+						a=$((a + 1))
+						sleep 5
+					done
+				fi
 			fi
-			a=$((a + 1))
-			sleep 5
+			sleep 3
+			ticks=$((ticks + 1))
 		done
-		echo "bboot-wifi: announce gave up after $a attempts (boot continues)"
-		exit 1
+		exit 0
 	) </dev/null >/dev/console 2>&1 &
 fi
 
