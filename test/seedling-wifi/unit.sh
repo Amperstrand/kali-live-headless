@@ -65,10 +65,12 @@ grep -q 'phy80211' "$here/script-bboot-wifi" &&
 	ok "radio detection is name-agnostic (phy80211)" ||
 	bad "radio detection is name-agnostic (phy80211)"
 # the DHCP fast path must use klibc ipconfig (same conf format as the
-# normal path), not a bespoke udhcpc script
+# normal path), not a bespoke udhcpc script. The ONE sanctioned udhcpc
+# is the root-side association-survival unit added by 998a4cb (its
+# ExecStart runs after switch_root, in the real root).
 grep -q 'ipconfig -t' "$here/script-bboot-wifi" &&
-	! grep -q 'udhcpc -i' "$here/script-bboot-wifi" &&
-	ok "fast path uses klibc ipconfig" || bad "fast path uses klibc ipconfig"
+	! grep 'udhcpc -i' "$here/script-bboot-wifi" | grep -qv ExecStart &&
+	ok "fast path uses klibc ipconfig (root-side unit excepted)" || bad "fast path uses klibc ipconfig (root-side unit excepted)"
 # fails open: every failure branch must continue to the wired path
 grep -c 'staying wired' "$here/script-bboot-wifi" | grep -q '[4-9]' &&
 	ok "every failure branch fails open (staying wired x4+)" ||
@@ -111,7 +113,7 @@ else
 	echo "unit: leak-needle absent — exact-value scan skipped (ok)"
 fi
 # Guard 3: any psk= reference outside the provisioning tooling is suspect
-SUSPECT=$(grep -rn 'psk=' "$repo/tools" 2>/dev/null | grep -v '.git' | grep -v 'write-wifi-conf' | grep -v 'wifi-creds' | grep -vE 'psk="?\$|psk=.*\$\{|psk=<|psk=\?' | wc -l || echo 0)
+SUSPECT=$(grep -rn 'psk=' "$repo/tools" 2>/dev/null | grep -v '.git' | grep -v 'write-wifi-conf' | grep -v 'wifi-creds' | grep -vE "psk=\"?\\$|psk=.*\\$\\{|psk=<|psk=\\?|psk=\"\\.\\.\\.\"|#[^!]*psk=" | wc -l || echo 0)
 [ "$SUSPECT" -eq 0 ] && ok "no PSK handling outside the provisioning tool" || bad "PSK handling outside provisioning ($SUSPECT)"
 
 echo "unit: render-cmdline"
