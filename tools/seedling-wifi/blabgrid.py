@@ -108,8 +108,11 @@ def event_id_ok(ev):
 
 
 # --- labgrid client (subprocess to the labgrid-client CLI) ---
-def lg(coord, *args, check=False):
-    cmd = ["labgrid-client", "--coordinator", coord] + [str(a) for a in args]
+def lg(coord, *args, place=None, check=False):
+    cmd = ["labgrid-client", "-x", coord]
+    if place:
+        cmd += ["-p", place]
+    cmd += [str(a) for a in args]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if check and result.returncode != 0:
         raise RuntimeError(f"labgrid-client failed: {result.stderr}")
@@ -118,18 +121,11 @@ def lg(coord, *args, check=False):
 
 def create_place(coord, name, ip, ssh_key=None):
     """Create a labgrid place with SSH access to the machine."""
-    # check if place already exists
     existing = lg(coord, "places").stdout
     if name in existing:
-        return False  # already there
+        return False
 
-    # create the place
-    lg(coord, "add-place", name, check=True)
-    # add SSH network service
-    svc_name = f"{name}-ssh"
-    lg(coord, "-p", name, "add-match", f"{name}/{svc_name}/NetworkService", check=True)
-    # exporter config would be needed on the exporter side
-    # for now we just create the place shell
+    lg(coord, "create", place=name, check=True)
     print(f"  created place: {name} (SSH via {ip})")
     return True
 
@@ -147,10 +143,10 @@ def main():
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
-    # verify labgrid-client is available
-    try:
-        subprocess.run(["labgrid-client", "--version"], capture_output=True, check=True)
-    except (FileNotFoundError, subprocess.CalledProcessError):
+    # verify labgrid-client is available (shutil.which, not --version —
+    # labgrid-client doesn't support --version and returns rc=2)
+    import shutil
+    if not shutil.which("labgrid-client"):
         print("ERROR: labgrid-client not in PATH. pip install labgrid", file=sys.stderr)
         sys.exit(1)
 
