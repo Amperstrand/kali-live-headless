@@ -77,6 +77,16 @@ case "$variant" in
 		extra="bb.d=bboot:m1"
 		server=$gateway:8443
 		;;
+	rescue)
+		# rescue medium (two-stick design, recovery report §4): PINNED
+		# manifest — never chases the pointer event, so a poisoned or
+		# missing pointer cannot brick the rescue path. Wifi + announcer
+		# off (wired-only boot, minimal dependency surface). The wrapper
+		# prints a serial banner so tests prove which medium booted.
+		consoles="console=ttyS0,115200"
+		extra="bb.rescue=1 bb.nowifi=1"
+		server=$gateway:8443
+		;;
 	hwsafe)
 		# hw console + the remote-unlock wrapper DISABLED: identical to
 		# the long-proven pre-wrapper boot path (the wrapper stalls chunk

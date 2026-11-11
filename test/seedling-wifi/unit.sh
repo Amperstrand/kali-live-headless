@@ -132,7 +132,7 @@ echo "unit: render-cmdline"
 T=$(mktemp -d)
 export MANIFEST=aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111
 export NPUB=npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
-for v in qemu hwsim nowifi isolated fallback pointer; do
+for v in qemu hwsim nowifi isolated fallback pointer rescue; do
 	if bash "$here/render-cmdline.sh" "$v" "$T/$v.txt" >/dev/null 2>&1; then
 		case $v in
 		pointer) grep -q "bb.manifest=" "$T/$v.txt" && bad "pointer variant must not pin a manifest" || ok "render pointer (relay-resolved)" ;;
@@ -146,6 +146,17 @@ grep -q 'bb.wifi.hwsim=1' "$T/hwsim.txt" && ok "hwsim variant sets the test para
 	bad "hwsim variant sets the test param"
 grep -q 'bb.nowifi=1' "$T/nowifi.txt" && ok "nowifi variant disables wifi" ||
 	bad "nowifi variant disables wifi"
+# rescue: pinned manifest + both knobs + the wrapper/script wiring
+grep -q 'bb.rescue=1' "$T/rescue.txt" && grep -q 'bb.nowifi=1' "$T/rescue.txt" &&
+	ok "rescue variant: marker + wifi off" || bad "rescue variant: marker + wifi off"
+grep -q "bb.manifest=$MANIFEST" "$T/rescue.txt" &&
+	ok "rescue variant pins the manifest (no pointer chase)" || bad "rescue variant pins the manifest"
+grep -q 'RESCUE MEDIUM' "$here/bbootd-wrapper" &&
+	ok "wrapper prints the serial rescue banner" || bad "wrapper rescue banner missing"
+grep -q '\*" bb\.rescue=1 "\*' "$here/bbootd-wrapper" &&
+	ok "wrapper gates remote machinery on rescue" || bad "wrapper rescue gate missing"
+grep -q 'bb.rescue=1) exit 0' "$here/script-bboot-wifi" &&
+	ok "initramfs wifi path exits on rescue" || bad "initramfs rescue exit missing"
 # the QEMU-family variants must carry the relay PORT (a portless URL once
 # made bbootd dial :443 and every stage died with connection refused)
 for v in qemu hwsim nowifi isolated fallback pointer; do

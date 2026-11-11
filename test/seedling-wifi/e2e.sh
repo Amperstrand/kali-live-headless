@@ -5,6 +5,10 @@
 #   no-radio a machine with no wifi hardware: diagnostics + wired fallback
 #   nowifi   bb.nowifi=1: the wifi path is fully disabled (regression:
 #            proves the overlay changes nothing when told not to run)
+#   rescue   bb.rescue=1: the rescue medium boots alone — pinned manifest
+#            (no pointer chase), wifi off, serial-identifiable banner
+#   rescue-fallback  two sticks: primary with a destroyed UKI + healthy
+#            rescue — firmware must reach rescue unattended
 # Every assert prints its evidence lines (never a bare count), the signer
 # is automated, and the verdict is a RESULT line per stage plus a summary.
 set -u
@@ -41,20 +45,22 @@ need() {
 	[ -f "$SEEDLING_DIR/testenv-m1/pki/ca.crt" ] || { say "testenv CA missing"; exit 2; }
 }
 
-# run_stage NAME STICK_IMG SENTINEL_PRE SIGNER(0|1) SENTINEL_POST
+# run_stage NAME STICK_IMG SENTINEL_PRE SIGNER(0|1) SENTINEL_POST [EXTRA_DRIVE]
 run_stage() {
-	local name=$1 img=$2 pre=$3 wantsigner=$4 post=$5
+	local name=$1 img=$2 pre=$3 wantsigner=$4 post=$5 extra_drive=${6:-}
 	local serial="$LOGDIR/$name-$TS.log"
 	local vars="$LOGDIR/$name-$TS.vars.fd"
 	rm -f "$serial" "$vars"
 	cp /usr/share/edk2/x64/OVMF_VARS.4m.fd "$vars"
 
-	say "stage $name: booting $(basename "$img")"
+	say "stage $name: booting $(basename "$img")${extra_drive:+ + $(basename "$extra_drive")}"
+	# shellcheck disable=SC2086 # extra_drive expands to a full -drive option
 	timeout 900 qemu-system-x86_64 \
 		-m 2048 -smp 2 -enable-kvm \
 		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
 		-drive if=pflash,format=raw,file="$vars" \
 		-drive file="$img",format=raw,if=virtio \
+		${extra_drive:+-drive file="$extra_drive",format=raw,if=virtio} \
 		-display none -serial file:"$serial" \
 		-netdev user,id=n1 -device virtio-net-pci,netdev=n1 \
 		>/dev/null 2>&1 &
@@ -144,7 +150,7 @@ run_stage() {
 need
 
 # assert the artifacts exist (fail fast, no guessing); STAGES selects a subset
-STAGES=${STAGES:-assoc isolated no-radio nowifi tamper secureboot birth fallback update remote fleet}
+STAGES=${STAGES:-assoc isolated no-radio nowifi tamper secureboot birth fallback update remote fleet rescue rescue-fallback}
 for s in $STAGES; do
 	case $s in
 	assoc) f=stick-hwsim.img ;;
@@ -827,6 +833,38 @@ run_stage_m1b() {
 	return 0
 }
 
+run_stage_rescue_fallback() {
+	# Two-stick proof (recovery report §4): a primary medium whose UKI is
+	# unloadable + a healthy rescue stick. The firmware must reach the
+	# rescue medium unattended — no keypress, no bootloader on either
+	# stick. The RESCUE MEDIUM banner proves WHICH image booted.
+	local broken="$SEEDLING_DIR/e2e/stick-broken-uki.img"
+	local src="$SEEDLING_DIR/e2e/stick-qemu.img"
+	if [ ! -s "$src" ]; then
+		say "rescue-fallback: missing $src (build-stick --variant qemu first)"
+		fail=$((fail + 1)); failed_stages+=(rescue-fallback)
+		return 1
+	fi
+	cp "$src" "$broken"
+	# destroy the primary's UKI in place: extract the ESP (partition 1
+	# always starts at sector 2048 — asserted by make-wifi-stick), replace
+	# BOOTX64.EFI with garbage, write it back. LoadImage fails → OVMF
+	# moves to its next boot entry (the rescue stick).
+	local esp="$LOGDIR/broken-$TS.esp" ss=2048 cnt
+	cnt=$(sgdisk -i 1 "$broken" | awk '/Last sector/{print $3}')
+	cnt=$((cnt - ss + 1))
+	dd if="$broken" of="$esp" bs=512 skip=$ss count=$cnt status=none
+	printf 'NOT-A-PE-IMAGE — loader test payload\n' > "$LOGDIR/broken-$TS.bad"
+	mcopy -o -i "$esp" "$LOGDIR/broken-$TS.bad" ::/EFI/BOOT/BOOTX64.EFI
+	dd if="$esp" of="$broken" bs=512 seek=$ss conv=notrunc status=none
+	say "rescue-fallback: primary UKI destroyed ($(stat -c%s "$LOGDIR/broken-$TS.bad") bytes of garbage in its place)"
+
+	run_stage rescue-fallback "$broken" 'RESCUE MEDIUM' 1 'login:' \
+		"$SEEDLING_DIR/e2e/stick-rescue.img"
+	# the assert above is the banner: it can only print from the rescue
+	# image, so reaching login proves the machine failed over media
+}
+
 for st in $STAGES; do
 
 	case $st in
@@ -842,6 +880,8 @@ for st in $STAGES; do
 	remote) run_stage_remote ;;
 	fleet) run_stage_fleet ;;
 	m1b) run_stage_m1b ;;
+	rescue) run_stage rescue "$SEEDLING_DIR/e2e/stick-rescue.img" 'RESCUE MEDIUM' 1 'login:' ;;
+	rescue-fallback) run_stage_rescue_fallback ;;
 	esac
 done
 # nowifi must show ZERO wifi-script lines — absence assert with non-empty
