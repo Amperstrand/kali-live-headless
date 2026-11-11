@@ -19,12 +19,19 @@ fi
 # boot counter and eventually falls back to the known-good entry.
 WATCHDOG_SEC=0
 REBOOT_ON_FAIL=0
+RESCUE=0
 for x in $(cat /proc/cmdline 2>/dev/null); do
 	case "$x" in
 		bb.reboot-on-fail=1) REBOOT_ON_FAIL=1 ;;
 		bb.watchdog-sec=*) WATCHDOG_SEC="${x#bb.watchdog-sec=}" ;;
+		bb.rescue=1) RESCUE=1 ;;
 	esac
 done
+if [ "$RESCUE" = 1 ]; then
+	# serial-identifiable: the e2e rescue stages grep for this line to
+	# prove WHICH medium booted (the rescue stick, not the primary)
+	echo "bboot-wifi: RESCUE MEDIUM — pinned manifest, wifi/announcer off" > /dev/console 2>&1
+fi
 if [ "$REBOOT_ON_FAIL" = 1 ]; then
 	# watch for bbootd's failure marker and reboot when it appears
 	(
@@ -56,9 +63,12 @@ fi
 : > /run/bboot.remote-done
 
 case " $(cat /proc/cmdline 2>/dev/null) " in
-*" bb.noremote=1 "*|*" bb.nowifi=1 "*)
+*" bb.noremote=1 "*|*" bb.nowifi=1 "*|*" bb.rescue=1 "*)
 	# bb.nowifi disables the whole wifi/remote machinery, this reader
-	# included — the nowifi stage caught it running anyway
+	# included — the nowifi stage caught it running anyway. bb.rescue
+	# implies the same: the rescue medium minimizes its dependency
+	# surface (wired-only, no announcer) and must never hang waiting
+	# for wifi or relays.
 	exec /sbin/bbootd.real "$@" ;;
 esac
 

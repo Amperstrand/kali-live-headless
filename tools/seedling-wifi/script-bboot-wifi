@@ -45,7 +45,7 @@ HWSIM=0
 WIFI_DHCP=1
 for x in $(cat /proc/cmdline 2>/dev/null); do
 	case "$x" in
-		bb.nowifi|bb.nowifi=1) exit 0 ;;
+		bb.nowifi|bb.nowifi=1|bb.rescue=1) exit 0 ;;
 		bb.wifi=*) WIFI_SPEC="${x#bb.wifi=}" ;;
 		bb.wifi.hwsim=1) HWSIM=1 ;;
 		bb.wifi.dhcp=off) WIFI_DHCP=0 ;;
