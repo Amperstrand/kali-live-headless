@@ -81,6 +81,10 @@ install -D -m 0755 "$SRC/script-bboot-wifi" \
 	"$ROOT/etc/initramfs-tools/scripts/init-premount/bboot-wifi"
 install -D -m 0755 "$SRC/script-bboot-wifi-report" \
 	"$ROOT/etc/initramfs-tools/scripts/init-bottom/bboot-wifi-report"
+# offline rescue: the boot=klhrescue boot script (mounts rescue/rootfs.erofs
+# from the stick's own ESP — no network, no bboot, no unlock)
+install -D -m 0755 "$SRC/script-klhrescue" \
+	"$ROOT/etc/initramfs-tools/scripts/klhrescue"
 
 KVER=$(ls "$ROOT"/boot/vmlinuz-* | head -1 | sed 's|.*/vmlinuz-||')
 chroot "$ROOT" update-initramfs -u -k all

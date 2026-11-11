@@ -92,6 +92,46 @@ Three boots, persistent vars, sticks: healthy primary + rescue
 Proves: the ops-time "try X once, then normal order" mechanism works
 end-to-end under OVMF, loop-proof by firmware design.
 
+## 5. The offline rescue boots to login — `offline` (rescue-v2)
+
+The one honest non-claim above ("rescue boots to login offline") is now
+retired. Design: the bboot path can NEVER boot offline (even a pinned
+manifest needs the NIP-46 handshake for the image key; a stick-borne
+nsec would be a credential leak by design) — so the offline rescue is a
+different boot mode entirely: **`boot=klhrescue`**, an initramfs-tools
+boot script that mounts `rescue/rootfs.erofs` — the pre-encryption build
+artifact — straight off the stick's own ESP (loop → erofs → tmpfs
+overlay → switch_root). No network, no bboot, no manifest, no unlock;
+the cmdline carries no `bb.*` identity at all. The image is not
+encrypted — a known-good recovery OS carrying no secrets, exactly the
+trade §4 names.
+
+Evidence (reproducible: `rescue-smoke.sh offline`, 4/0 twice,
+2026-11-11):
+
+```
+klh-rescue: LOCAL ROOTFS — offline rescue (no network, no unlock)
+klh-rescue: recovery image on /dev/vda1
+[14.8] erofs: (device loop0): mounted with root inode @ nid 36.
+klh-rescue: root mounted (static image + RAM overlay) — booting offline
+...
+Debian GNU/Linux 13 seedling ttyS0
+seedling login:
+```
+
+Asserted: login reached; erofs+overlay mounted from the stick; ZERO
+manifest/URI/NIC-wait lines (the network stack never runs).
+
+Two hard-won lessons baked in:
+- **Entropy**: a no-NIC no-input machine can starve the CRNG and wedge
+  every entropy consumer mid-boot. `random.trust_cpu=on` on the
+  rescue-local cmdline (host keys are per-boot by design — trust RDRAND
+  and boot) + `virtio-rng-pci` in the VM harness.
+- **Harness self-own**: an earlier revision of the offline mode waited
+  for the *banner*, killed QEMU, then asserted on `login:` — a
+  deterministic false "hang". The wait sentinel must be the final
+  evidence you assert. Evidence first, kills second.
+
 ## What this settles
 
 | claim | status |
@@ -101,7 +141,7 @@ end-to-end under OVMF, loop-proof by firmware design.
 | rescue medium: pinned manifest, wifi off, serial-identifiable | ✅ proven |
 | rescue fails cleanly when the network is gone | ✅ proven (BusyBox terminal) |
 | watchdog fires on hang / no-fires on clean outcomes | ✅ unit-proven; VM hang fixture owed |
-| rescue boots to login offline (no unlocker) | ❌ NOT claimable — rootfs streams over the network by design; a network-independent rootfs is the rescue-v2 spike |
+| rescue boots to login offline (no unlocker) | ✅ **proven** — `boot=klhrescue` static-rootfs mode, 4/0 twice (rescue-v2) |
 
 Still hardware-only: USB port→device-path stability, TCO watchdog, real
 firmware quirks, out-of-band power.

@@ -87,6 +87,22 @@ case "$variant" in
 		extra="bb.rescue=1 bb.nowifi=1"
 		server=$gateway:8443
 		;;
+	rescue-local)
+		# OFFLINE rescue (rescue-v2): boot=klhrescue mounts the static
+		# rootfs.erofs from the stick's own ESP — no network, no bboot,
+		# no unlock. The line carries NO bb.* identity/relay/manifest
+		# parameters at all; bb.nowifi/bb.rescue only short-circuit the
+		# wifi premount script so nothing waits for radios or NICs.
+		# random.trust_cpu: a no-NIC no-input machine can starve the CRNG
+		# and wedge every entropy consumer (found live: boots hung at
+		# tmpfiles with zero crng lines). Rescue host keys are per-boot
+		# by design — trust RDRAND and boot.
+		# Rendered directly (not from the template) to keep it that way.
+		line="boot=klhrescue root=/dev/nbd0 console=ttyS0,115200 bb.rescue=1 bb.nowifi=1 random.trust_cpu=on"
+		printf '%s\n' "$line" > "$out"
+		echo "rendered $variant -> $out"
+		exit 0
+		;;
 	hwsafe)
 		# hw console + the remote-unlock wrapper DISABLED: identical to
 		# the long-proven pre-wrapper boot path (the wrapper stalls chunk

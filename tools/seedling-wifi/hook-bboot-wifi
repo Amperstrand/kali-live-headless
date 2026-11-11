@@ -63,6 +63,11 @@ for m in fat vfat nls_cp437 nls_iso8859_1 nls_ascii \
 	manual_add_modules "$m" 2>/dev/null || true
 done
 
+# offline rescue (boot=klhrescue): loop-mount the static recovery erofs
+# off the stick's ESP — loop + overlay are the two it cannot boot without
+manual_add_modules loop 2>/dev/null || true
+manual_add_modules overlay 2>/dev/null || true
+
 # WPA2 data-path crypto (CCMP/AES): without these the kernel REJECTS key
 # installation (nl80211 "key addition failed" — found via the hwsim test;
 # real hardware needs them just as much)
