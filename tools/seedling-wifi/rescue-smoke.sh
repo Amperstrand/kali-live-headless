@@ -379,6 +379,153 @@ stall)
 	kill "$local_proxy_pid" 2>/dev/null
 	;;
 
+three-media)
+	# BootOrder competition: dead primary + offline rescue + a third
+	# bootable medium standing in for the machine's INTERNAL DISK
+	# (stick-hwsim.img — its hwsim radio lines identify it on serial).
+	# Scenario B: factory-typical order [internal, primary, rescue] —
+	# the hazard: with the primary dead, the INTERNAL disk wins and the
+	# machine is not on rescue at all. Scenario C: the recommended
+	# order [primary, rescue, internal] — dead primary falls to rescue.
+	need_stick "$OFFLINE_STICK" rescue-local
+	need_stick "$PRIMARY_STICK" qemu
+	need_stick "$SEEDLING_DIR/e2e/stick-hwsim.img" hwsim
+	INTERNAL="$SEEDLING_DIR/e2e/stick-hwsim.img"
+	EFI_GLOBAL=8be4df61-93ca-11d2-aa0d-00e098032b8c
+
+	say "three-media: boot 1 — enumerate all three (kill at first BdsDxe start)"
+	# three-drive enumeration, own invocation (boot_until takes max two)
+	rm -f "$WORK/vars.fd"; cp "$OVMF_VARS" "$WORK/vars.fd"
+	# shellcheck disable=SC2086
+	timeout 150 qemu-system-x86_64 -m 2048 -smp 2 -enable-kvm -nic none \
+		-device virtio-rng-pci \
+		-drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+		-drive if=pflash,format=raw,file="$WORK/vars.fd" \
+		-drive file="$PRIMARY_STICK",format=raw,if=virtio \
+		-drive file="$OFFLINE_STICK",format=raw,if=virtio \
+		-drive file="$INTERNAL",format=raw,if=virtio \
+		-display none -serial file:"$WORK/e.log" >/dev/null 2>&1 &
+	epid=$!
+	w=0; while [ $w -lt 60 ]; do grep -aq 'BdsDxe: starting' "$WORK/e.log" 2>/dev/null && break; kill -0 $epid 2>/dev/null || break; sleep 5; w=$((w+5)); done
+	sleep 3; kill $epid 2>/dev/null; wait $epid 2>/dev/null
+	virt-fw-vars -i "$WORK/vars.fd" --output-json "$WORK/v.json" 2>/dev/null
+	read -r E_PRIMARY E_RESCUE E_INTERNAL E_OTHER < <(python3 - "$WORK/v.json" << 'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+media, other = [], []
+for v in d['variables']:
+    n = v['name']
+    if n.startswith('Boot') and n[4:].isdigit():
+        data = bytes.fromhex(v['data'])
+        try: desc = data[4:64].decode('utf-16-le', errors='ignore')
+        except Exception: desc = ''
+        (media if 'Misc' in desc else other).append((n[4:], desc.strip()))
+# PciRoot position: virtio drives enumerate in attach order; OVMF names
+# them "UEFI Misc Device", "... 2", "... 3" in the same order
+media.sort(key=lambda t: t[1])
+names = [m[0] for m in media] + [o[0] for o in other]
+print(' '.join((names + ['0000'] * 4)[:4]))
+PYEOF
+)
+	say "three-media: entries primary=Boot$E_PRIMARY rescue=Boot$E_RESCUE internal=Boot$E_INTERNAL (other: Boot$E_OTHER)"
+
+	set_order() { # NEW_ORDER (Boot#### hex, space separated) — rewrites
+	# BootOrder AND VERIFIES the write (a silent failure here made
+	# scenario B run on the default order and fake a pass — found via
+	# the BdsDxe evidence line)
+		python3 - "$WORK/v.json" "$EFI_GLOBAL" "$@" > "$WORK/n.json" << 'PYEOF'
+import json, struct, sys
+d = json.load(open(sys.argv[1]))
+guid, order = sys.argv[2], sys.argv[3:]
+for v in d['variables']: v['attr'] = int(v['attr'])
+# BootOrder entries are UINT16 LITTLE-ENDIAN (the original varstore
+# encodes Boot0001 as '0100' — a big-endian build writes phantom
+# entries like 0x0400 that the firmware silently skips)
+data = b''.join(struct.pack('<H', int(e, 16)) for e in order)
+d['variables'] = [v for v in d['variables'] if v['name'] != 'BootOrder']
+d['variables'].append({'name': 'BootOrder', 'guid': guid, 'attr': 7,
+                       'data': data.hex()})
+json.dump(d, sys.stdout)
+PYEOF
+		virt-fw-vars -i "$WORK/vars.fd" --set-json "$WORK/n.json" -o "$WORK/vars2.fd" >/dev/null 2>&1 || {
+			say "three-media: set_order write FAILED"; exit 1; }
+		mv "$WORK/vars2.fd" "$WORK/vars.fd"
+		local got
+		got=$(virt-fw-vars -i "$WORK/vars.fd" --output-json /dev/stdout 2>/dev/null |
+			python3 -c "import json,sys
+d=json.load(sys.stdin)
+print(next(v['data'] for v in d['variables'] if v['name']=='BootOrder'))")
+		local want
+		want=$(python3 -c "import struct,sys; print(b''.join(struct.pack('<H',int(e,16)) for e in sys.argv[1:]).hex())" "$@")
+		if [ "$got" != "$want" ]; then
+			say "three-media: BootOrder verification FAILED (got $got want $want)"; exit 1
+		fi
+		say "three-media: BootOrder verified: $*"
+	}
+
+	boot3() { # SERIAL WAITSENTINEL TIMEOUT_S — boots all three media on
+	# the persistent vars; identity comes from the BdsDxe line (device
+	# path names the medium) plus the rescue banner for scenario C.
+	# The hwsim stick's userspace identity never prints here (its wifi
+	# script finds no wifi.conf on whichever ESP it mounts first — the
+	# rescue's — and stays wired; found the hard way).
+		local serial=$1 sentinel=$2 tmo=$3
+		rm -f "$serial"
+		# shellcheck disable=SC2086
+		timeout $((tmo + 30)) qemu-system-x86_64 -m 2048 -smp 2 -enable-kvm -nic none \
+			-device virtio-rng-pci \
+			-drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+			-drive if=pflash,format=raw,file="$WORK/vars.fd" \
+			-drive file="$PRIMARY_STICK",format=raw,if=virtio \
+			-drive file="$OFFLINE_STICK",format=raw,if=virtio \
+			-drive file="$INTERNAL",format=raw,if=virtio \
+			-display none -serial file:"$serial" >/dev/null 2>&1 &
+		local bpid=$! w=0
+		while [ $w -lt "$tmo" ]; do
+			grep -aq "$sentinel" "$serial" 2>/dev/null && break
+			kill -0 $bpid 2>/dev/null || break; sleep 10; w=$((w+10))
+		done
+		kill $bpid 2>/dev/null; wait $bpid 2>/dev/null
+	}
+
+	# dead primary for both scenarios
+	cp "$PRIMARY_STICK" "$WORK/dead-primary.img"
+	make_broken_primary "$WORK/dead-primary.img"
+	PRIMARY_STICK="$WORK/dead-primary.img"
+
+	say "three-media: scenario B — factory-typical order [internal, primary, rescue]"
+	set_order "$E_INTERNAL" "$E_PRIMARY" "$E_RESCUE" "$E_OTHER"
+	boot3 "$WORK/sB.log" "BdsDxe: starting Boot$E_INTERNAL" 120
+	if grep -aq "BdsDxe: starting Boot$E_INTERNAL" "$WORK/sB.log"; then
+		grep -a "BdsDxe: starting Boot$E_INTERNAL" "$WORK/sB.log" | head -1 | sed 's/\x1b\[[0-9;=]*[A-Za-z]*//g; s/^/    /' | cut -c1-100
+		ok "B documents the hazard: INTERNAL DISK won — machine NOT on rescue"
+		if grep -aq 'klh-rescue: LOCAL ROOTFS' "$WORK/sB.log"; then
+			bad "rescue also booted in scenario B — order not honored?"
+		else
+			ok "rescue never reached under factory order (the hazard is real)"
+		fi
+	else
+		bad "internal entry never started under factory order"
+		grep -a 'BdsDxe:' "$WORK/sB.log" 2>/dev/null | sed 's/\x1b\[[0-9;=]*[A-Za-z]*//g; s/^/    /' | cut -c1-100 | head -3
+	fi
+
+	say "three-media: scenario C — recommended order [primary, rescue, internal]"
+	set_order "$E_PRIMARY" "$E_RESCUE" "$E_INTERNAL" "$E_OTHER"
+	boot3 "$WORK/sC.log" 'klh-rescue: LOCAL ROOTFS' 300
+	if grep -aq 'klh-rescue: LOCAL ROOTFS' "$WORK/sC.log"; then
+		grep -a 'klh-rescue: LOCAL ROOTFS' "$WORK/sC.log" | head -1 | sed 's/^/    /'
+		ok "C validates the recommended order: dead primary -> RESCUE (internal never reached)"
+	else
+		bad "rescue not reached with the recommended order"
+		tail -5 "$WORK/sC.log" 2>/dev/null | sed 's/^/    /'
+	fi
+	if grep -aq "BdsDxe: starting Boot$E_INTERNAL" "$WORK/sC.log"; then
+		bad "internal disk booted under the recommended order"
+	else
+		ok "internal disk never booted when a healthy rescue preceded it"
+	fi
+	;;
+
 *) sed -n '2,12p' "$0"; exit 1 ;;
 esac
 echo "RESULT: rescue-smoke $1 pass=$pass fail=$fail"

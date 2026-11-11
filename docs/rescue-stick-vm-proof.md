@@ -177,6 +177,34 @@ without double-firing). Harness lesson: killing QEMU at the first
 expiry beheads cycle 2 before it can re-arm — the stall mode runs a
 fixed window and lets the machine live through its own reboot.
 
+## 8. BootOrder competition with a third medium — `three-media`
+
+Real machines have an internal disk with its own boot entry; the
+two-media proofs didn't answer "does the machine land on *our* rescue
+or on whatever else boots?" Dead primary + offline rescue + a third
+bootable ESP standing in for the internal disk (identity proven by the
+BdsDxe device path — its userspace identity never prints because the
+wifi script mounts whichever BBOOT ESP it finds first, and the rescue
+carries no wifi.conf by design):
+
+- **Scenario B — factory-typical order [internal, primary, rescue]:**
+  `BdsDxe: starting Boot0004 ... PciRoot(0x0)/Pci(0x6,0x0)` — the
+  INTERNAL DISK wins and the machine is **not on rescue at all**. The
+  hazard is real: leave the internal disk first and the two-stick
+  design silently degrades to "boots the internal OS when the primary
+  dies."
+- **Scenario C — recommended order [primary, rescue, internal]:** dead
+  primary → firmware falls straight to the rescue (banner + login
+  path), internal never reached. This is the pinning hardware day must
+  apply: `efibootmgr -o` with the primary first, rescue second,
+  internal after.
+
+Harness lessons: BootOrder entries are UINT16 **little-endian** in the
+varstore — a big-endian build writes phantom entries (0x0400) the
+firmware silently skips, and a self-consistent write-verify proves
+nothing (verify against the encoding, not your own echo); every
+set_order is now verified semantically.
+
 ## What this settles
 
 | claim | status |
@@ -188,6 +216,7 @@ fixed window and lets the machine live through its own reboot.
 | watchdog fires on hang / no-fires on clean outcomes | ✅ **proven at boot level** — `stall` 4/0: mid-chunk freeze, expiry, reboot, re-arm; bbootd never wrote FAILED |
 | rescue boots to login offline (no unlocker) | ✅ **proven** — `boot=klhrescue` static-rootfs mode, 4/0 twice (rescue-v2) |
 | repeated power-cuts never wedge the machine | ✅ proven — `soak` 2/0: 6/6 mid-boot cuts, convergence to rescue on the interrupted vars |
+| firmware falls through a dead primary to RESCUE even with a competing internal disk | ✅ proven — `three-media` 4/0 — but ONLY with pinned BootOrder [primary, rescue, internal]; factory order boots the internal disk instead (the hazard, documented) |
 
 Still hardware-only: USB port→device-path stability, TCO watchdog, real
 firmware quirks, out-of-band power.
