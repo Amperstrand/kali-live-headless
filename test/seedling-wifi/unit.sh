@@ -157,6 +157,44 @@ grep -q '\*" bb\.rescue=1 "\*' "$here/bbootd-wrapper" &&
 	ok "wrapper gates remote machinery on rescue" || bad "wrapper rescue gate missing"
 grep -q 'bb.rescue=1) exit 0' "$here/script-bboot-wifi" &&
 	ok "initramfs wifi path exits on rescue" || bad "initramfs rescue exit missing"
+
+echo "unit: bb.watchdog-sec loop semantics"
+# extract the armed block from the wrapper and run it with a tmp run-dir
+# and a mocked reboot — proves fire-at-N, early-exit-on-ready, early-
+# exit-on-failed without a VM (the full-hang fixture needs a stalling
+# chunk server; that rides with the e2e)
+WD=$(mktemp -d)
+printf '#!/bin/sh\necho REBOOT-FIRED >> "%s/fired"\n' "$WD" > "$WD/reboot"
+chmod +x "$WD/reboot"
+sed -n '/^if \[ "\$WATCHDOG_SEC" -gt 0 \]/,/^fi$/p' "$here/bbootd-wrapper" > "$WD/wd.sh"
+run_watchdog() { # SECONDS MARKER(NONE|ready|failed) MARKER_AFTER_S
+	local secs=$1 marker=$2 after=$3 mkpid=""
+	rm -rf "$WD/run"; mkdir -p "$WD/run"
+	[ "$marker" != NONE ] && { ( sleep "$after"; : > "$WD/run/$marker" ) & mkpid=$!; }
+	(
+		cd "$WD" || exit 1
+		PATH="$WD:$PATH" BB_RUN_DIR="$WD/run" WATCHDOG_SEC="$secs" \
+			timeout 30 sh -c '. ./wd.sh; wait' 2>/dev/null
+	) >/dev/null 2>&1
+	[ -n "$mkpid" ] && { kill "$mkpid" 2>/dev/null; wait "$mkpid" 2>/dev/null; }
+}
+# 1) expiry fires at ~N seconds and calls reboot
+t0=$SECONDS; run_watchdog 2 NONE 0
+if [ -f "$WD/fired" ] && [ $((SECONDS - t0)) -ge 2 ]; then
+	ok "watchdog fires at N seconds (reboot called, ${WD}/fired)"
+else
+	bad "watchdog expiry did not fire / fired early (fired=$([ -f "$WD/fired" ] && echo yes || echo no), ${WD})"
+fi
+# 2) ready marker before expiry → no reboot
+rm -f "$WD/fired"; run_watchdog 6 ready 2
+[ ! -f "$WD/fired" ] && ok "watchdog exits cleanly on ready marker (no reboot)" ||
+	bad "watchdog rebooted despite ready marker"
+# 3) failed marker before expiry → no reboot (clean failure is
+# reboot-on-fail's business, not the watchdog's)
+rm -f "$WD/fired"; run_watchdog 6 failed 2
+[ ! -f "$WD/fired" ] && ok "watchdog exits cleanly on failed marker (no reboot)" ||
+	bad "watchdog rebooted despite failed marker"
+rm -rf "$WD"
 # the QEMU-family variants must carry the relay PORT (a portless URL once
 # made bbootd dial :443 and every stage died with connection refused)
 for v in qemu hwsim nowifi isolated fallback pointer; do

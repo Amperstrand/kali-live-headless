@@ -43,6 +43,7 @@ navigating the 30+ docs that accreted around it.
 - [`seedling-comparison.md`](seedling-comparison.md) — how this repo's stick and Seedling's differ
 - [`research/ab-boot-recovery-patterns.md`](research/ab-boot-recovery-patterns.md) — is A/B booting the stick over-engineering? (survey: PXE/ChromeOS/Android, BootNext, watchdogs; verdict: no — watchdog + pointer rollback + spare stick)
 - [`seedling-ab-boot-spike.md`](seedling-ab-boot-spike.md) — the OVMF spike that confirmed boot counting doesn't fall back; decision record
+- [`rescue-stick-vm-proof.md`](rescue-stick-vm-proof.md) — the two-stick design's first proofs: media failover, BootNext one-shot, rescue independence (all daemon-free)
 
 ## History / postmortems (read before touching the related code)
 - [`wifi-drop-postmortem-2026-10-21.md`](wifi-drop-postmortem-2026-10-21.md)

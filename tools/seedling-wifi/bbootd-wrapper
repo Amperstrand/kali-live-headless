@@ -46,11 +46,14 @@ if [ "$REBOOT_ON_FAIL" = 1 ]; then
 fi
 
 if [ "$WATCHDOG_SEC" -gt 0 ] 2>/dev/null; then
+	# BB_RUN_DIR is a test hook (AGENTS #31 pattern): unit.sh exercises
+	# the loop with a tmpdir and a mocked reboot instead of a VM hang
+	BB_RUN_DIR=${BB_RUN_DIR:-/run/bboot}
 	(
 		i=0
 		while [ $i -lt "$WATCHDOG_SEC" ]; do
-			[ -e /run/bboot/ready ] && exit 0
-			[ -e /run/bboot/failed ] && exit 0
+			[ -e "$BB_RUN_DIR/ready" ] && exit 0
+			[ -e "$BB_RUN_DIR/failed" ] && exit 0
 			sleep 1
 			i=$((i + 1))
 		done
