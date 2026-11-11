@@ -701,6 +701,48 @@ Proven end-to-end in QEMU on the workstation:
 Artifacts preserved at `/home/user/src/seedling-m1/` (64 MB stick image,
 encrypted chunks, Blossom testenv, test key).
 
+### M1b: Our production ISO over the Seedling medium — **PROVEN 2026-11-09** ✅
+
+The fleet's actual OS, network-booted: build #53 (the KLH_DIET Kali
+minimal, 2.3G ISO) converted with their `build-live-iso.sh` + our overlay
+injected (the conversion path never runs `build-rootfs.sh`, so WIFI_BOOT
+doesn't apply — `inject-wifi.sh` handles it, now with EXTRA_CA support),
+packed to 517 chunks, and booted from a **640 MB stick**:
+
+```
+bboot: image "m1b": 2066 MiB in 517 chunks (erofs)
+... unlock ... chunks ... erofs mount ...
+kali-live-hostname: auto hostname 'pc-i440fx-11-1-3c4r1d'
+pc-i440fx-11-1-3c4r1d login:
+```
+
+The ENTIRE provision stack runs in the network-booted image — banner,
+blackbox, hostname + hostname-settle (mDNS disambiguation), kvm-enable,
+kvm-firewall, vm-forward, tollgate-watchdog, headless-provision. Serial
+log: `qemu-m1/serial-m1b.log` (~9 min wall: boot → unlock → 2.1G stream
+→ login).
+
+**Full identity loop on the production image** (2026-11-10, second boot
+after the inject-surface fix): the network-booted Kali publishes its birth
+at init-bottom (`machine KLH-M1B-PROD announced as npub1v7gk…`),
+reports itself unclaimed, boots the whole stack (hostname-settle: "auto
+hostname 'pc-i440fx-11-1-3c4r1d' is unique on the LAN"), reaches login —
+and `bfleet` shows it with its ADDRESS (`10.0.2.15`), then the owner's
+`bclaim` flips it to claimed. The registry row for a production machine:
+identity, address, and ownership, captured over the wire.
+
+**The lost-lines incident (worth remembering)**: three inject-wifi install
+lines (report, banounce, EXTRA_CA) had been orphaned by earlier post-merge
+resets; the minbase chroot masked it by riding stale manual copies, and
+only the FRESH m1b chroot exposed the gap. Unit guards now assert the
+complete install surface by name.
+
+Found on the way: the testenv capped upload bodies at **256 MiB** — a
+415 MB full-firmware initramfs was silently truncated and the auth-tag
+mismatch read as `403 auth x tag does not match blob`. Limit raised to
+2 GiB (dogfood branch, upstream-worthy: anyone converting a full ISO hits
+this).
+
 ### M2: Machine birth — **PROVEN IN QEMU 2026-11-06** ✅
 
 `bbirth` (cmd/bbirth in the Seedling module) publishes a signed kind-30078

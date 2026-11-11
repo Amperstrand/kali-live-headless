@@ -8,6 +8,8 @@ NPUB=npub1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 # only needed for the 'hw' variant and e2e signing:
 RELAY_HOST=192.168.1.2
 RELAY_PORT=8443
+# optional: a LAN NTP server tried before the public pools (dead-RTC machines)
+NTP_LAN=192.168.1.1
 # e2e also expects, in SEEDLING_DIR:
 #   .m1-nsec            the test nsec (never printed, never committed)
 #   testenv-m1/pki/ca.crt  the testenv CA

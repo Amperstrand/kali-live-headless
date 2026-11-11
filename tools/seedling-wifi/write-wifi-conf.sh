@@ -18,9 +18,17 @@ if findmnt -rn "$PART" >/dev/null 2>&1; then
 fi
 command -v mcopy >/dev/null || { echo "need mtools" >&2; exit 1; }
 
-read -rp "SSID: " SSID
-[ -n "$SSID" ] || { echo "empty SSID" >&2; exit 1; }
-read -rsp "PSK: " PSK; echo
+if [ -t 0 ]; then
+	read -rp "SSID: " SSID
+	[ -n "$SSID" ] || { echo "empty SSID" >&2; exit 1; }
+	read -rsp "PSK: " PSK; echo
+else
+	# non-interactive provisioning: two lines on stdin (ssid, then psk) —
+	# lets automation feed a 0600 credentials file without the secret ever
+	# appearing in argv or process listings
+	IFS= read -r SSID
+	IFS= read -r PSK
+fi
 [ "${#PSK}" -ge 8 ] || { echo "WPA2 PSK must be at least 8 characters" >&2; exit 1; }
 
 esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
@@ -39,6 +47,21 @@ trap 'shred -u "$T" 2>/dev/null || rm -f "$T"' EXIT
 	fi
 	printf '  scan_ssid=1\n'
 	printf '}\n'
+	# additional SSIDs from EXTRA_NETWORKS (format: "ssid:psk,ssid:psk,...")
+	if [ -n "${EXTRA_NETWORKS:-}" ]; then
+		IFS=',' read -ra EXTRA <<< "$EXTRA_NETWORKS"
+		for net in "''${EXTRA[@]}"; do
+			ESSID=''${net%%:*}
+			EPSK=''${net#*:}
+			[ "$ESSID" = "$net" ] && continue  # no colon separator
+			printf 'network={\n'
+			printf '  ssid="%s"\n' "$(esc "$ESSID")"
+			printf '  psk="%s"\n' "$(esc "$EPSK")"
+			printf '  key_mgmt=WPA-PSK\n'
+			printf '  scan_ssid=1\n'
+			printf '}\n'
+		done
+	fi
 } > "$T"
 
 mcopy -i "$PART" -o "$T" ::/wifi.conf

@@ -36,6 +36,14 @@ else
 fi
 
 echo "unit: regression guards (defects already found once)"
+# inject must install the COMPLETE overlay surface — the report-install
+# line was lost to a reset and only the fresh m1b chroot exposed it (the
+# minbase chroot had been riding a stale manual copy)
+for pat in script-bboot-wifi-report hook-bboot-wifi bbootd-wrapper \
+	bbirth bannounce EXTRA_CA SSH_PUBKEY authorized_keys ssh-keygen; do
+	grep -q "$pat" "$here/inject-wifi.sh" &&
+		ok "inject installs/handles $pat" || bad "inject installs/handles $pat"
+done
 # 2026-11-05: MODULES=most does NOT include vfat — the ESP mount failed
 # silently. The hook must name it.
 grep -q 'fat vfat nls_cp437' "$here/hook-bboot-wifi" &&
@@ -79,6 +87,14 @@ fxpsk=$(sed -n 's/.*psk="\(.*\)".*/\1/p' "$fx")
 grep -q "wpa_passphrase=$fxpsk" "$here/script-bboot-wifi" &&
 	ok "hwsim AP passphrase matches the fixture" ||
 	bad "hwsim AP passphrase matches the fixture"
+
+echo "unit: no hardcoded credentials anywhere"
+# scan ALL tracked shell/python files for the known-exposed pattern
+LEAKS=$(grep -rn "apekat" "$here" "$repo/test" "$repo/tools" 2>/dev/null | grep -v ".git" | wc -l)
+[ "$LEAKS" -eq 0 ] && ok "no hardcoded Wi-Fi credentials in tools/tests" || bad "hardcoded credential found ($LEAKS occurrences)"
+# also scan for any PSK-like assignment outside write-wifi-conf.sh
+SUSPECT=$(grep -rn "psk=" "$here" "$repo/tools" 2>/dev/null | grep -v ".git" | grep -v "write-wifi-conf" | grep -v "wifi-creds" | wc -l || echo 0)
+[ "$SUSPECT" -eq 0 ] && ok "no PSK assignments outside the provisioning tool" || bad "PSK assignment outside provisioning ($SUSPECT)"
 
 echo "unit: render-cmdline"
 T=$(mktemp -d)
@@ -142,6 +158,32 @@ if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null &&
 	rm -rf "$BIN2"
 else
 	echo "  skip  write-wifi-conf needs sudo+losetup"
+fi
+
+echo "unit: write-wifi-conf stdin mode"
+T2=$(mktemp -d)
+printf 'ssidtwo\npassphrase8chars\n' > "$T2/in"
+# shellcheck disable=SC2016
+if command -v mcopy >/dev/null 2>&1; then
+	# exercise the non-tty path through a shimmed block device check via bash -c
+	printf '#!/bin/sh\nexit 0\n' > "$T2/stat-shim"
+	# feed stdin; expect the tool to pass the -b check against a loop of the stick image
+	if [ -s "$BIN/stick.img" ]; then
+		L2=$(sudo -n losetup -f --show -o $((2048 * 512)) --sizelimit $((63 * 1024 * 1024)) "$BIN/stick.img" 2>/dev/null || true)
+		if [ -n "${L2:-}" ]; then
+			PATH="$T2/stat-shim:$PATH" bash "$here/write-wifi-conf.sh" "$L2" < "$T2/in" >/dev/null 2>&1
+			sudo -n mcopy -i "$L2" ::/wifi.conf "$T2/out" 2>/dev/null
+			if grep -q 'ssid="ssidtwo"' "$T2/out" 2>/dev/null && grep -q 'passphrase8chars' "$T2/out" 2>/dev/null; then
+				ok "write-wifi-conf stdin mode writes the same config shape"
+			else
+				bad "write-wifi-conf stdin mode writes the same config shape"
+			fi
+			sudo -n losetup -d "$L2"
+		else
+			echo "  skip  no loop device for the stdin-mode test"
+		fi
+	fi
+	rm -rf "$T2"
 fi
 
 echo "unit: stick image layout"
