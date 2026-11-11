@@ -1,0 +1,70 @@
+#!/bin/sh
+# klhrescue — initramfs-tools boot script, selected with boot=klhrescue.
+#
+# OFFLINE RESCUE (recovery report §4, the rescue-v2 branch): mount the
+# static recovery rootfs carried on the boot stick's own ESP
+# (rescue/rootfs.erofs) and boot it directly — no network, no bboot,
+# no manifest, no unlock handshake. The image is NOT encrypted: it is a
+# known-good recovery system carrying no secrets; offline bootability
+# without a key ceremony is the entire trade.
+#
+# The bboot path cannot do this: even a pinned-manifest boot needs the
+# NIP-46 handshake for the image key, and putting the nsec on the stick
+# to fake a local signer would be a credential leak by design.
+#
+# Sourced by /init like scripts/local; initramfs-tools calls mountroot().
+# rootmnt: set by initramfs-tools /init before the boot script is sourced
+# (same contract as the bboot boot script).
+# shellcheck disable=SC2034
+# shellcheck disable=SC2154
+
+rescue_panic() {
+	echo "klh-rescue: $*" > /dev/console 2>&1
+	panic "klh-rescue: $*"
+}
+
+klhrescue_mountroot() {
+	echo "klh-rescue: LOCAL ROOTFS — offline rescue (no network, no unlock)" > /dev/console 2>&1
+	modprobe -q loop 2>/dev/null || true
+
+	mkdir -p /run/klhrescue/esp /run/klhrescue/lower /run/klhrescue/rw
+
+	# find the stick's ESP (label BBOOT — same label make-wifi-stick uses)
+	esp=""
+	for d in /dev/disk/by-label/BBOOT $(busybox blkid -o device 2>/dev/null); do
+		[ -b "$d" ] || continue
+		mount -t vfat -o ro "$d" /run/klhrescue/esp 2>/dev/null || continue
+		if [ -s /run/klhrescue/esp/rescue/rootfs.erofs ]; then
+			esp=$d
+			break
+		fi
+		umount /run/klhrescue/esp 2>/dev/null
+	done
+	[ -n "$esp" ] || rescue_panic "no BBOOT stick with rescue/rootfs.erofs found"
+	echo "klh-rescue: recovery image on $esp" > /dev/console 2>&1
+
+	# loop-mount the static erofs (busybox losetup: -f prints a free device)
+	lo
+	lo=$(losetup -f 2>/dev/null)
+	case "$lo" in
+	/dev/loop[0-9]*) ;;
+	*) rescue_panic "no loop device available (loop module missing?)" ;;
+	esac
+	losetup "$lo" /run/klhrescue/esp/rescue/rootfs.erofs 2>/dev/null ||
+		rescue_panic "losetup failed on the recovery image"
+	mount -t erofs -o ro "$lo" /run/klhrescue/lower ||
+		rescue_panic "erofs mount failed (image corrupt?)"
+
+	# same stage-2 shape as bboot: ro image + RAM overlay
+	mount -t tmpfs -o mode=0755,size=${bb_rw_size:-50%} tmpfs /run/klhrescue/rw ||
+		rescue_panic "tmpfs overlay mount failed"
+	mkdir -p /run/klhrescue/rw/upper /run/klhrescue/rw/work
+	mount -t overlay overlay \
+		-o "lowerdir=/run/klhrescue/lower,upperdir=/run/klhrescue/rw/upper,workdir=/run/klhrescue/rw/work" \
+		"${rootmnt}" || rescue_panic "overlay root mount failed"
+	echo "klh-rescue: root mounted (static image + RAM overlay) — booting offline" > /dev/console 2>&1
+}
+
+mountroot() {
+	klhrescue_mountroot
+}

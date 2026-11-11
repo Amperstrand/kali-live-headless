@@ -158,6 +158,40 @@ grep -q '\*" bb\.rescue=1 "\*' "$here/bbootd-wrapper" &&
 grep -q 'bb.rescue=1) exit 0' "$here/script-bboot-wifi" &&
 	ok "initramfs wifi path exits on rescue" || bad "initramfs rescue exit missing"
 
+echo "unit: rescue-local (offline rescue, rescue-v2)"
+bash "$here/render-cmdline.sh" rescue-local "$T/rescue-local.txt" >/dev/null 2>&1 &&
+	grep -q 'boot=klhrescue' "$T/rescue-local.txt" &&
+	grep -q 'random.trust_cpu=on' "$T/rescue-local.txt" &&
+	ok "rescue-local renders boot=klhrescue + entropy fix" || bad "rescue-local render"
+for absent in bb.relays bb.servers bb.manifest bb.npub bb.d; do
+	grep -q "$absent" "$T/rescue-local.txt" &&
+		bad "rescue-local carries $absent (offline image carries no identity)" ||
+		ok "rescue-local carries no $absent"
+done
+[ -x "$here/script-klhrescue" ] &&
+	grep -q 'rescue/rootfs.erofs' "$here/script-klhrescue" &&
+	ok "klhrescue boot script present (mounts the static erofs)" ||
+	bad "klhrescue boot script missing/incomplete"
+grep -q 'scripts/klhrescue' "$here/inject-wifi.sh" &&
+	ok "inject-wifi installs the klhrescue boot script" ||
+	bad "inject-wifi does not install klhrescue"
+grep -q 'manual_add_modules loop' "$here/hook-bboot-wifi" &&
+	ok "hook adds the loop module (offline rescue)" ||
+	bad "hook missing loop module"
+if command -v mkfs.vfat >/dev/null && command -v mcopy >/dev/null; then
+	TO=$(mktemp -d)
+	dd if=/dev/urandom of="$TO/fake.erofs" bs=1M count=2 status=none
+	printf 'FAKE-UKI\n' > "$TO/fake.efi"
+	bash "$here/make-rescue-stick.sh" "$TO/fake.efi" "$TO/fake.erofs" "$TO/stick.img" 16 >/dev/null 2>&1 &&
+		mdir -i "$TO/stick.img@@2048s" ::/rescue 2>/dev/null | grep -q rootfs.erofs &&
+		mdir -i "$TO/stick.img@@2048s" ::/EFI/BOOT 2>/dev/null | grep -q BOOTX64 &&
+		ok "make-rescue-stick lays out UKI + rescue/rootfs.erofs" ||
+		bad "make-rescue-stick layout wrong"
+	rm -rf "$TO"
+else
+	echo "  skip  make-rescue-stick layout test (mtools absent)"
+fi
+
 echo "unit: bb.watchdog-sec loop semantics"
 # extract the armed block from the wrapper and run it with a tmp run-dir
 # and a mocked reboot — proves fire-at-N, early-exit-on-ready, early-

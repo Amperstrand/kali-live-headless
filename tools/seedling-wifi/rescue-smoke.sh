@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # rescue-smoke.sh — daemon-free VM proofs for the two-stick rescue design.
 #
-#   rescue-smoke.sh banner|fallback|bootnext
+#   rescue-smoke.sh banner|fallback|bootnext|soak
 #
 # Every boot runs with -nic none: no unlocker, no relay, no bunlock race —
 # these proofs coexist with a standing lab daemon (unlike the full e2e).
@@ -25,7 +25,11 @@ SEEDLING_DIR=${SEEDLING_DIR:-$HOME/src/seedling-m1}
 OVMF_CODE=/usr/share/edk2/x64/OVMF_CODE.4m.fd
 OVMF_VARS=/usr/share/edk2/x64/OVMF_VARS.4m.fd
 WORK=$(mktemp -d /tmp/opencode/rescue-smoke.XXXXXX)
-trap 'rm -rf "$WORK"' EXIT
+KEEPLOGS=/tmp/opencode/rescue-smoke-last
+mkdir -p "$KEEPLOGS"
+# evidence survives failures: serial logs copy out before the EXIT trap
+# cleans the scratch dir (learned twice the hard way tonight)
+trap 'cp -f "$WORK"/*.log "$KEEPLOGS"/ 2>/dev/null; rm -rf "$WORK"' EXIT
 pass=0; fail=0
 ok() { echo "  ok    $1"; pass=$((pass + 1)); }
 bad() { echo "  FAIL  $1"; fail=$((fail + 1)); }
@@ -48,6 +52,7 @@ boot_until() {
 	# shellcheck disable=SC2086 # extra is a full -drive option when set
 	timeout $((tmo + 30)) qemu-system-x86_64 \
 		-m 2048 -smp 2 -enable-kvm -nic none \
+		-device virtio-rng-pci \
 		-drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
 		-drive if=pflash,format=raw,file="$WORK/vars.fd" \
 		-drive file="$BOOT_IMG",format=raw,if=virtio \
@@ -217,6 +222,79 @@ PYEOF
 		ok "one-shot confirmed: no rescue banner on the post-consumption boot"
 	else
 		bad "rescue banner on boot 3 — BootNext was NOT consumed"
+	fi
+	;;
+
+soak)
+	# Power-cut soak (recovery report §4, labgrid exercise in miniature):
+	# N cycles of kill-QEMU-at-a-random-moment against persistent vars,
+	# dead primary + rescue. Property: repeated interruption never wedges
+	# the machine — a subsequent full boot still converges to rescue.
+	need_stick "$RESUE_STICK" rescue
+	need_stick "$PRIMARY_STICK" qemu
+	make_broken_primary "$WORK/broken.img"
+	BOOT_IMG="$WORK/broken.img"
+	CYCLES=${CYCLES:-5}
+	say "soak: $CYCLES random-kill cycles, then one convergence boot"
+	cut_seen=0
+	i=1
+	while [ $i -le "$CYCLES" ]; do
+		PRESERVE=1
+		t=$((RANDOM % 90 + 10))
+		boot_until "$WORK/soak-$i.log" '__SENTINEL_NEVER_MATCHES__' "$t" "$RESUE_STICK" || true
+		kill_line=$(grep -acE 'BdsDxe: starting' "$WORK/soak-$i.log" 2>/dev/null || true)
+		[ "$kill_line" -gt 0 ] && cut_seen=$((cut_seen + 1))
+		say "soak: cycle $i/$CYCLES cut at ~${t}s (firmware had started: $kill_line)"
+		i=$((i + 1))
+	done
+	# convergence boot uses the INTERRUPTED vars — that is the power-cut
+	# scenario: the machine reboots on whatever state the cuts left behind
+	if boot_until "$WORK/soak-final.log" 'RESCUE MEDIUM' 480 "$RESUE_STICK"; then
+		grep -a 'RESCUE MEDIUM' "$WORK/soak-final.log" | head -1 | sed 's/^/    /'
+		ok "convergence: full boot after $CYCLES interruptions reaches rescue"
+	else
+		bad "no convergence — machine wedged after interruption cycles"
+		tail -5 "$WORK/soak-final.log" 2>/dev/null | sed 's/^/    /'
+	fi
+	if [ "$cut_seen" -eq "$CYCLES" ]; then
+		ok "every cut landed mid-boot (firmware started in all $CYCLES cycles)"
+	else
+		bad "only $cut_seen/$CYCLES cycles reached firmware start (cuts too early?)"
+	fi
+	;;
+
+offline)
+	# rescue-v2: the offline rescue boots to LOGIN with no network, no
+	# relay, no unlock — the static rootfs on the stick is the whole OS.
+	# (the wait sentinel IS 'login:' — earlier revisions waited for the
+	# banner, killed QEMU mid-boot, then wondered why login never
+	# appeared. Evidence first, kills second.)
+	LOCAL_STICK="$SEEDLING_DIR/e2e/stick-rescue-local.img"
+	need_stick "$LOCAL_STICK" rescue-local
+	BOOT_IMG="$LOCAL_STICK"
+	say "offline: booting the static-rootfs rescue stick, no network at all"
+	if boot_until "$WORK/s.log" 'login:' 420; then
+		grep -a 'login:' "$WORK/s.log" | head -1 | sed 's/^/    /'
+		ok "OFFLINE LOGIN REACHED — no network, no unlock, no bboot"
+	else
+		bad "no login prompt — the recovery OS did not boot"
+		tail -5 "$WORK/s.log" 2>/dev/null | sed 's/^/    /'
+	fi
+	if grep -aq 'klh-rescue: LOCAL ROOTFS' "$WORK/s.log"; then
+		grep -a 'klh-rescue: LOCAL ROOTFS' "$WORK/s.log" | head -1 | sed 's/^/    /'
+		ok "offline rescue banner on serial"
+	else
+		bad "no klh-rescue banner"
+	fi
+	if grep -aq 'klh-rescue: root mounted' "$WORK/s.log"; then
+		ok "static erofs + overlay mounted (loop from the stick's ESP)"
+	else
+		bad "root never mounted — loop/erofs failed?"
+	fi
+	if grep -aqE 'nostrconnect|bboot: manifest|Waiting up to .* network device' "$WORK/s.log"; then
+		bad "network/unlock machinery ran on the offline image (leakage into the rescue path)"
+	else
+		ok "zero network/unlock activity (no manifest fetch, no URI, no NIC wait)"
 	fi
 	;;
 
