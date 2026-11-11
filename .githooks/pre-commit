@@ -233,6 +233,40 @@ if [ -f ./config ]; then
 fi
 [ "$LEAKS" = 0 ] && ok "no public addresses, MACs, keys or ./config secrets"
 
+# ---- 3b. credential-shape + known-value guard (2026-11-11 recovery) --------
+# a) literal PSK assignments in production tools are always a defect
+#    (synthetic fixtures in test/ are the sanctioned place for psk strings)
+shp=0
+for f in tools/*/*.sh tools/*/*; do
+    [ -f "$f" ] || continue
+    case "$f" in *write-wifi-conf*|*wifi-creds*) continue ;; esac
+    if grep -qnE 'psk="[^"$}{]{8,}"' "$f" 2>/dev/null; then
+        fail "leak: $f contains a literal psk=\"...\" assignment (provision via write-wifi-conf / wifi-creds)"
+        shp=$((shp + 1))
+    fi
+done
+[ "$shp" = 0 ] && ok "no literal PSK assignments in tools/"
+# b) exact known-exposed values, if the operator keeps a private needle file
+#    (~/.local/share/kali-live-headless/leak-needle, 0600, one value per line,
+#    NEVER committed). Absent needle = skip (synthetic CI environments).
+NEEDLE=~/.local/share/kali-live-headless/leak-needle
+if [ -r "$NEEDLE" ]; then
+    nh=0
+    while IFS= read -r v || [ -n "$v" ]; do
+        [ -n "$v" ] || continue
+        for f in "${FILES[@]}"; do
+            [ -f "$f" ] || continue
+            if grep -qF -- "$v" "$f" 2>/dev/null; then
+                fail "leak: $f contains a known-exposed value (leak-needle match)"
+                nh=$((nh + 1))
+            fi
+        done
+    done < "$NEEDLE"
+    [ "$nh" = 0 ] && ok "no known-exposed secret values staged"
+else
+    echo "  skip  exact-value needle absent — known-value scan skipped"
+fi
+
 # ---- 4. artifact guard ------------------------------------------------------
 for f in "${FILES[@]}"; do
     case "$f" in
