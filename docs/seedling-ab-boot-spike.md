@@ -92,10 +92,23 @@ integration + QEMU tests + remote-boot script)
 - Whether a hardware watchdog is needed for cases where the kernel hangs
   before it can reboot
 
-## Recommendation
+## Recommendation (REVISED after research)
 
-**ADAPT**: Use dual ESP + UEFI BootNext for the A/B mechanism, and keep
-systemd-boot only as an optional menu bootloader for interactive use.
+**REJECT A/B booting of the USB stick entirely.** The research (see
+`docs/research/ab-boot-recovery-patterns.md`) is unequivocal: every mature
+system puts A/B where the frequently-updated component lives. Our
+frequently-updated component is the ROOTFS, and the Nostr pointer event
+already provides unlimited A/B slots with instant remote rollback.
+
+The USB stick is firmware-class — a frozen bootloader cartridge (like a
+PXE ROM). It should be:
+1. **Watchdog-protected**: arm a hardware watchdog; if the boot doesn't
+   complete in N seconds, reboot → the pointer serves the last known-good rootfs
+2. **`bb.reboot-on-fail=1`** (already built): force-reboot on explicit failure
+3. **Spare stick in the drawer**: for the rare case of a broken kernel
+
+No dual ESP. No boot counting. No systemd-boot dependency. Just a
+watchdog + the pointer + a spare.
 
 systemd-boot's BLS-compliant boot counting is architecturally elegant,
 but the OVMF testing showed it doesn't reliably select boot-counted
