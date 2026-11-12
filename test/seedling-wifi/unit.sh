@@ -164,7 +164,7 @@ python3 "$here/schnorr.py" >/dev/null 2>&1 &&
 	ok "BIP-340 selftest (official vectors, stdlib-only)" ||
 	bad "schnorr selftest failed"
 python3 -m py_compile "$here/blabgrid-auth.py" "$here/blabgrid-auth-client.py" &&
-	grep -q 'tuple, not str' "$here/blabgrid-auth.py" &&
+	grep -q 'rsplit(":", 1)' "$here/blabgrid-auth.py" &&
 	! grep -q 'sendall(b"ok' "$here/blabgrid-auth.py" &&
 	ok "auth proxy: compiles, tuple backend, no post-auth banner" ||
 	bad "auth proxy wiring regressed"
