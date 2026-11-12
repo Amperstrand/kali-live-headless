@@ -205,6 +205,24 @@ firmware silently skips, and a self-consistent write-verify proves
 nothing (verify against the encoding, not your own echo); every
 set_order is now verified semantically.
 
+## 9. Secure Boot: the signed rescue boots, the unsigned one is refused — `offline-sb`
+
+The rescue must survive the day db is enforced on real firmware.
+`sign-uki --variant rescue-local` + `make-rescue-stick` with the signed
+UKI + the enrolled vars (`make-sb-vars`) under
+`OVMF_CODE.secboot.4m.fd` (which demands `-machine q35,smm=on` + the
+secure-pflash global — without them QEMU dies instantly and the serial
+logs stay empty, the empty-log tell). 3/0:
+
+```
+signed:   klh-rescue: LOCAL ROOTFS ... seedling login:
+unsigned: BdsDxe: failed to load Boot0002 ... : Access Denied
+          BdsDxe: No bootable option or device was found.
+```
+
+The offline STAMP on the SB stick records the SIGNED UKI's hash, so
+`rescue-stick-info.sh` verifies the exact artifact that SB validates.
+
 ## What this settles
 
 | claim | status |
@@ -216,6 +234,7 @@ set_order is now verified semantically.
 | watchdog fires on hang / no-fires on clean outcomes | ✅ **proven at boot level** — `stall` 4/0: mid-chunk freeze, expiry, reboot, re-arm; bbootd never wrote FAILED |
 | rescue boots to login offline (no unlocker) | ✅ **proven** — `boot=klhrescue` static-rootfs mode, 4/0 twice (rescue-v2) |
 | repeated power-cuts never wedge the machine | ✅ proven — `soak` 2/0: 6/6 mid-boot cuts, convergence to rescue on the interrupted vars |
+| rescue works under Secure Boot | ✅ proven — `offline-sb` 3/0: signed boots to login; unsigned refused with `Access Denied` |
 | firmware falls through a dead primary to RESCUE even with a competing internal disk | ✅ proven — `three-media` 4/0 — but ONLY with pinned BootOrder [primary, rescue, internal]; factory order boots the internal disk instead (the hazard, documented) |
 
 Still hardware-only: USB port→device-path stability, TCO watchdog, real

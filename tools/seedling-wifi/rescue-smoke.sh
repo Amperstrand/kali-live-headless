@@ -61,8 +61,9 @@ boot_until() {
 		rm -f "$WORK/vars.fd"
 		cp "$OVMF_VARS" "$WORK/vars.fd"
 	fi
-	# shellcheck disable=SC2086 # extra is a full -drive option when set
+	# shellcheck disable=SC2086 # extra/QFLAGS expand to full options when set
 	timeout $((tmo + 30)) qemu-system-x86_64 \
+		${QFLAGS:+$QFLAGS} \
 		-m 2048 -smp 2 -enable-kvm -nic none \
 		-device virtio-rng-pci \
 		${NET:+-netdev user,id=n1 -device virtio-net-pci,netdev=n1} \
@@ -524,6 +525,56 @@ print(next(v['data'] for v in d['variables'] if v['name']=='BootOrder'))")
 	else
 		ok "internal disk never booted when a healthy rescue preceded it"
 	fi
+	;;
+
+offline-sb)
+	# Secure-Boot rescue: the signed offline stick boots to login under
+	# secboot OVMF with our cert enrolled; the UNSIGNED stick is refused.
+	# Both boots ride boot_until via its OVMF globals (overridden here).
+	SB_STICK="$SEEDLING_DIR/e2e/stick-sb-local.img"
+	need_stick "$SB_STICK" "rescue-local (signed: sign-uki + make-rescue-stick with the -signed UKI)"
+	need_stick "$OFFLINE_STICK" rescue-local
+	[ -f /usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd ] || { say "offline-sb: secboot OVMF missing"; exit 2; }
+	[ -f "$SEEDLING_DIR/qemu-m1/vars-sb.fd" ] || { say "offline-sb: enrolled vars missing (make-sb-vars)"; exit 2; }
+	OVMF_CODE=/usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd
+	OVMF_VARS=$SEEDLING_DIR/qemu-m1/vars-sb.fd
+	# secboot OVMF demands SMM + secure pflash (the e2e secureboot
+	# stage's proven invocation; without these QEMU dies instantly and
+	# the serial logs stay empty — found via empty sb-pos/sb-neg logs)
+	QFLAGS='-machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on'
+
+	say "offline-sb: SIGNED rescue under Secure Boot (must reach login)"
+	BOOT_IMG="$SB_STICK"
+	if boot_until "$WORK/sb-pos.log" 'login:' 420; then
+		grep -a 'login:' "$WORK/sb-pos.log" | head -1 | sed 's/^/    /'
+		ok "signed rescue boots to login under Secure Boot"
+	else
+		bad "signed rescue did not boot under SB"
+		tail -5 "$WORK/sb-pos.log" 2>/dev/null | sed 's/^/    /'
+	fi
+	grep -aq 'klh-rescue: LOCAL ROOTFS' "$WORK/sb-pos.log" &&
+		ok "offline-rescue banner present (the right image booted)" ||
+		bad "banner missing on the SB boot"
+
+	say "offline-sb: UNSIGNED rescue under Secure Boot (must be refused)"
+	BOOT_IMG="$OFFLINE_STICK"
+	if boot_until "$WORK/sb-neg.log" 'klh-rescue: LOCAL ROOTFS' 180; then
+		bad "UNSIGNED rescue booted under SB — enforcement broken"
+	else
+		ok "unsigned rescue never booted (no banner within 180s)"
+	fi
+	rej=$(grep -aicE 'SecurityViolation|not signed|signature|verif' "$WORK/sb-neg.log" 2>/dev/null || true)
+	if [ "${rej:-0}" -gt 0 ]; then
+		grep -aiE 'SecurityViolation|not signed' "$WORK/sb-neg.log" 2>/dev/null | head -1 | sed 's/\x1b\[[0-9;=]*[A-Za-z]*//g; s/^/    /' | cut -c1-100
+		ok "firmware rejection evidence on serial ($rej matching lines)"
+	else
+		echo "  info  no explicit rejection line (silent refusal) — serial tail:"
+		tail -3 "$WORK/sb-neg.log" 2>/dev/null | sed 's/\x1b\[[0-9;=]*[A-Za-z]*//g; s/^/    /' | cut -c1-100
+	fi
+	# restore the defaults for any later modes
+	OVMF_CODE=/usr/share/edk2/x64/OVMF_CODE.4m.fd
+	OVMF_VARS=/usr/share/edk2/x64/OVMF_VARS.4m.fd
+	QFLAGS=
 	;;
 
 *) sed -n '2,12p' "$0"; exit 1 ;;
