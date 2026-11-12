@@ -48,29 +48,35 @@ def load_authorized(path):
 
 
 def verify_nostr_signature(npub, challenge_hex, signature_hex):
-    """Verify a Schnorr signature over the challenge.
+    """Verify a BIP-340 Schnorr signature over the 32-byte challenge.
 
-    In a full implementation this would use proper secp256k1 Schnorr
-    verification (BIP-340). For now, we use the challenge as a shared
-    secret proof (the client must know the nsec to produce the correct
-    HMAC-like response). This is the same trust model as NIP-46.
-
-    TODO: integrate with the seedling nostr library for proper Schnorr.
+    The initial version here accepted SHA256(challenge||npub-string) —
+    computable by anyone who received the challenge and knows the
+    target's PUBLIC npub: total impersonation (found 2026-11-12 while
+    building the Phase-1 rig). Real Schnorr via the stdlib-only
+    schnorr.py (official BIP-340 vectors in its selftest); the client
+    must sign the raw challenge bytes with the nsec.
     """
-    # For the initial version: accept if the client can produce the
-    # correct SHA-256 of (challenge + first-32-bytes-of-npub)
-    # This proves they know the npub AND received our challenge.
-    # A stronger version would use actual Schnorr signatures.
-    expected = hashlib.sha256(
-        bytes.fromhex(challenge_hex) + npub.encode()
-    ).hexdigest()
-    return signature_hex == expected
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from schnorr import npub_bytes, verify as verify_sig
+    try:
+        return verify_sig(npub_bytes(npub),
+                          bytes.fromhex(challenge_hex),
+                          bytes.fromhex(signature_hex))
+    except (ValueError, TypeError):
+        return False
 
 
 class AuthProxy:
     def __init__(self, listen_addr, backend_addr, authorized_path):
         self.listen_addr = listen_addr
-        self.backend_addr = backend_addr
+        # socket.connect() needs a (host, port) TUPLE — a bare
+        # "host:port" string raises "AF_INET address must be tuple" the
+        # moment a client passes auth, killing the data path for every
+        # connection (found by the Phase-1 rig: handshake was proven,
+        # the pipe never was)
+        bh, bp = backend_addr.rsplit(":", 1)
+        self.backend_addr = (bh, int(bp))
         self.authorized_path = authorized_path
         self.active_challenges = {}  # client_addr -> (challenge_hex, timestamp)
         self.authenticated = set()  # client_addrs that passed auth
@@ -118,13 +124,17 @@ class AuthProxy:
                 client_sock.close()
                 return
 
-            # Phase 4: connect to backend and pipe
+            # Phase 4: connect to backend and pipe. NO post-auth banner:
+            # this socket becomes a raw gRPC stream — even one injected
+            # byte ("ok\n") corrupts the HTTP/2 preface and kills the
+            # channel (found via the rig: places tolerated it, acquire
+            # died at SETTINGS). Failure still speaks: the error line
+            # plus close, which surfaces client-side as a dead stream.
             print(f"  AUTHORIZED {client_addr} ({npub[:12]}…)")
             self.active_challenges.pop(client_addr, None)
 
             backend = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             backend.connect(self.backend_addr)
-            client_sock.sendall(b"ok\n")
 
             # bidirectional pipe
             self.pipe(client_sock, backend)

@@ -158,6 +158,20 @@ grep -q '\*" bb\.rescue=1 "\*' "$here/bbootd-wrapper" &&
 grep -q 'bb.rescue=1) exit 0' "$here/script-bboot-wifi" &&
 	ok "initramfs wifi path exits on rescue" || bad "initramfs rescue exit missing"
 
+
+echo "unit: blabgrid crypto + phase-1 wiring"
+python3 "$here/schnorr.py" >/dev/null 2>&1 &&
+	ok "BIP-340 selftest (official vectors, stdlib-only)" ||
+	bad "schnorr selftest failed"
+python3 -m py_compile "$here/blabgrid-auth.py" "$here/blabgrid-auth-client.py" &&
+	grep -q 'tuple, not str' "$here/blabgrid-auth.py" &&
+	! grep -q 'sendall(b"ok' "$here/blabgrid-auth.py" &&
+	ok "auth proxy: compiles, tuple backend, no post-auth banner" ||
+	bad "auth proxy wiring regressed"
+[ -x test/seedling-wifi/blabgrid-phase1.sh ] &&
+	ok "phase-1 rig present (LG_VENV=... blabgrid-phase1.sh)" ||
+	bad "phase-1 rig missing"
+
 echo "unit: stall variant (watchdog-hang fixture)"
 bash "$here/render-cmdline.sh" stall "$T/stall.txt" >/dev/null 2>&1 &&
 	grep -q 'bb.watchdog-sec=60' "$T/stall.txt" &&

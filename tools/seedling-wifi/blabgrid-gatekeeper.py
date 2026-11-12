@@ -70,9 +70,11 @@ def fetch_grants(relay, ca, owner_npub, timeout=10):
     except Exception:
         pass
 
-    # fallback to local file (managed by bboot-publish-grants)
+    # fallback to local file (managed by bboot-publish-grants; path
+    # overridable so test rigs never touch the real lab's file)
     if not grants:
-        grants_file = os.path.expanduser("~/src/seedling-m1/labgrid-grants.json")
+        grants_file = os.path.expanduser(os.environ.get(
+            "LABGRID_GRANTS_FILE", "~/src/seedling-m1/labgrid-grants.json"))
         if os.path.exists(grants_file):
             try:
                 data = json.load(open(grants_file))

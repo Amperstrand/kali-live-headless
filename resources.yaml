@@ -1,0 +1,12 @@
+rig:
+  atom-rig:
+    NetworkService:
+      acquired: null
+      avail: true
+      cls: NetworkService
+      params:
+        address: 127.0.0.1
+        extra:
+          proxy: x280
+          proxy_required: false
+        username: root
