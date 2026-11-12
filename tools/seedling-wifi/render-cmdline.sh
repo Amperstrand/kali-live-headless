@@ -145,6 +145,12 @@ if [ "$variant" = pointer ]; then
 fi
 line=$(echo "$line" | tr -s ' ' | sed 's| $||')
 
+# ops-time extras (bb.debug=<collector-ip> etc.) come from the
+# environment — never baked into the repo template
+if [ -n "${CMDLINE_EXTRA:-}" ]; then
+	line="$line $CMDLINE_EXTRA"
+fi
+
 # no placeholder may survive
 if echo "$line" | grep -q '@[A-Z]*@'; then
 	echo "unsubstituted placeholder in: $line" >&2

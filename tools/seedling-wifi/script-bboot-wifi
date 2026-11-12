@@ -257,7 +257,28 @@ else
 	done
 fi
 if [ -z "$DEV" ] && [ "$HWSIM" -ne 1 ]; then
-	say "NO RADIO APPEARED after driver load. PCI network controllers on this machine:"
+	# second revival cycle (2026-11-12, the 20-core desktop case): some
+	# radios enumerate on a SECOND rescan — slow PCIe init, CNVi that
+	# missed the first enumeration window, firmware load racing the wait.
+	# One more unblock+rescan wave and a shorter wait before giving up.
+	say "no radio on the first wait — one more rescan cycle"
+	for i in 1 2 3; do
+		BB=/bin/busybox
+		$BB rfkill unblock all 2>/dev/null || true
+		echo 1 > /sys/bus/pci/rescan 2>/dev/null || true
+		sleep 1
+	done
+	sleep 5
+	i=0
+	while [ "$i" -lt 15 ]; do
+		DEV=$(radios | sed -n 1p)
+		[ -n "$DEV" ] && break
+		sleep 1
+		i=$((i + 1))
+	done
+fi
+if [ -z "$DEV" ] && [ "$HWSIM" -ne 1 ]; then
+	say "NO RADIO APPEARED after driver load + second rescan. PCI network controllers on this machine:"
 	say_pci_radios
 	say "kernel wireless messages:"
 	say_radio_dmesg

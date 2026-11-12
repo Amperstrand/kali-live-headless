@@ -168,6 +168,19 @@ bash "$here/render-cmdline.sh" stall "$T/stall.txt" >/dev/null 2>&1 &&
 command -v python3 >/dev/null && python3 -m py_compile "$here/stall-proxy.py" &&
 	ok "stall-proxy.py compiles" || bad "stall-proxy.py does not compile"
 
+
+# CMDLINE_EXTRA: ops-time params (bb.debug etc.) from the environment —
+# present when set, absent when not (never baked into the template)
+if CMDLINE_EXTRA="bb.debug=192.0.2.99" RELAY_HOST=192.0.2.9 bash "$here/render-cmdline.sh" hw "$T/hwdbg.txt" >/dev/null 2>&1 &&
+	grep -q 'bb.debug=192.0.2.99' "$T/hwdbg.txt"; then
+	ok "CMDLINE_EXTRA lands on the rendered cmdline"
+else
+	bad "CMDLINE_EXTRA not honored"
+fi
+grep -q 'bb.debug' "$T/hw.txt" &&
+	bad "bb.debug leaked into a render without CMDLINE_EXTRA" ||
+	ok "no ops-time extras without CMDLINE_EXTRA"
+
 echo "unit: rescue-local (offline rescue, rescue-v2)"
 bash "$here/render-cmdline.sh" rescue-local "$T/rescue-local.txt" >/dev/null 2>&1 &&
 	grep -q 'boot=klhrescue' "$T/rescue-local.txt" &&
