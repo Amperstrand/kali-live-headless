@@ -172,6 +172,19 @@ python3 -m py_compile "$here/blabgrid-auth.py" "$here/blabgrid-auth-client.py" &
 	ok "phase-1 rig present (LG_VENV=... blabgrid-phase1.sh)" ||
 	bad "phase-1 rig missing"
 
+echo "unit: radio coverage (the 20-core Legion case)"
+# the explicit modprobe list must cover every PCI radio family that
+# shipped in the last 5 years — the wireless tree has 149 modules but
+# the script's list is what loads BEFORE udev coldplug races the wait
+grep -q 'mt7925e' "$here/script-bboot-wifi" &&
+	grep -q 'ath12k_pci' "$here/script-bboot-wifi" &&
+	grep -q 'iwlwifi_mvm' "$here/script-bboot-wifi" &&
+	ok "modprobe list covers Wi-Fi 6E/7 families (mt7925e, ath12k, iwlwifi_mvm)" ||
+	bad "modprobe list missing a modern radio family"
+grep -q 'one more rescan cycle' "$here/script-bboot-wifi" &&
+	ok "second radio-revival cycle present (slow CNVi enumeration)" ||
+	bad "second revival cycle missing"
+
 echo "unit: stall variant (watchdog-hang fixture)"
 bash "$here/render-cmdline.sh" stall "$T/stall.txt" >/dev/null 2>&1 &&
 	grep -q 'bb.watchdog-sec=60' "$T/stall.txt" &&

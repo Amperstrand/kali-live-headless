@@ -239,10 +239,13 @@ done
 modprobe -q rfkill 2>/dev/null || true
 modprobe -q cfg80211 2>/dev/null || true
 modprobe -q mac80211 2>/dev/null || true
-for m in iwlwifi iwlwifi_pci ath9k ath10k_pci ath11k_pci rtw88_pci rtw89_pci \
-	brcmfmac mt7921e rtl8xxxu rt2800usb; do
+for m in iwlwifi iwlwifi_pci iwlwifi_mvm ath9k ath10k_pci ath11k_pci ath12k_pci rtw88_pci rtw89_pci \
+	brcmfmac brcmfmac_wcc mt76 mt76_connac_lib mt7921e mt7925e mt7996e rtl8xxxu rt2800usb; do
 	modprobe -q "$m" 2>/dev/null || true
 done
+# belt for CNVi (AX201/AX211): the PCIe part enumerates late after a
+# Windows fast-start leaves it blocked; a second iwlwifi probe pass +
+# rescan runs below in the second-revival cycle before we give up
 
 DEV=""
 if [ "$HWSIM" -eq 1 ]; then
