@@ -126,6 +126,14 @@ wired_ensurer() (
 		journal "wired-ensurer: $IF has 10.42.x via DHCP — nothing to do"
 		exit 0
 	fi
+	# any OTHER usable address (QEMU user-net 10.0.2.x, a lab LAN DHCP,
+	# anything) means real DHCP worked somewhere — do NOT touch it.
+	# We only intervene in the klibc-autoconfig signature state: the
+	# ONLY address is 192.168.1.x (or none at all).
+	if ip -4 addr show dev "$IF" 2>/dev/null | grep "inet " | grep -qv "inet 192\.168\.1\."; then
+		journal "wired-ensurer: $IF has a working non-10.42 address — leaving it alone"
+		exit 0
+	fi
 	ip addr add 10.42.0.2/24 dev "$IF" 2>/dev/null || true
 	ip link set "$IF" up 2>/dev/null || true
 	ip route del default 2>/dev/null || true
