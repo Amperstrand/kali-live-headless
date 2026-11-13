@@ -80,3 +80,28 @@ function of (RPi OS source image + this repo's overlay + PI_EPOCH +
 pinned manifest + pairing secret). Firmware and kernels stay hash-pinned
 inputs (vendor-blob practice); a Debian-snapshot pin does the same for
 package-based rootfs trees.
+
+## Hardware-day rootfs fixes (found by the STATE spike, 2026-11-13)
+
+1. **fstab must have NO root/`/boot/firmware` entries** — the streamed
+   root is a read-only NBD erofs by design; the stock RPi PARTUUID lines
+   make `systemd-remount-fs` fail and drag the boot into emergency.
+   The appliance fstab carries only /proc and the optional STATE mount.
+2. **STATE partition** (`LABEL=STATE`, `/state`, nofail, 10s device
+   timeout) — per-mode persistent state; the real-Pi kernels build ext4
+   in, so no module games needed on hardware (the QEMU test kernel
+   needed ext4 forced into the initrd — it stays loaded post-switch).
+3. **root authorized_keys baked** (PermitRootLogin prohibit-password) —
+   the empty root password is ssh-unusable by design; key auth is the
+   access path. Manifest 14086834 carries all three fixes and is what
+   the SD pins now.
+
+## QEMU emulation boundary (documented honestly)
+
+systemd 257's generator sandboxing uses clone3; under this QEMU's TCG
+it intermittently returns EPROTO → "Failed to fork off sandboxing
+environment" → manager freeze. `-cpu max` + `systemd.seccomp=0` do not
+reliably avoid it. Everything BEFORE userspace is proven in QEMU
+(network, pointer chase/switch/rollback/leash, unlock, chunk stream,
+root mount, early units); full userspace + STATE mount + SSH assert
+remain for real hardware (unaffected: real silicon implements clone3).

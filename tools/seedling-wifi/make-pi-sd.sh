@@ -60,7 +60,7 @@ done
 # first boot — locked root password — do not pin it).
 # Unpinned = pointer-chase: the Pi follows the owner's newest signed
 # pointer — that is the "boot to anything" appliance mode.
-MANIFEST=${PI_MANIFEST:-444c48f531056cfa66b2dabc060fee30b4915c83e92c4bf060d81d09cf42973d}
+MANIFEST=${PI_MANIFEST:-140868347a27a41cba1875e9e1b92e9ec352c6cecbe4ad7cfc3ecb91dc7305ba}
 NPUB=${PI_NPUB:-$(grep -oP 'bb\.npub=\K[a-z0-9]+' "$SEED/cmdlines/cmdline-hw.txt")}
 RELAY=${PI_RELAY:-wss://192.168.13.206:8443}
 SERVER=${PI_SERVER:-https://192.168.13.206:8443}
