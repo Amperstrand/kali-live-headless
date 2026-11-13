@@ -50,6 +50,30 @@ WIFI_DHCP=1
 for x in $(cat /proc/cmdline 2>/dev/null); do
 	case "$x" in
 		bb.nowifi|bb.nowifi=1|bb.rescue=1) journal "bb.nowifi/rescue on cmdline — wifi path skipped entirely"; exit 0 ;;
+		bb.wifi.diag=1)
+			journal "bb.wifi.diag — DIAGNOSTIC MODE: dumping everything, not booting"
+			journal "waiting 20s for udev to settle..."
+			sleep 20
+			journal "radios() found: $(radios 2>/dev/null | tr '\n' ' ')"
+			journal "/sys/class/net entries:"
+			for n in /sys/class/net/*; do
+				journal "  $(basename $n): phy80211=$([ -e "$n/phy80211" ] && echo YES || echo no) wireless=$([ -e "$n/wireless" ] && echo YES || echo no)"
+			done
+			journal "rfkill state:"
+			/bin/busybox rfkill list 2>/dev/null | while IFS= read -r l; do journal "  $l"; done
+			journal "iwlwifi/full dmesg:"
+			dmesg 2>/dev/null | grep -i "iwl\|firmware\|wlo\|wlan\|wifi\|rfkill\|80211" | while IFS= read -r l; do journal "  $l"; done
+			journal "pci wireless devices:"
+			for d in /sys/bus/pci/devices/*/; do
+				cls=$(cat "${d}class" 2>/dev/null)
+				case "$cls" in
+				0x280000*) journal "  $d class=$cls vendor=$(cat $d/vendor 2>/dev/null) device=$(cat $d/device 2>/dev/null)" ;;
+				esac
+			done
+			journal_dump
+			journal "bb.wifi.diag complete — check boot-journal.log on the stick"
+			exit 0
+			;;
 		bb.wifi=*) WIFI_SPEC="${x#bb.wifi=}" ;;
 		bb.wifi.hwsim=1) HWSIM=1 ;;
 		bb.wifi.dhcp=off) WIFI_DHCP=0 ;;
@@ -104,6 +128,11 @@ JOURNAL_DEV=""
 JOURNAL_DIR=/run/bboot-journal
 journal_setup() {
 	mkdir -p "$JOURNAL_DIR" 2>/dev/null
+	# vfat module MUST be loaded before we can mount the ESP — the first
+	# deployment of the journal silently failed because the module wasn't
+	# loaded yet at this point in the initramfs (found 2026-11-13: the
+	# stick came back with NO boot-journal.log)
+	modprobe -q vfat 2>/dev/null || modprobe -q fat 2>/dev/null || true
 	# find the BBOOT stick (any of its partitions)
 	JOURNAL_DEV=$(blkid -l -t LABEL=BBOOT -o device 2>/dev/null || true)
 	if [ -z "$JOURNAL_DEV" ]; then
@@ -363,6 +392,15 @@ if [ -n "$DEV" ]; then
 	journal "radio appeared after ${i}s: $DEV (udev-loaded, no explicit modprobe)"
 fi
 if [ -z "$DEV" ] && [ "$HWSIM" -ne 1 ]; then
+	journal "NO RADIO after 30s wait — dumping full state before the PCIe reset"
+	journal "radios() found: $(radios 2>/dev/null | tr '\n' ' ')"
+	journal "/sys/class/net entries:"
+	for n in /sys/class/net/*; do
+		journal "  $(basename $n): phy80211=$([ -e "$n/phy80211" ] && echo YES || echo no) wireless=$([ -e "$n/wireless" ] && echo YES || echo no)"
+	done
+	journal "iwlwifi dmesg:"
+	dmesg 2>/dev/null | grep -i "iwl\|firmware\|wlo" | tail -10 | while IFS= read -r l; do journal "  $l"; done
+	journal_dump
 	# second revival cycle (2026-11-12, the 20-core desktop case): some
 	# radios enumerate on a SECOND rescan — slow PCIe init, CNVi that
 	# missed the first enumeration window, firmware load racing the wait.
