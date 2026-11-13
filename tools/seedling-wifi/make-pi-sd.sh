@@ -55,10 +55,12 @@ for f in initrd-6.18.50+rpt-rpi-v6.img initrd-6.18.50+rpt-rpi-v7.img; do
 	[ -s "$PI/$f" ] || { echo "missing $PI/$f (build in the ARM chroot)" >&2; exit 1; }
 done
 
-# The Pi manifest to pin (c1e2cc41… = RPi OS 13 Lite, packed 2026-11-13).
+# The Pi manifest to pin (444c48f5… = RPi OS 13 Lite with root login
+# enabled, packed 2026-11-13; the earlier c1e2cc41 build hit sulogin on
+# first boot — locked root password — do not pin it).
 # Unpinned = pointer-chase: the Pi follows the owner's newest signed
 # pointer — that is the "boot to anything" appliance mode.
-MANIFEST=${PI_MANIFEST:-c1e2cc4192090bb0f77787dfb24e5abd9b982fc16046a6c491354cb1bce4c098}
+MANIFEST=${PI_MANIFEST:-444c48f531056cfa66b2dabc060fee30b4915c83e92c4bf060d81d09cf42973d}
 NPUB=${PI_NPUB:-$(grep -oP 'bb\.npub=\K[a-z0-9]+' "$SEED/cmdlines/cmdline-hw.txt")}
 RELAY=${PI_RELAY:-wss://192.168.13.206:8443}
 SERVER=${PI_SERVER:-https://192.168.13.206:8443}
