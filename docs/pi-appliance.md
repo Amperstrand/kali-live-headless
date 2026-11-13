@@ -69,3 +69,14 @@ Hardware-day note: the answerer's announce-poll cadence can add minutes
 between "requesting image key" and the key — the machine is WAITING BY
 DESIGN, not hung. The watchdog (bb.watchdog-sec) converts a stalled
 grant into an automatic retry.
+
+## Reproducibility (full-stack proven 2026-11-13)
+
+`SOURCE_DATE_EPOCH=1731494400 mkinitramfs` double-builds byte-identical
+initrds (8c6af2c2 == 8c6af2c2) — initramfs-tools honors it natively. With
+the reproducible initrds promoted to the SD inputs, the full double-build
+is byte-identical end to end: bf4325a9 == bf4325a9. The SD is now a pure
+function of (RPi OS source image + this repo's overlay + PI_EPOCH +
+pinned manifest + pairing secret). Firmware and kernels stay hash-pinned
+inputs (vendor-blob practice); a Debian-snapshot pin does the same for
+package-based rootfs trees.
