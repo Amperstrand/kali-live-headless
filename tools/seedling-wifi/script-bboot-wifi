@@ -295,14 +295,55 @@ done
 modprobe -q rfkill 2>/dev/null || true
 modprobe -q cfg80211 2>/dev/null || true
 modprobe -q mac80211 2>/dev/null || true
-for m in iwlwifi iwlwifi_pci iwlwifi_mvm ath9k ath10k_pci ath11k_pci ath12k_pci \
+for m in iwlwifi_mvm ath9k ath10k_pci ath11k_pci ath12k_pci \
 	rtw88_pci rtw89_pci rtw89_8852be rtw89_8852ce rtw89_8922ae rtw88_8822ce \
 	brcmfmac brcmfmac_wcc mt76 mt76_connac_lib mt7921e mt7925e mt7996e rtl8xxxu rt2800usb; do
 	modprobe -q "$m" 2>/dev/null || true
 done
-# belt for CNVi (AX201/AX211): the PCIe part enumerates late after a
-# Windows fast-start leaves it blocked; a second iwlwifi probe pass +
-# rescan runs below in the second-revival cycle before we give up
+# iwlwifi is DELIBERATELY ABSENT from the explicit list: force-loading it
+# on some CNVi hardware (the 20-core Legion: AX211) panics the kernel in
+# the initramfs (2026-11-13). udev hotplug loads it fine — the interface
+# (wlo1) appears within ~11s. The radio wait loop below finds it without
+# ever touching the module directly. If this proves too slow on some
+# machine, bb.wifi.force-iwl=1 restores the old behavior.
+for x in $(cat /proc/cmdline 2>/dev/null); do
+	case "$x" in bb.wifi.force-iwl=1)
+		for m in iwlwifi iwlwifi_pci; do modprobe -q "$m" 2>/dev/null || true; done
+		;; esac
+done
+
+# --- Windows Fast Start PCIe reset ---
+# Fast Start (Hiberboot) leaves the wifi in a locked PCIe state that
+# survives a warm reboot — the #1 cause of "no radio" and kernel panics
+# on dual-boot machines. Fix from the Linux side: power-cycle the
+# wireless device at the PCIe level. TARGETED at class 0x280000 only.
+# The operator's Windows-side alternative: `shutdown /s /full /t 0`
+# (full shutdown, bypasses Fast Start for that shutdown only).
+pci_wifi_reset() {
+	removed=0
+	for d in /sys/bus/pci/devices/*/; do
+		cls=$(cat "${d}class" 2>/dev/null)
+		case "$cls" in
+		0x280000*)
+			if [ -f "${d}remove" ]; then
+				echo 1 > "${d}remove" 2>/dev/null && removed=$((removed + 1))
+			fi
+			;;
+		esac
+	done
+	if [ "$removed" -gt 0 ]; then
+		journal "Fast Start PCIe reset: removed $removed wireless device(s), rescanning"
+		echo 1 > /sys/bus/pci/rescan 2>/dev/null || true
+		sleep 5
+		journal "Fast Start PCIe reset done — radio should reappear via udev"
+		return 0
+	fi
+	return 1
+}
+
+# try the reset BEFORE the first radio wait (prevention is better than
+# the second-revival cure)
+pci_wifi_reset || true
 
 DEV=""
 if [ "$HWSIM" -eq 1 ]; then
@@ -321,7 +362,8 @@ if [ -z "$DEV" ] && [ "$HWSIM" -ne 1 ]; then
 	# radios enumerate on a SECOND rescan — slow PCIe init, CNVi that
 	# missed the first enumeration window, firmware load racing the wait.
 	# One more unblock+rescan wave and a shorter wait before giving up.
-	say "no radio on the first wait — one more rescan cycle"
+	say "no radio on the first wait — PCIe reset + one more rescan cycle"
+	pci_wifi_reset || true
 	for i in 1 2 3; do
 		BB=/bin/busybox
 		$BB rfkill unblock all 2>/dev/null || true
