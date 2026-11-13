@@ -176,14 +176,34 @@ echo "unit: radio coverage (the 20-core Legion case)"
 # the explicit modprobe list must cover every PCI radio family that
 # shipped in the last 5 years — the wireless tree has 149 modules but
 # the script's list is what loads BEFORE udev coldplug races the wait
+for fam in mt7925e ath12k_pci iwlwifi_mvm rtw89_8852ce rtw89_8922ae brcmfmac_wcc; do
+	grep -q "$fam" "$here/script-bboot-wifi" ||
+		bad "modprobe list missing $fam"
+done
 grep -q 'mt7925e' "$here/script-bboot-wifi" &&
 	grep -q 'ath12k_pci' "$here/script-bboot-wifi" &&
-	grep -q 'iwlwifi_mvm' "$here/script-bboot-wifi" &&
 	ok "modprobe list covers Wi-Fi 6E/7 families (mt7925e, ath12k, iwlwifi_mvm)" ||
 	bad "modprobe list missing a modern radio family"
 grep -q 'one more rescan cycle' "$here/script-bboot-wifi" &&
 	ok "second radio-revival cycle present (slow CNVi enumeration)" ||
 	bad "second revival cycle missing"
+# the self-decoding PCI table
+if [ -f "$here/pci-wireless.ids" ]; then
+	grep -q '^8086:2725 Intel AX201' "$here/pci-wireless.ids" &&
+		grep -q 'pci-wireless.ids' "$here/script-bboot-wifi" &&
+		ok "PCI self-decode table present (8086:2725 → AX201, banner names the chip)" ||
+		bad "PCI decode table or its lookup is missing"
+	# every module in the table must be in the script's modprobe list
+	MISSING_MODS=$(grep -o '\[[a-z0-9_]*\]' "$here/pci-wireless.ids" |
+		tr -d '[]' | sort -u | while IFS= read -r m; do
+			grep -q "$m" "$here/script-bboot-wifi" || echo "$m"
+		done)
+	[ -z "$MISSING_MODS" ] &&
+		ok "every module in the PCI table is in the modprobe list" ||
+		bad "PCI table references un-probed modules: $MISSING_MODS"
+else
+	bad "pci-wireless.ids missing"
+fi
 
 echo "unit: stall variant (watchdog-hang fixture)"
 bash "$here/render-cmdline.sh" stall "$T/stall.txt" >/dev/null 2>&1 &&

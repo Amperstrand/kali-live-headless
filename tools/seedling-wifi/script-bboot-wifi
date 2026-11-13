@@ -27,7 +27,11 @@ say_pci_radios() {
 			0x280000*)
 				v=$(cat "${d}vendor" 2>/dev/null)
 				c=$(cat "${d}device" 2>/dev/null)
-				say "  pci radio: ${v#0x}:${c#0x}"
+				vv=${v#0x}; cc=${c#0x}
+				# self-decode: the failure banner names the chip, not hex
+				name=$(grep "^$vv:$cc " "$(dirname "$0")/pci-wireless.ids" 2>/dev/null |
+					head -1 | sed 's/^[0-9a-f]*:[0-9a-f]* //;s/ \[.*//')
+				say "  pci radio: $vv:$cc ${name:-unknown — report this ID}"
 				;;
 		esac
 	done
@@ -239,7 +243,8 @@ done
 modprobe -q rfkill 2>/dev/null || true
 modprobe -q cfg80211 2>/dev/null || true
 modprobe -q mac80211 2>/dev/null || true
-for m in iwlwifi iwlwifi_pci iwlwifi_mvm ath9k ath10k_pci ath11k_pci ath12k_pci rtw88_pci rtw89_pci \
+for m in iwlwifi iwlwifi_pci iwlwifi_mvm ath9k ath10k_pci ath11k_pci ath12k_pci \
+	rtw88_pci rtw89_pci rtw89_8852be rtw89_8852ce rtw89_8922ae rtw88_8822ce \
 	brcmfmac brcmfmac_wcc mt76 mt76_connac_lib mt7921e mt7925e mt7996e rtl8xxxu rt2800usb; do
 	modprobe -q "$m" 2>/dev/null || true
 done

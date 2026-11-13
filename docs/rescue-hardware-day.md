@@ -76,3 +76,29 @@ same-unknown-provenance is the failure mode the STAMP exists to catch.
   the rescue is PARKED (announced-rescue) until an incident shows
   serial-console-via-labgrid is insufficient
 - TCO behavior under kernel panic (VM cannot test this)
+
+## Radio triage (if NO RADIO persists after f2ce981)
+
+The failure banner now self-decodes the PCI vendor:device (the table is
+`pci-wireless.ids`, generated from the kernel's own module aliases).
+
+Decision tree, in order:
+
+1. **Banner says `pci radio: <vendor:device> <name>` and the name has a
+   `[module]` entry in the table** → the driver binds but no `wlan*`
+   appears: check `dmesg` lines for `firmware: failed to load` (the one
+   gap the initramfs can still have — a firmware file the kernel tree
+   doesn't ship). The kernel wireless messages section of the banner
+   carries this.
+2. **Banner says `pci radio: <vendor:device> unknown — report this ID`**
+   → the kernel does NOT know this device: the chip is newer than
+   6.107. Report the ID; the fix is a kernel bump, not a driver modprobe.
+3. **No `pci radio:` line at all** → no wireless PCI device enumerated.
+   The BIOS's wireless is disabled or the M.2 slot is empty. Enter the
+   firmware setup: Lenovo F1 at boot → Device → Network Setup → Wireless
+   LAN. This is the prime suspect for a tower that shipped without
+   wifi and got a card added later, or one that was disabled in a
+   previous Windows session (fast-start can leave it off).
+4. **`pci radio:` present + `wlan*` appears but no association** →
+   the wifi script's own diagnostics carry it from here (rfkill state,
+   scan results, DHCP) — a software problem, not a detection one.

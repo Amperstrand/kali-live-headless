@@ -1,0 +1,31 @@
+# pci-wireless.ids — vendor:device → marketing name, generated from the
+# kernel's own module alias tables (6.12.107+deb13) + public PCIe IDs.
+# Used by script-bboot-wifi's failure banner so a NO RADIO report
+# self-decodes ("Intel AX211 (CNVi)" instead of "8086:51f0").
+# Format: vendor:device name [module]
+# Intel — the AX/BE family (the 20-core Legion is one of these)
+8086:2723 Intel AX200 [iwlwifi]
+8086:2725 Intel AX201/AX203 CNVi [iwlwifi]
+8086:2726 Intel AX210 [iwlwifi]
+8086:51f0 Intel AX211/AX411 CNVi [iwlwifi]
+8086:51f1 Intel AX211 CNVi [iwlwifi]
+8086:7a70 Intel BE200 Wi-Fi7 [iwlwifi]
+8086:e340 Intel BE201 Wi-Fi7 [iwlwifi]
+8086:e440 Intel BE200 Wi-Fi7 [iwlwifi]
+8086:24fd Intel 8265 [iwlwifi]
+8086:2526 Intel 9560 [iwlwifi]
+8086:a0f0 Intel 7260 [iwlwifi]
+8086:34f0 Intel 8260 [iwlwifi]
+# MediaTek
+14c3:0608 MediaTek MT7921 [mt7921e]
+14c3:0616 MediaTek MT7922 [mt7921e]
+14c3:0717 MediaTek MT7925 Wi-Fi7 [mt7925e]
+14c3:0716 MediaTek MT7925 Wi-Fi7 [mt7925e]
+# Realtek
+10ec:c852 Realtek RTL8852BE [rtw89_8852be]
+10ec:c85b Realtek RTL8852CE [rtw89_8852ce]
+10ec:c892 Realtek RTL8922AE Wi-Fi7 [rtw89_8922ae]
+10ec:c822 Realtek RTL8822CE [rtw88_8822ce]
+# Qualcomm / Broadcom
+168c:003e Qualcomm QCA6174 [ath10k_pci]
+1106:9000 Broadcom BCM4360 [brcmfmac]
