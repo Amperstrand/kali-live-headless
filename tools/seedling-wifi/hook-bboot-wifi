@@ -31,6 +31,22 @@ if [ -x "$DESTDIR/sbin/bbootd" ] && [ ! -e "$DESTDIR/sbin/bbootd.real" ]; then
 	chmod 0755 "$DESTDIR/sbin/bbootd"
 fi
 
+# dropbear's init-bottom brings ALL interfaces down (IFDOWN=*) when the
+# ramdisk exits — but the bboot NBD root fetches chunks lazily AFTER that
+# point, so killing the network there stalls the boot at "chunk N: context
+# deadline exceeded" forever (found by e2e 2026-11-13: every full-boot
+# stage died post-unlock since dropbear landed; the Nov 11 boots predate
+# dropbear). IFDOWN=none is the documented knob: keep interfaces up,
+# preserve routing. Both dropbear scripts source this conf AFTER their
+# defaults, so it wins.
+if [ -f "$DESTDIR/etc/dropbear/dropbear.conf" ]; then
+	grep -q '^IFDOWN=' "$DESTDIR/etc/dropbear/dropbear.conf" 2>/dev/null ||
+		echo 'IFDOWN=none' >> "$DESTDIR/etc/dropbear/dropbear.conf"
+else
+	mkdir -p "$DESTDIR/etc/dropbear"
+	printf 'IFDOWN=none\n' > "$DESTDIR/etc/dropbear/dropbear.conf"
+fi
+
 # regulatory database + every installed firmware blob (the rootfs carries only
 # the Wi-Fi firmware packages, so this is bounded by that set)
 if [ -d /lib/firmware ]; then

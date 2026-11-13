@@ -901,20 +901,22 @@ for st in $STAGES; do
 		fi ;;
 	esac
 done
-# nowifi must show ZERO wifi-script lines — absence assert with non-empty
-# serial proof (the count-zero-with-list rule)
+# nowifi must take ZERO radio/wifi ACTIONS. v5.2+ legitimately logs
+# journal/ensurer/ssh lines on every path (the old "zero bboot-wifi lines"
+# contract predates the always-on fixups — updated 2026-11-13). Absence
+# assert with non-empty serial proof (the count-zero-with-list rule).
 case " $STAGES " in
 *" nowifi "*)
 	serial_nowifi=$(ls -t "$LOGDIR"/nowifi-$TS.log 2>/dev/null | head -1)
 if [ -n "$serial_nowifi" ]; then
 	lines=$(wc -l < "$serial_nowifi")
-	wifi_lines=$(grep -c 'bboot-wifi:' "$serial_nowifi" || true)
-	if [ "$lines" -gt 200 ] && [ "$wifi_lines" -eq 0 ]; then
-		say "nowifi: PASS — $wifi_lines wifi lines in a $lines-line serial log"
+	radio_lines=$(grep -ciE 'bboot-wifi: .*(radio|scan|wpa[_ ]|assoc|rfkill|hwsim|requesting dhcp)' "$serial_nowifi" || true)
+	if [ "$lines" -gt 200 ] && [ "$radio_lines" -eq 0 ]; then
+		say "nowifi: PASS — zero radio-action lines in a $lines-line serial log"
 		pass=$((pass + 1))
 	else
-		say "nowifi: FAIL — $wifi_lines wifi lines, serial $lines lines"
-		grep -m3 'bboot-wifi:' "$serial_nowifi" | sed 's/^/    /'
+		say "nowifi: FAIL — $radio_lines radio-action lines, serial $lines lines"
+		grep -mi3E 'bboot-wifi: .*(radio|scan|wpa[_ ]|assoc|rfkill|hwsim|requesting dhcp)' "$serial_nowifi" | sed 's/^/    /'
 		fail=$((fail + 1)); failed_stages+=(nowifi-absence)
 	fi
 fi

@@ -131,7 +131,7 @@ wired_ensurer() (
 	# We only intervene in the klibc-autoconfig signature state: the
 	# ONLY address is 192.168.1.x (or none at all).
 	if ip -4 addr show dev "$IF" 2>/dev/null | grep "inet " | grep -qv "inet 192\.168\.1\."; then
-		journal "wired-ensurer: $IF has a working non-10.42 address — leaving it alone"
+		journal "wired-ensurer: $IF has a working non-10.42 address — leaving it alone (committed)"
 		exit 0
 	fi
 	ip addr add 10.42.0.2/24 dev "$IF" 2>/dev/null || true
@@ -139,7 +139,7 @@ wired_ensurer() (
 	ip route del default 2>/dev/null || true
 	ip route add default via 10.42.0.1 dev "$IF" src 10.42.0.2 2>/dev/null || true
 	echo "nameserver 10.42.0.1" > /etc/resolv.conf 2>/dev/null || true
-	journal "wired-ensurer: ensured 10.42.0.2/24 + default via 10.42.0.1 + dns on $IF (static fallback)"
+	journal "wired-ensurer: ensured 10.42.0.2/24 + default via 10.42.0.1 + dns on $IF (static fallback, committed)"
 )
 wired_ensurer </dev/null >/dev/console 2>&1 &
 journal "ethernet: ensurer armed (DHCP from laptop dnsmasq, static 10.42.0.2 fallback)"
@@ -160,17 +160,27 @@ CONF=""
 if [ -n "$WIFI_SPEC" ] && [ -f "$WIFI_SPEC" ]; then
 	CONF="$WIFI_SPEC"
 else
-	dev=""
-	for _try in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-		dev=$(blkid -l -t LABEL=BBOOT -o device 2>/dev/null || true)
-		[ -n "$dev" ] && break
-		sleep 2
-	done
-	if [ -n "$dev" ]; then
-		if modprobe vfat 2>/dev/null || modprobe fat 2>/dev/null; then
-			mkdir -p /run/bboot-wifi
-			if mount -t vfat -o ro "$dev" /run/bboot-wifi 2>/dev/null; then
-				[ -f /run/bboot-wifi/wifi.conf ] && CONF=/run/bboot-wifi/wifi.conf
+	# journal_setup already mounted the stick's ESP (same LABEL=BBOOT
+	# device) at JOURNAL_DIR — a second mount of the same device fails
+	# silently in busybox initramfs, and that killed wifi.conf discovery
+	# while the journal wrote happily to the same partition (found by
+	# e2e assoc 2026-11-13: "no wifi.conf; staying wired").
+	if [ "$JOURNAL_DIR" != "/dev/null" ] && [ -f "$JOURNAL_DIR/wifi.conf" ]; then
+		CONF="$JOURNAL_DIR/wifi.conf"
+	fi
+	if [ -z "$CONF" ]; then
+		dev=""
+		for _try in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+			dev=$(blkid -l -t LABEL=BBOOT -o device 2>/dev/null || true)
+			[ -n "$dev" ] && break
+			sleep 2
+		done
+		if [ -n "$dev" ]; then
+			if modprobe vfat 2>/dev/null || modprobe fat 2>/dev/null; then
+				mkdir -p /run/bboot-wifi
+				if mount -t vfat -o ro "$dev" /run/bboot-wifi 2>/dev/null; then
+					[ -f /run/bboot-wifi/wifi.conf ] && CONF=/run/bboot-wifi/wifi.conf
+				fi
 			fi
 		fi
 	fi
@@ -241,7 +251,7 @@ else
 	if [ -n "$DEV" ]; then
 		journal "radio appeared after active intervention: $DEV"
 	else
-		journal "NO RADIO after hands-off + active intervention"
+		journal "NO RADIO APPEARED after hands-off + active intervention — going wired"
 		journal_dump
 		say "NO RADIO — full diagnostics written to the stick's journal"
 		exit 0
@@ -298,7 +308,7 @@ if [ "$GOT_IP" -eq 0 ]; then
 	exit 0
 fi
 IP=$(ip -4 addr show "$DEV" 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
-journal "WIFI BOOT SUCCESSFUL: $DEV has $IP"
+journal "WIFI BOOT SUCCESSFUL: $DEV has $IP (dhcp committed)"
 journal "handing off to bboot (manifest fetch over wifi)"
 
 # copy wifi config into the rootfs for post-switch_root reconnection
