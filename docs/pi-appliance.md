@@ -54,3 +54,18 @@ One npub, many `bb.d` tags = many machines or many modes.
 - serial console: 115200 baud on the UART pins (`enable_uart=1` is set)
 - after boot: `ssh root@<dhcp-address>` (empty root password on the
   dev image — change it or bake a key before any real deployment)
+
+## Proven in QEMU (2026-11-13, the pointer campaign — serial logs in
+`~/src/seedling-m1/e2e/logs/pi-{chase,switch,rollback,denial}.log`)
+
+| property | evidence |
+|---|---|
+| pointer-chase | unpinned boot followed the signed pointer `c7ad3e15 → 444c48f5`, unlocked, booted |
+| mode switch | publish v2 pointer `f686c40d → f917f606` → same config booted `pi-raspios-v2` |
+| rollback | publishing the older-valid pointer `59f5ef7e → 444c48f5` booted v1 again |
+| owner's leash + self-heal | answerer stopped → 0 unlocks, watchdog rebooted at 120 s; answerer restored → the retry boot unlocked and booted — no intervention |
+
+Hardware-day note: the answerer's announce-poll cadence can add minutes
+between "requesting image key" and the key — the machine is WAITING BY
+DESIGN, not hung. The watchdog (bb.watchdog-sec) converts a stalled
+grant into an automatic retry.
