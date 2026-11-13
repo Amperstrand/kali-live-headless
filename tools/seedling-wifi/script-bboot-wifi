@@ -71,13 +71,11 @@ journal_dump() {
 journal_setup
 journal "BOOT v5.1: $(cat /proc/cmdline 2>/dev/null | tr -d '\n' | cut -c1-180)"
 
-# --- ethernet: klibc autoconfig assigns 192.168.1.2 when DHCP fails ---
-# The Legion is on a DIRECT link to our laptop (no lab LAN router).
-# klibc ipconfig's DHCP ladder times out, then falls back to
-# 192.168.1.2 automatically (proven on every boot). Our laptop IS
-# 192.168.1.1 on the USB ethernet adapter, with NAT to the lab LAN.
-# Working WITH the fallback instead of against it.
-journal "waiting for klibc autoconfig (expects 192.168.1.2 on enp2s0)"
+# --- ethernet: DHCP from our laptop's dnsmasq on the direct link ---
+# The Legion is on a DIRECT link to our laptop (10.42.0.1, dnsmasq).
+# klibc ipconfig sends DHCP DISCOVER → dnsmasq responds with 10.42.0.2.
+# No autoconfig fallback needed (the 192.168.1.x era is over).
+journal "ethernet: DHCP from 10.42.0.1 (dnsmasq on the laptop)"
 
 # --- cmdline parse (after journal so early exits are recorded) ---
 WIFI_SPEC=""
