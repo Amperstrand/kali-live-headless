@@ -17,6 +17,60 @@ esac
 
 say() { echo "bboot-wifi: $*" >&2; }
 
+# --- boot journal (diagnostics-only addition to the known-good script) ---
+# The journal block is placed HERE (right after say(), before any other
+# code) so it's defined before every call site. The only change from
+# the known-good a946537 script.
+JOURNAL_DIR=/run/bboot-journal
+journal_setup() {
+	mkdir -p "$JOURNAL_DIR" 2>/dev/null
+	modprobe -q vfat 2>/dev/null || modprobe -q fat 2>/dev/null || true
+	# WAIT for the USB stick to enumerate (up to 10s) — the first
+	# deployment failed because journal_setup ran before the USB
+	# subsystem had discovered the device (every boot produced an empty
+	# journal; found 2026-11-13 after three attempts)
+	w=0
+	while [ $w -lt 10 ]; do
+		JOURNAL_DEV=$(blkid -l -t LABEL=BBOOT -o device 2>/dev/null || true)
+		[ -n "$JOURNAL_DEV" ] && break
+		sleep 1
+		w=$((w + 1))
+	done
+	if [ -n "$JOURNAL_DEV" ]; then
+		mount -t vfat -o rw "$JOURNAL_DEV" "$JOURNAL_DIR" 2>/dev/null
+	fi
+	if [ ! -w "$JOURNAL_DIR" ]; then
+		for d in /dev/sda1 /dev/sdb1 /dev/sdc1 /dev/sdd1 /dev/sde1; do
+			[ -b "$d" ] && mount -t vfat -o rw "$d" "$JOURNAL_DIR" 2>/dev/null && break
+		done
+	fi
+	if [ -w "$JOURNAL_DIR" ]; then
+		say "journal: mounted $JOURNAL_DEV at $JOURNAL_DIR (writing to stick)"
+	else
+		JOURNAL_DIR=/dev/null
+		say "journal: MOUNT FAILED after ${w}s wait — no stick write"
+	fi
+}
+journal() {
+	[ "$JOURNAL_DIR" = "/dev/null" ] && return 0
+	echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*" >> "$JOURNAL_DIR/boot-journal.log" 2>/dev/null
+	say "$*"
+}
+journal_dump() {
+	[ "$JOURNAL_DIR" = "/dev/null" ] && return 0
+	{
+		echo "--- dump $(date -u '+%Y-%m-%dT%H:%M:%SZ') ---"
+		echo "cmdline: $(cat /proc/cmdline 2>/dev/null)"
+		echo "radios: $(ls /sys/class/net/ 2>/dev/null | tr '\n' ' ')"
+		echo "rfkill:"; /bin/busybox rfkill list 2>/dev/null
+		echo "dmesg wifi:"; dmesg 2>/dev/null | grep -iE "iwl|firmware|wlan|wlo|wifi|80211|assoc|auth" | tail -20
+		echo "net:"; ip addr show 2>/dev/null; ip route show 2>/dev/null
+		echo "run/net:"; cat /run/net-*.conf 2>/dev/null
+	} >> "$JOURNAL_DIR/boot-journal.log" 2>/dev/null
+}
+journal_setup
+journal "BOOT: known-good a946537 + journal; $(cat /proc/cmdline 2>/dev/null | tr -d '\n' | cut -c1-160)"
+
 # print every PCI network controller (class 0x280000) as vendor:device —
 # even a machine whose driver is missing then tells us exactly which radio
 # it has, on screen, instead of a silent black display
@@ -27,11 +81,7 @@ say_pci_radios() {
 			0x280000*)
 				v=$(cat "${d}vendor" 2>/dev/null)
 				c=$(cat "${d}device" 2>/dev/null)
-				vv=${v#0x}; cc=${c#0x}
-				# self-decode: the failure banner names the chip, not hex
-				name=$(grep "^$vv:$cc " "$(dirname "$0")/pci-wireless.ids" 2>/dev/null |
-					head -1 | sed 's/^[0-9a-f]*:[0-9a-f]* //;s/ \[.*//')
-				say "  pci radio: $vv:$cc ${name:-unknown — report this ID}"
+				say "  pci radio: ${v#0x}:${c#0x}"
 				;;
 		esac
 	done
@@ -49,31 +99,7 @@ HWSIM=0
 WIFI_DHCP=1
 for x in $(cat /proc/cmdline 2>/dev/null); do
 	case "$x" in
-		bb.nowifi|bb.nowifi=1|bb.rescue=1) journal "bb.nowifi/rescue on cmdline — wifi path skipped entirely"; exit 0 ;;
-		bb.wifi.diag=1)
-			journal "bb.wifi.diag — DIAGNOSTIC MODE: dumping everything, not booting"
-			journal "waiting 20s for udev to settle..."
-			sleep 20
-			journal "radios() found: $(radios 2>/dev/null | tr '\n' ' ')"
-			journal "/sys/class/net entries:"
-			for n in /sys/class/net/*; do
-				journal "  $(basename $n): phy80211=$([ -e "$n/phy80211" ] && echo YES || echo no) wireless=$([ -e "$n/wireless" ] && echo YES || echo no)"
-			done
-			journal "rfkill state:"
-			/bin/busybox rfkill list 2>/dev/null | while IFS= read -r l; do journal "  $l"; done
-			journal "iwlwifi/full dmesg:"
-			dmesg 2>/dev/null | grep -i "iwl\|firmware\|wlo\|wlan\|wifi\|rfkill\|80211" | while IFS= read -r l; do journal "  $l"; done
-			journal "pci wireless devices:"
-			for d in /sys/bus/pci/devices/*/; do
-				cls=$(cat "${d}class" 2>/dev/null)
-				case "$cls" in
-				0x280000*) journal "  $d class=$cls vendor=$(cat $d/vendor 2>/dev/null) device=$(cat $d/device 2>/dev/null)" ;;
-				esac
-			done
-			journal_dump
-			journal "bb.wifi.diag complete — check boot-journal.log on the stick"
-			exit 0
-			;;
+		bb.nowifi|bb.nowifi=1) exit 0 ;;
 		bb.wifi=*) WIFI_SPEC="${x#bb.wifi=}" ;;
 		bb.wifi.hwsim=1) HWSIM=1 ;;
 		bb.wifi.dhcp=off) WIFI_DHCP=0 ;;
@@ -86,7 +112,7 @@ say "wi-fi boot stick v4 (overlay 2026-11-06)"
 # ---- remote serial console (bb.debug=<workstation-ip>) ----
 # Captures everything from here on and mirrors it to the workstation via
 # UDP syslog (port 514). A "serial cable" over whatever network the machine
-# has. Enable with bb.debug=<syslog-collector-ip> on the cmdline.
+# has. Enable with bb.debug=192.0.2.206 on the cmdline.
 DBG_TARGET=""
 for x in $(cat /proc/cmdline 2>/dev/null); do
 	case "$x" in bb.debug=*) DBG_TARGET="${x#bb.debug=}" ;; esac
@@ -116,63 +142,6 @@ fi
 # /init's shell, so the exec + export reach it). A poller then ships the
 # URI to the relay, NIP-44-encrypted to the owner — bunlock on the
 # workstation answers it. bb.noremote=1 disables the whole mechanism.
-# --- boot journal: every boot writes its own record to the stick's ESP.
-# The stick is the only storage we control on a machine that might not
-# network, might panic, and whose serial we can't always see. This is
-# the "log to USB" the operator asked for: persistent, timestamped,
-# readable on any machine (FAT), accumulates across boots.
-#
-# The ESP mount at /run/bboot-wifi may be ro (for wifi.conf reading);
-# the journal does its own rw mount so it can write.
-JOURNAL_DEV=""
-JOURNAL_DIR=/run/bboot-journal
-journal_setup() {
-	mkdir -p "$JOURNAL_DIR" 2>/dev/null
-	# vfat module MUST be loaded before we can mount the ESP — the first
-	# deployment of the journal silently failed because the module wasn't
-	# loaded yet at this point in the initramfs (found 2026-11-13: the
-	# stick came back with NO boot-journal.log)
-	modprobe -q vfat 2>/dev/null || modprobe -q fat 2>/dev/null || true
-	# find the BBOOT stick (any of its partitions)
-	JOURNAL_DEV=$(blkid -l -t LABEL=BBOOT -o device 2>/dev/null || true)
-	if [ -z "$JOURNAL_DEV" ]; then
-		for d in /dev/sda1 /dev/sdb1 /dev/sdc1 /dev/nvme0n1p1; do
-			[ -b "$d" ] && mount -t vfat -o rw "$d" "$JOURNAL_DIR" 2>/dev/null && { JOURNAL_DEV=$d; break; }
-		done
-	else
-		mount -t vfat -o rw "$JOURNAL_DEV" "$JOURNAL_DIR" 2>/dev/null ||
-			mount -t vfat -o rw,remount "$JOURNAL_DEV" "$JOURNAL_DIR" 2>/dev/null || true
-	fi
-	[ -d "$JOURNAL_DIR" ] && [ -w "$JOURNAL_DIR" ] ||
-		{ JOURNAL_DIR=/dev/null; return 1; }
-	return 0
-}
-journal() { # message — append to the boot journal on the stick
-	[ "$JOURNAL_DIR" = "/dev/null" ] && return 0
-	echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*" >> "$JOURNAL_DIR/boot-journal.log" 2>/dev/null
-	say "$*"
-}
-journal_dump() { # a failure happened — full diagnostics to the journal
-	[ "$JOURNAL_DIR" = "/dev/null" ] && return 0
-	{
-		echo "--- diagnostic dump $(date -u '+%Y-%m-%dT%H:%M:%SZ') ---"
-		echo "cmdline: $(cat /proc/cmdline 2>/dev/null)"
-		echo "net devices:"; ip link show 2>/dev/null
-		echo "ip addrs:"; ip -4 addr show 2>/dev/null
-		echo "routes:"; ip route show 2>/dev/null
-		echo "/run/net files:"; ls -la /run/net-*.conf 2>/dev/null; cat /run/net-*.conf 2>/dev/null
-		echo "carrier states:"; for n in /sys/class/net/*/carrier; do echo "  $n = $(cat $n 2>/dev/null)"; done
-		echo "pci net/radio:"; for d in /sys/bus/pci/devices/*/; do cls=$(cat $d/class 2>/dev/null); case $cls in 0x020000*|0x280000*) echo "  $d class=$cls vendor=$(cat $d/vendor 2>/dev/null) device=$(cat $d/device 2>/dev/null)";; esac; done
-		echo "dmesg net tail:"; dmesg 2>/dev/null | grep -i "enp\|eth\|dhcp\|e1000\|igb\|igc\|r8169\|iwl\|firmware\|carrier\|link" | tail -15
-		echo "dmesg last 10:"; dmesg 2>/dev/null | tail -10
-	} >> "$JOURNAL_DIR/boot-journal.log" 2>/dev/null
-}
-
-# mount the journal FIRST — every subsequent line can be recorded
-journal_setup
-
-journal "BOOT start: wifi script v4, cmdline=$(cat /proc/cmdline 2>/dev/null | tr -d '\n' | cut -c1-200)"
-
 CONF=""
 if [ -n "$WIFI_SPEC" ] && [ -f "$WIFI_SPEC" ]; then
 	CONF="$WIFI_SPEC"
@@ -184,27 +153,27 @@ else
 		sleep 2
 	done
 	if [ -z "$dev" ]; then
-		journal "NO BBOOT stick found; staying wired"
+		say "no partition labeled BBOOT; staying wired"
 	elif ! modprobe vfat 2>/dev/null && ! modprobe fat 2>/dev/null; then
-		journal "vfat module unavailable; staying wired"
+		say "vfat module unavailable; staying wired"
 	else
 		mkdir -p /run/bboot-wifi
 		if mount -t vfat -o ro "$dev" /run/bboot-wifi 2>/dev/null; then
 			if [ -f /run/bboot-wifi/wifi.conf ]; then
 				CONF=/run/bboot-wifi/wifi.conf
 			else
-				journal "$dev mounted but no wifi.conf; staying wired"
+				say "$dev mounted but has no wifi.conf; staying wired"
 			fi
 		else
-			journal "mount $dev FAILED; staying wired"
+			say "mount $dev failed; staying wired"
 		fi
 	fi
 fi
 if [ -z "$CONF" ]; then
-	journal "no wifi.conf on the stick; staying wired"; journal_dump
+	say "no wifi.conf anywhere; staying wired"
 	exit 0
 fi
-journal "wifi.conf found; proceeding with wifi"
+say "config found"
 
 # --- hwsim self-test (bb.wifi.hwsim=1): two virtual radios, hostapd as a
 # remote-unlock is handled by the /sbin/bbootd wrapper (hook installs it)
@@ -237,7 +206,6 @@ run_hwsim_test() {
 	[ "$n" -ge 2 ] || { say "hwsim: radios did not appear"; return 1; }
 	HWSIM_AP=$(radios | sed -n 1p)
 	DEV=$(radios | sed -n 2p)
-	HWSIM_PSK='not-a-real-psk-8chars' # leak-ok: hwsim test-AP passphrase — synthetic, coordinated with the unit fixture
 	say "hwsim: AP on $HWSIM_AP, station on $DEV"
 	cat > /run/hostapd-hwsim.conf <<EOF
 driver=nl80211
@@ -247,7 +215,7 @@ hw_mode=g
 channel=6
 auth_algs=1
 wpa=2
-wpa_passphrase=$HWSIM_PSK
+wpa_passphrase=not-a-real-psk-8chars # leak-ok: hwsim test-AP passphrase (synthetic, coordinated with unit fixture)
 wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 EOF
@@ -289,7 +257,7 @@ EOF
 		if [ -n "$WIRED" ]; then
 			ip link set "$WIRED" up 2>/dev/null || true
 			"$BB" brctl addif br0 "$WIRED"
-			journal "hwsim: bridged $HWSIM_AP (AP) with $WIRED (wired) — wifi now carries real DHCP"
+			say "hwsim: bridged $HWSIM_AP (AP) with $WIRED (wired) — wifi now carries real DHCP"
 		fi
 		ip link set br0 up 2>/dev/null || true
 	else
@@ -324,99 +292,17 @@ done
 modprobe -q rfkill 2>/dev/null || true
 modprobe -q cfg80211 2>/dev/null || true
 modprobe -q mac80211 2>/dev/null || true
-for m in iwlwifi_mvm ath9k ath10k_pci ath11k_pci ath12k_pci \
-	rtw88_pci rtw89_pci rtw89_8852be rtw89_8852ce rtw89_8922ae rtw88_8822ce \
-	brcmfmac brcmfmac_wcc mt76 mt76_connac_lib mt7921e mt7925e mt7996e rtl8xxxu rt2800usb; do
+for m in iwlwifi iwlwifi_pci ath9k ath10k_pci ath11k_pci rtw88_pci rtw89_pci \
+	brcmfmac mt7921e rtl8xxxu rt2800usb; do
 	modprobe -q "$m" 2>/dev/null || true
 done
-# iwlwifi is DELIBERATELY ABSENT from the explicit list: force-loading it
-# on some CNVi hardware (the 20-core Legion: AX211) panics the kernel in
-# the initramfs (2026-11-13). udev hotplug loads it fine — the interface
-# (wlo1) appears within ~11s. The radio wait loop below finds it without
-# ever touching the module directly. If this proves too slow on some
-# machine, bb.wifi.force-iwl=1 restores the old behavior.
-for x in $(cat /proc/cmdline 2>/dev/null); do
-	case "$x" in bb.wifi.force-iwl=1)
-		for m in iwlwifi iwlwifi_pci; do modprobe -q "$m" 2>/dev/null || true; done
-		;; esac
-done
-
-# --- Windows Fast Start PCIe reset ---
-# Fast Start (Hiberboot) leaves the wifi in a locked PCIe state that
-# survives a warm reboot — the #1 cause of "no radio" and kernel panics
-# on dual-boot machines. Fix from the Linux side: power-cycle the
-# wireless device at the PCIe level. TARGETED at class 0x280000 only.
-# The operator's Windows-side alternative: `shutdown /s /full /t 0`
-# (full shutdown, bypasses Fast Start for that shutdown only).
-pci_wifi_reset() {
-	removed=0
-	for d in /sys/bus/pci/devices/*/; do
-		cls=$(cat "${d}class" 2>/dev/null)
-		case "$cls" in
-		0x280000*)
-			if [ -f "${d}remove" ]; then
-				echo 1 > "${d}remove" 2>/dev/null && removed=$((removed + 1))
-			fi
-			;;
-		esac
-	done
-	if [ "$removed" -gt 0 ]; then
-		journal "Fast Start PCIe reset: removed $removed wireless device(s), rescanning"
-		echo 1 > /sys/bus/pci/rescan 2>/dev/null || true
-		sleep 5
-		journal "Fast Start PCIe reset done — radio should reappear via udev"
-		return 0
-	fi
-	return 1
-}
-
-# try the reset ONLY in the second-revival cycle (NOT preemptively —
-# the 2026-11-13 boot proved udev brings up iwlwifi naturally in ~11s;
-# a preemptive PCIe reset removes the WORKING device and the
-# re-enumeration may not complete, making things worse)
-# pci_wifi_reset || true
 
 DEV=""
 if [ "$HWSIM" -eq 1 ]; then
 	run_hwsim_test || exit 0
 else
 	i=0
-	while [ "$i" -lt 30 ]; do
-		DEV=$(radios | sed -n 1p)
-		[ -n "$DEV" ] && break
-		sleep 1
-		i=$((i + 1))
-	done
-fi
-if [ -n "$DEV" ]; then
-	journal "radio appeared after ${i}s: $DEV (udev-loaded, no explicit modprobe)"
-fi
-if [ -z "$DEV" ] && [ "$HWSIM" -ne 1 ]; then
-	journal "NO RADIO after 30s wait — dumping full state before the PCIe reset"
-	journal "radios() found: $(radios 2>/dev/null | tr '\n' ' ')"
-	journal "/sys/class/net entries:"
-	for n in /sys/class/net/*; do
-		journal "  $(basename $n): phy80211=$([ -e "$n/phy80211" ] && echo YES || echo no) wireless=$([ -e "$n/wireless" ] && echo YES || echo no)"
-	done
-	journal "iwlwifi dmesg:"
-	dmesg 2>/dev/null | grep -i "iwl\|firmware\|wlo" | tail -10 | while IFS= read -r l; do journal "  $l"; done
-	journal_dump
-	# second revival cycle (2026-11-12, the 20-core desktop case): some
-	# radios enumerate on a SECOND rescan — slow PCIe init, CNVi that
-	# missed the first enumeration window, firmware load racing the wait.
-	# One more unblock+rescan wave and a shorter wait before giving up.
-	journal "no radio after 30s wait — trying PCIe reset + rescan (last resort)"
-	say "no radio on the first wait — PCIe reset + one more rescan cycle"
-	pci_wifi_reset || true
-	for i in 1 2 3; do
-		BB=/bin/busybox
-		$BB rfkill unblock all 2>/dev/null || true
-		echo 1 > /sys/bus/pci/rescan 2>/dev/null || true
-		sleep 1
-	done
-	sleep 5
-	i=0
-	while [ "$i" -lt 15 ]; do
+	while [ "$i" -lt 20 ]; do
 		DEV=$(radios | sed -n 1p)
 		[ -n "$DEV" ] && break
 		sleep 1
@@ -424,8 +310,7 @@ if [ -z "$DEV" ] && [ "$HWSIM" -ne 1 ]; then
 	done
 fi
 if [ -z "$DEV" ] && [ "$HWSIM" -ne 1 ]; then
-	journal "NO RADIO after driver load + second rescan"
-	journal_dump
+	say "NO RADIO APPEARED after driver load. PCI network controllers on this machine:"
 	say_pci_radios
 	say "kernel wireless messages:"
 	say_radio_dmesg
@@ -523,11 +408,6 @@ if [ "$ok" -eq 0 ]; then
 	# dies with the switch; without this, the rootfs has no idea how to
 	# re-associate and the machine cycles forever — found live on the
 	# desktop, 2026-11-10)
-	#
-	# The WIFI SUCCESS point: if we got here, wifi associated + DHCP over
-	# the air + the handoff is about to happen. The wired-path boot script
-	# (bboot) handles everything from here.
-	journal "WIFI ASSOCIATED + DHCP OK — handing off to bboot (wifi path complete)"
 	LOWER=/run/bboot/lower
 	if [ -d "$LOWER" ] && [ -f "$CONF" ]; then
 		mkdir -p "$LOWER/etc/wpa_supplicant" "$LOWER/etc/systemd/system" 2>/dev/null
