@@ -69,13 +69,72 @@ journal_dump() {
 }
 
 journal_setup
-journal "BOOT v5.1: $(cat /proc/cmdline 2>/dev/null | tr -d '\n' | cut -c1-180)"
+journal "BOOT v5.2: $(cat /proc/cmdline 2>/dev/null | tr -d '\n' | cut -c1-180)"
 
-# --- ethernet: DHCP from our laptop's dnsmasq on the direct link ---
-# The Legion is on a DIRECT link to our laptop (10.42.0.1, dnsmasq).
-# klibc ipconfig sends DHCP DISCOVER → dnsmasq responds with 10.42.0.2.
-# No autoconfig fallback needed (the 192.168.1.x era is over).
-journal "ethernet: DHCP from 10.42.0.1 (dnsmasq on the laptop)"
+# --- dropbear key fixup (every path, incl. bb.nowifi) ---
+# Debian's dropbear hook stages authorized_keys in a randomized /root-*/
+# dir; this image's trimmed premount script never moves it to /root, so
+# dropbear finds no key at runtime and rejects every login (found on the
+# Legion 2026-11-13: key verified IN the image, auth still denied — the
+# staging dir name is random per build, /root/.ssh never exists).
+for d in /root-*; do
+	[ -f "$d/.ssh/authorized_keys" ] || continue
+	mkdir -p /root/.ssh 2>/dev/null
+	cp "$d/.ssh/authorized_keys" /root/.ssh/authorized_keys 2>/dev/null
+	chmod 700 /root /root/.ssh 2>/dev/null
+	chmod 600 /root/.ssh/authorized_keys 2>/dev/null
+	journal "ssh: dropbear key staged from $d"
+	break
+done
+
+# --- wired path ensurer: 10.42.0.2 static fallback, AFTER the DHCP ladder ---
+# The laptop (10.42.0.1, NAT to the lab LAN, dnsmasq) is the gateway of a
+# DIRECT point-to-point link. Two ways to get an address, best first:
+#   1. dnsmasq answers klibc's DHCP DISCOVER → 10.42.0.2 (clean, when the
+#      laptop side is up before power-on);
+#   2. this watcher: DHCP failed (klibc autoconfig left a useless
+#      192.168.1.x with no useful route) → ADD 10.42.0.2/24 as a SECONDARY
+#      address (never fights klibc — no delete race) and own the default
+#      route. Applies after the ladder settles (dropbear's premount runs
+#      configure_networking itself, and /scripts/bboot runs it again;
+#      /run/net-*.conf appears when it finishes — that's the sentinel).
+# Also fixes /etc/resolv.conf → 10.42.0.1 (dnsmasq forwards upstream) so
+# bbootd's NTP works → clock syncs → TLS cert validation works.
+wired_ensurer() (
+	IF=""
+	t=0
+	while [ "$t" -lt 120 ]; do
+		for n in /sys/class/net/*/; do
+			N=${n%/}; N=${N##*/}
+			case "$N" in lo|wl*|ww*|docker*|veth*|br-*) continue ;; esac
+			[ "$(cat "${n}carrier" 2>/dev/null)" = "1" ] && IF="$N" && break
+		done
+		[ -n "$IF" ] && break
+		sleep 5
+		t=$((t + 5))
+	done
+	[ -n "$IF" ] || { journal "wired-ensurer: no carrier in 120s"; exit 0; }
+	journal "wired-ensurer: watching $IF (DHCP ladder window)"
+	t=0
+	while [ "$t" -lt 150 ]; do
+		ls /run/net-*.conf >/dev/null 2>&1 && break
+		ip -4 addr show dev "$IF" 2>/dev/null | grep -q "inet 10\.42\." && break
+		sleep 5
+		t=$((t + 5))
+	done
+	if ip -4 addr show dev "$IF" 2>/dev/null | grep -q "inet 10\.42\."; then
+		journal "wired-ensurer: $IF has 10.42.x via DHCP — nothing to do"
+		exit 0
+	fi
+	ip addr add 10.42.0.2/24 dev "$IF" 2>/dev/null || true
+	ip link set "$IF" up 2>/dev/null || true
+	ip route del default 2>/dev/null || true
+	ip route add default via 10.42.0.1 dev "$IF" src 10.42.0.2 2>/dev/null || true
+	echo "nameserver 10.42.0.1" > /etc/resolv.conf 2>/dev/null || true
+	journal "wired-ensurer: ensured 10.42.0.2/24 + default via 10.42.0.1 + dns on $IF (static fallback)"
+)
+wired_ensurer </dev/null >/dev/console 2>&1 &
+journal "ethernet: ensurer armed (DHCP from laptop dnsmasq, static 10.42.0.2 fallback)"
 
 # --- cmdline parse (after journal so early exits are recorded) ---
 WIFI_SPEC=""
