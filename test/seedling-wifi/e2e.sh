@@ -163,6 +163,8 @@ for s in $STAGES; do
 	update) f=stick-pointer.img ;;
 	remote) f=stick-remote.img ;;
 	fleet) f=none ;; # no boot: host-side registry proof
+	rescue) f=stick-rescue.img ;; # the runner SKIPs gracefully if missing
+	rescue-fallback) f=none ;; # two sticks, checked in the run body itself
 	m1b) f=stick-m1b.img ;; # opt-in: the production image (slow) # reuses the plain stick; corruption is server-side
 	nowifi) f=stick-nowifi.img ;;
 	*) say "unknown stage $s"; exit 2 ;;
