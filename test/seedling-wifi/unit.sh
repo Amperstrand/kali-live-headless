@@ -155,7 +155,7 @@ grep -q 'RESCUE MEDIUM' "$here/bbootd-wrapper" &&
 	ok "wrapper prints the serial rescue banner" || bad "wrapper rescue banner missing"
 grep -q '\*" bb\.rescue=1 "\*' "$here/bbootd-wrapper" &&
 	ok "wrapper gates remote machinery on rescue" || bad "wrapper rescue gate missing"
-grep -q 'bb.rescue=1) exit 0' "$here/script-bboot-wifi" &&
+grep -q 'bb.rescue=1.*exit 0' "$here/script-bboot-wifi" &&
 	ok "initramfs wifi path exits on rescue" || bad "initramfs rescue exit missing"
 
 
@@ -204,6 +204,46 @@ if [ -f "$here/pci-wireless.ids" ]; then
 else
 	bad "pci-wireless.ids missing"
 fi
+
+echo "unit: boot journal (the log-to-USB the operator asked for)"
+# the journal functions exist and are wired
+grep -q 'journal_setup()' "$here/script-bboot-wifi" &&
+	grep -q 'journal_dump()' "$here/script-bboot-wifi" &&
+	grep -q 'boot-journal.log' "$here/script-bboot-wifi" &&
+	ok "journal functions present (setup, log, dump-to-stick)" ||
+	bad "journal functions missing from the wifi script"
+# the journal is set up FIRST (before the wifi.conf search)
+grep -B8 '^CONF=""' "$here/script-bboot-wifi" | grep -q journal_setup &&
+	ok "journal mounts before the wifi.conf search (earliest possible)" ||
+	bad "journal setup is not before the wifi.conf search"
+# every failure path calls the journal
+JFAILS=$(grep -c 'journal.*staying wired\|journal.*NO RADIO\|journal.*FAILED' "$here/script-bboot-wifi" 2>/dev/null || echo 0)
+[ "$JFAILS" -ge 3 ] &&
+	ok "failure paths journal ($JFAILS journal-on-failure calls)" ||
+	bad "only $JFAILS failure paths journal — not enough"
+# the bb.nowifi exit journals
+grep -q 'journal.*bb.nowifi.*skipped' "$here/script-bboot-wifi" &&
+	ok "bb.nowifi exit journals (the wired-boot case)" ||
+	bad "bb.nowifi exit is silent"
+# the report script journals the wired outcome
+grep -q 'boot-journal.log' "$here/script-bboot-wifi-report" &&
+	grep -q 'WIRED PATH' "$here/script-bboot-wifi-report" &&
+	ok "report script journals the wired-path outcome (success or dump)" ||
+	bad "report script missing journal wiring"
+# the journal function works: source the functions and exercise them
+JT=$(mktemp -d)
+mkdir -p "$JT/jdir"
+JOURNAL_DIR="$JT/jdir" sh -c '
+journal() {
+	[ "$JOURNAL_DIR" = "/dev/null" ] && return 0
+	echo "$(date -u "+Y-%m-%dT%H:%M:%SZ") $*" >> "$JOURNAL_DIR/boot-journal.log" 2>/dev/null
+}
+journal "test message from the unit suite"
+' 2>/dev/null
+grep -q 'test message from the unit suite' "$JT/jdir/boot-journal.log" 2>/dev/null &&
+	ok "journal writes to the target dir correctly" ||
+	bad "journal function broken"
+rm -rf "$JT"
 
 echo "unit: stall variant (watchdog-hang fixture)"
 bash "$here/render-cmdline.sh" stall "$T/stall.txt" >/dev/null 2>&1 &&

@@ -28,4 +28,33 @@ for f in /run/net-*.conf; do
 	[ -f "$f" ] || continue
 	echo "  $(basename "$f"): $(grep -m1 IPV4ADDR= "$f" | cut -d= -f2-) $(grep -m1 PROTO= "$f" | cut -d= -f2-)" >&2
 done
+
+# journal the wired-path outcome: did we get an IP? which interface?
+# This is the LAST initramfs hook — if the boot fails after this, it's
+# in the bboot flow (manifest fetch, unlock), not the network.
+if [ -d /run/bboot-journal ] && [ -w /run/bboot-journal ]; then
+	NETDEV=""
+	IPADDR=""
+	for f in /run/net-*.conf; do
+		[ -f "$f" ] || continue
+		IPADDR=$(grep -m1 IPV4ADDR= "$f" | cut -d= -f2-)
+		NETDEV=$(grep -m1 DEVICE= "$f" | cut -d= -f2-)
+		[ -n "$IPADDR" ] && break
+	done
+	if [ -n "$IPADDR" ]; then
+		echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') WIRED PATH: got $IPADDR on $NETDEV — bboot taking over (manifest fetch next)" \
+			>> /run/bboot-journal/boot-journal.log 2>/dev/null
+	else
+		echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') WIRED PATH FAILED: no IP address obtained. Dumping diagnostics." \
+			>> /run/bboot-journal/boot-journal.log 2>/dev/null
+		{
+			echo "--- wired-path failure dump ---"
+			echo "net devices:"; ip link show 2>/dev/null
+			echo "carrier states:"; for n in /sys/class/net/*/carrier; do echo "  $n = $(cat $n 2>/dev/null)"; done
+			echo "/run/net files:"; ls -la /run/net-*.conf 2>/dev/null; cat /run/net-*.conf 2>/dev/null
+			echo "dmesg net:"; dmesg 2>/dev/null | grep -i "dhcp\|enp\|eth\|link\|carrier\|igb\|igc\|e1000\|r8169" | tail -10
+		} >> /run/bboot-journal/boot-journal.log 2>/dev/null
+	fi
+fi
+
 exit 0

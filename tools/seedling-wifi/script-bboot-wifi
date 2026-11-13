@@ -49,7 +49,7 @@ HWSIM=0
 WIFI_DHCP=1
 for x in $(cat /proc/cmdline 2>/dev/null); do
 	case "$x" in
-		bb.nowifi|bb.nowifi=1|bb.rescue=1) exit 0 ;;
+		bb.nowifi|bb.nowifi=1|bb.rescue=1) journal "bb.nowifi/rescue on cmdline — wifi path skipped entirely"; exit 0 ;;
 		bb.wifi=*) WIFI_SPEC="${x#bb.wifi=}" ;;
 		bb.wifi.hwsim=1) HWSIM=1 ;;
 		bb.wifi.dhcp=off) WIFI_DHCP=0 ;;
@@ -92,6 +92,58 @@ fi
 # /init's shell, so the exec + export reach it). A poller then ships the
 # URI to the relay, NIP-44-encrypted to the owner — bunlock on the
 # workstation answers it. bb.noremote=1 disables the whole mechanism.
+# --- boot journal: every boot writes its own record to the stick's ESP.
+# The stick is the only storage we control on a machine that might not
+# network, might panic, and whose serial we can't always see. This is
+# the "log to USB" the operator asked for: persistent, timestamped,
+# readable on any machine (FAT), accumulates across boots.
+#
+# The ESP mount at /run/bboot-wifi may be ro (for wifi.conf reading);
+# the journal does its own rw mount so it can write.
+JOURNAL_DEV=""
+JOURNAL_DIR=/run/bboot-journal
+journal_setup() {
+	mkdir -p "$JOURNAL_DIR" 2>/dev/null
+	# find the BBOOT stick (any of its partitions)
+	JOURNAL_DEV=$(blkid -l -t LABEL=BBOOT -o device 2>/dev/null || true)
+	if [ -z "$JOURNAL_DEV" ]; then
+		for d in /dev/sda1 /dev/sdb1 /dev/sdc1 /dev/nvme0n1p1; do
+			[ -b "$d" ] && mount -t vfat -o rw "$d" "$JOURNAL_DIR" 2>/dev/null && { JOURNAL_DEV=$d; break; }
+		done
+	else
+		mount -t vfat -o rw "$JOURNAL_DEV" "$JOURNAL_DIR" 2>/dev/null ||
+			mount -t vfat -o rw,remount "$JOURNAL_DEV" "$JOURNAL_DIR" 2>/dev/null || true
+	fi
+	[ -d "$JOURNAL_DIR" ] && [ -w "$JOURNAL_DIR" ] ||
+		{ JOURNAL_DIR=/dev/null; return 1; }
+	return 0
+}
+journal() { # message — append to the boot journal on the stick
+	[ "$JOURNAL_DIR" = "/dev/null" ] && return 0
+	echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*" >> "$JOURNAL_DIR/boot-journal.log" 2>/dev/null
+	say "$*"
+}
+journal_dump() { # a failure happened — full diagnostics to the journal
+	[ "$JOURNAL_DIR" = "/dev/null" ] && return 0
+	{
+		echo "--- diagnostic dump $(date -u '+%Y-%m-%dT%H:%M:%SZ') ---"
+		echo "cmdline: $(cat /proc/cmdline 2>/dev/null)"
+		echo "net devices:"; ip link show 2>/dev/null
+		echo "ip addrs:"; ip -4 addr show 2>/dev/null
+		echo "routes:"; ip route show 2>/dev/null
+		echo "/run/net files:"; ls -la /run/net-*.conf 2>/dev/null; cat /run/net-*.conf 2>/dev/null
+		echo "carrier states:"; for n in /sys/class/net/*/carrier; do echo "  $n = $(cat $n 2>/dev/null)"; done
+		echo "pci net/radio:"; for d in /sys/bus/pci/devices/*/; do cls=$(cat $d/class 2>/dev/null); case $cls in 0x020000*|0x280000*) echo "  $d class=$cls vendor=$(cat $d/vendor 2>/dev/null) device=$(cat $d/device 2>/dev/null)";; esac; done
+		echo "dmesg net tail:"; dmesg 2>/dev/null | grep -i "enp\|eth\|dhcp\|e1000\|igb\|igc\|r8169\|iwl\|firmware\|carrier\|link" | tail -15
+		echo "dmesg last 10:"; dmesg 2>/dev/null | tail -10
+	} >> "$JOURNAL_DIR/boot-journal.log" 2>/dev/null
+}
+
+# mount the journal FIRST — every subsequent line can be recorded
+journal_setup
+
+journal "BOOT start: wifi script v4, cmdline=$(cat /proc/cmdline 2>/dev/null | tr -d '\n' | cut -c1-200)"
+
 CONF=""
 if [ -n "$WIFI_SPEC" ] && [ -f "$WIFI_SPEC" ]; then
 	CONF="$WIFI_SPEC"
@@ -103,27 +155,27 @@ else
 		sleep 2
 	done
 	if [ -z "$dev" ]; then
-		say "no partition labeled BBOOT; staying wired"
+		journal "NO BBOOT stick found; staying wired"
 	elif ! modprobe vfat 2>/dev/null && ! modprobe fat 2>/dev/null; then
-		say "vfat module unavailable; staying wired"
+		journal "vfat module unavailable; staying wired"
 	else
 		mkdir -p /run/bboot-wifi
 		if mount -t vfat -o ro "$dev" /run/bboot-wifi 2>/dev/null; then
 			if [ -f /run/bboot-wifi/wifi.conf ]; then
 				CONF=/run/bboot-wifi/wifi.conf
 			else
-				say "$dev mounted but has no wifi.conf; staying wired"
+				journal "$dev mounted but no wifi.conf; staying wired"
 			fi
 		else
-			say "mount $dev failed; staying wired"
+			journal "mount $dev FAILED; staying wired"
 		fi
 	fi
 fi
 if [ -z "$CONF" ]; then
-	say "no wifi.conf anywhere; staying wired"
+	journal "no wifi.conf on the stick; staying wired"; journal_dump
 	exit 0
 fi
-say "config found"
+journal "wifi.conf found; proceeding with wifi"
 
 # --- hwsim self-test (bb.wifi.hwsim=1): two virtual radios, hostapd as a
 # remote-unlock is handled by the /sbin/bbootd wrapper (hook installs it)
@@ -208,7 +260,7 @@ EOF
 		if [ -n "$WIRED" ]; then
 			ip link set "$WIRED" up 2>/dev/null || true
 			"$BB" brctl addif br0 "$WIRED"
-			say "hwsim: bridged $HWSIM_AP (AP) with $WIRED (wired) — wifi now carries real DHCP"
+			journal "hwsim: bridged $HWSIM_AP (AP) with $WIRED (wired) — wifi now carries real DHCP"
 		fi
 		ip link set br0 up 2>/dev/null || true
 	else
@@ -286,7 +338,8 @@ if [ -z "$DEV" ] && [ "$HWSIM" -ne 1 ]; then
 	done
 fi
 if [ -z "$DEV" ] && [ "$HWSIM" -ne 1 ]; then
-	say "NO RADIO APPEARED after driver load + second rescan. PCI network controllers on this machine:"
+	journal "NO RADIO after driver load + second rescan"
+	journal_dump
 	say_pci_radios
 	say "kernel wireless messages:"
 	say_radio_dmesg
@@ -384,6 +437,11 @@ if [ "$ok" -eq 0 ]; then
 	# dies with the switch; without this, the rootfs has no idea how to
 	# re-associate and the machine cycles forever — found live on the
 	# desktop, 2026-11-10)
+	#
+	# The WIFI SUCCESS point: if we got here, wifi associated + DHCP over
+	# the air + the handoff is about to happen. The wired-path boot script
+	# (bboot) handles everything from here.
+	journal "WIFI ASSOCIATED + DHCP OK — handing off to bboot (wifi path complete)"
 	LOWER=/run/bboot/lower
 	if [ -d "$LOWER" ] && [ -f "$CONF" ]; then
 		mkdir -p "$LOWER/etc/wpa_supplicant" "$LOWER/etc/systemd/system" 2>/dev/null
