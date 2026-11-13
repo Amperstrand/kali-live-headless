@@ -11,14 +11,37 @@
 # (Pi 2) + per-board initramfs selection in config.txt. RPi OS 32-bit is
 # ARMv6 — one rootfs streams on both.
 #
-# Usage: make-pi-sd.sh <out.img> [size-mb]        (image, dd to card later)
-#        make-pi-sd.sh /dev/sdX --direct          (write a card directly)
+# Usage: make-pi-sd.sh <out.img|device> [size-mb|--direct]
+#        make-pi-sd.sh <out.img> --deterministic   (byte-identical rebuilds)
 set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
 
-out=${1:?usage: make-pi-sd.sh <out.img|device> [size-mb|--direct]}
-direct=0 size=${2:-512}
-[ "$2" = "--direct" ] && { direct=1; dev=$1; }
-[ -b "$out" ] && { direct=1; dev=$out; }
+out=${1:?usage: make-pi-sd.sh <out.img|device> [size-mb|--direct|--deterministic]}
+direct=0 size=${2:-512} DET=0
+for a in "$@"; do
+	case "$a" in
+		--direct) direct=1; dev=$1 ;;
+		--deterministic) DET=1 ;;
+	esac
+done
+[ -n "${size:-}" ] || size=512
+case "$size" in -*) size=512 ;; esac
+# --deterministic: fixed GPT GUIDs, fixed FAT serial, all mtimes pinned to
+# PI_EPOCH — identical inputs rebuild a byte-identical image, so the
+# published sha256 is verifiable by anyone before flashing. The pinned
+# inputs (firmware, kernels, initrds) are hash-recorded in the output.
+PI_EPOCH=${PI_EPOCH:-1731494400}
+# mtools/mkfs.vfat also stamp CREATION times from the wall clock — the
+# whole builder re-execs under faketime so every written timestamp is the
+# epoch (found by double-build cmp: dir-entry ctime bytes drifted).
+if [ "${DET:-0}" = 1 ] && [ -z "${KLH_FAKETIME:-}" ]; then
+	export KLH_FAKETIME=1
+	exec faketime "$(date -u -d "@$PI_EPOCH" '+%Y-%m-%d %H:%M:%S')" bash "$0" "$@"
+fi
+# fixed GUIDs for the deterministic image (stable, public, meaningless)
+DET_DISK_GUID=${DET_DISK_GUID:-17314944-0000-4000-8000-000017314944}
+DET_PART_GUID=${DET_PART_GUID:-17314945-0000-4000-8000-000017314945}
+DET_FAT_SERIAL=${DET_FAT_SERIAL:-17314944}
 
 SEED=${SEEDLING_DIR:-$HOME/src/seedling-m1}
 PI=$SEED/pi
@@ -55,13 +78,43 @@ else
 	truncate -s "${size}M" "$out"
 	sgdisk -o "$out" >/dev/null
 	sgdisk -n 1:2048:0 -t 1:0700 -c 1:"BBOOT" "$out" >/dev/null
+	if [ "$DET" = 1 ]; then
+		sgdisk -U "$DET_DISK_GUID" "$out" >/dev/null
+		sgdisk -u "1:$DET_PART_GUID" "$out" >/dev/null
+	fi
 	start=$(sgdisk -i 1 "$out" | awk '/First sector/{print $3}')
 	end=$(sgdisk -i 1 "$out" | awk '/Last sector/{print $3}')
-	mkfs.vfat -C -n BBOOT "$out.esp" $(((end - start + 1) / 2)) >/dev/null
+	if [ "$DET" = 1 ]; then
+		mkfs.vfat -C -i "$DET_FAT_SERIAL" -n BBOOT "$out.esp" $(((end - start + 1) / 2)) >/dev/null
+	else
+		mkfs.vfat -C -n BBOOT "$out.esp" $(((end - start + 1) / 2)) >/dev/null
+	fi
 	orig_out=$out
 	out="$out.esp"
 fi
 echo "assembling boot partition…"
+
+# --- pairing: the card IS the pairing root (threat model: Pi physically
+# secure, SD trusted). First boot derives the machine identity from
+# HKDF(pairing-secret, board-serial) and announces itself to the owner;
+# the owner checks PAIRING_CODE before granting. Set PI_PAIRING for a
+# deterministic image with a fixed (public) secret.
+if [ -n "${PI_PAIRING:-}" ]; then
+	PAIRING=$PI_PAIRING
+else
+	PAIRING=$(head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+fi
+PAIRING_CODE=$(printf '%s' "$PAIRING" | sha256sum | cut -c1-6)
+printf 'pairing-secret=%s\n' "$PAIRING" > "$PI/.pairing.txt"
+
+# deterministic mode: pin every file mtime that lands in FAT dir entries
+if [ "$DET" = 1 ]; then
+	find "$STAGE" -maxdepth 1 -type f -exec touch -d "@$PI_EPOCH" {} +
+	for f in "$PI/initrd-6.18.50+rpt-rpi-v6.img" "$PI/initrd-6.18.50+rpt-rpi-v7.img"; do
+		touch -d "@$PI_EPOCH" "$f"
+	done
+	touch -d "@$PI_EPOCH" "$PI/.pairing.txt"
+fi
 
 copy() { # copy host-file → boot-partition path
 	if [ "$direct" = 1 ]; then cp "$1" "$mdir/$2"; else mcopy -i "$out" ::/"$2" "$1" 2>/dev/null || mcopy -i "$out" "$1" ::/"$2"; fi
@@ -77,6 +130,7 @@ done
 copy "$STAGE/bcm2708-rpi-b.dtb" bcm2708-rpi-b.dtb
 copy "$STAGE/bcm2708-rpi-b-plus.dtb" bcm2708-rpi-b-plus.dtb
 copy "$STAGE/bcm2709-rpi-2-b.dtb" bcm2709-rpi-2-b.dtb
+copy "$PI/.pairing.txt" pairing.txt
 if [ -d "$STAGE/overlays" ]; then
 	if [ "$direct" = 1 ]; then cp -r "$STAGE/overlays" "$mdir/"; else mcopy -i "$out" -s "$STAGE/overlays" ::; fi
 fi
@@ -117,6 +171,11 @@ else
 	printf '%s\n' "boot=bboot root=/dev/nbd0 console=serial0,115200 console=tty1 bb.manifest=$MANIFEST bb.npub=$NPUB bb.relays=$RELAY bb.servers=$SERVER" > "$PI/.cmdline.txt"
 	mcopy -i "$out" "$PI/.config.txt" ::config.txt
 	mcopy -i "$out" "$PI/.cmdline.txt" ::cmdline.txt
+	if [ "$DET" = 1 ]; then
+		# mtools stamps creation times from the wall clock and faketime
+		# does not intercept it — pin every dir-entry timestamp instead
+		python3 "$here/fat-normalize.py" "$out" "$PI_EPOCH"
+	fi
 	# place the assembled FAT at the partition start, clean the staging file
 	dd if="$out" of="$orig_out" bs=512 seek="$start" conv=notrunc status=none
 	rm -f "$out"
@@ -130,6 +189,13 @@ else
 fi
 echo "  pinned manifest: $MANIFEST"
 echo "  owner npub:      ${NPUB:0:16}…"
+echo "  pairing code:    $PAIRING_CODE (check this before granting the birth)"
+if [ "$DET" = 1 ]; then
+	echo "  deterministic build (epoch $PI_EPOCH):"
+	echo "    image sha256:  $(sha256sum "$out" | cut -d' ' -f1)"
+	echo "    initrd v6:     $(sha256sum "$PI/initrd-6.18.50+rpt-rpi-v6.img" | cut -d' ' -f1)"
+	echo "    initrd v7:     $(sha256sum "$PI/initrd-6.18.50+rpt-rpi-v7.img" | cut -d' ' -f1)"
+fi
 echo "  next: dd the image to the card (or it is already written), plug the Pi"
 echo "        into ethernet, power on. It DHCPs, fetches the manifest, asks"
 echo "        the owner's signer to unlock, streams the rootfs, boots."
