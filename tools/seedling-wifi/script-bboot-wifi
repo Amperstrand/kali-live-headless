@@ -1,14 +1,16 @@
 #!/bin/sh
 # bboot-wifi premount script: bring up Wi-Fi before bboot's configure_networking.
 #
-# Config discovery: bb.wifi=<path> on the cmdline, else a vfat partition
-# labeled BBOOT (the stick's ESP) carrying /wifi.conf at its root:
-#   network={ ssid="..."; psk="..."; key_mgmt=WPA-PSK }
-# (write-wifi-conf.sh writes this format; the PSK never appears in logs here)
+# v5: the "hands-off" rewrite. Every prior version tried to HELP the
+# kernel (modprobe, rfkill, PCI rescan) and on some hardware that
+# interference prevented udev from bringing up the radio at all. This
+# version does NOTHING for 30 seconds — udev loads drivers and creates
+# interfaces in its own order — and only intervenes as a last resort.
 #
-# Behavior: fails open. Any error, missing radio, or association timeout ->
-# stop and let the wired path proceed unchanged. bb.nowifi on the cmdline
-# disables this entirely.
+# Config discovery: bb.wifi=<path> on the cmdline, else a vfat partition
+# labeled BBOOT (the stick's ESP) carrying /wifi.conf at its root.
+#
+# Behavior: fails open. Any error → wired path. bb.nowifi=1 disables.
 PREREQ=""
 prereqs() { echo "$PREREQ"; }
 case "$1" in
@@ -17,18 +19,13 @@ esac
 
 say() { echo "bboot-wifi: $*" >&2; }
 
-# --- boot journal (diagnostics-only addition to the known-good script) ---
-# The journal block is placed HERE (right after say(), before any other
-# code) so it's defined before every call site. The only change from
-# the known-good a946537 script.
+# --- boot journal: writes to the stick's own ESP, persists across boots ---
 JOURNAL_DIR=/run/bboot-journal
 journal_setup() {
 	mkdir -p "$JOURNAL_DIR" 2>/dev/null
 	modprobe -q vfat 2>/dev/null || modprobe -q fat 2>/dev/null || true
-	# WAIT for the USB stick to enumerate (up to 10s) — the first
-	# deployment failed because journal_setup ran before the USB
-	# subsystem had discovered the device (every boot produced an empty
-	# journal; found 2026-11-13 after three attempts)
+	# WAIT for USB enumeration (the device isn't there for the first
+	# seconds of initramfs — found after three empty-journal attempts)
 	w=0
 	while [ $w -lt 10 ]; do
 		JOURNAL_DEV=$(blkid -l -t LABEL=BBOOT -o device 2>/dev/null || true)
@@ -45,10 +42,10 @@ journal_setup() {
 		done
 	fi
 	if [ -w "$JOURNAL_DIR" ]; then
-		say "journal: mounted $JOURNAL_DEV at $JOURNAL_DIR (writing to stick)"
+		say "journal: writing to $JOURNAL_DEV"
 	else
 		JOURNAL_DIR=/dev/null
-		say "journal: MOUNT FAILED after ${w}s wait — no stick write"
+		say "journal: mount failed after ${w}s (console only)"
 	fi
 }
 journal() {
@@ -61,87 +58,31 @@ journal_dump() {
 	{
 		echo "--- dump $(date -u '+%Y-%m-%dT%H:%M:%SZ') ---"
 		echo "cmdline: $(cat /proc/cmdline 2>/dev/null)"
-		echo "radios: $(ls /sys/class/net/ 2>/dev/null | tr '\n' ' ')"
-		echo "rfkill:"; /bin/busybox rfkill list 2>/dev/null
+		echo "radios: $(for n in /sys/class/net/*/; do [ -e "${n}phy80211" ] && echo "${n##*/} "; done)"
+		echo "all netifs: $(ls /sys/class/net/ 2>/dev/null | tr '\n' ' ')"
+		echo "rfkill:"; busybox rfkill list 2>/dev/null
 		echo "dmesg wifi:"; dmesg 2>/dev/null | grep -iE "iwl|firmware|wlan|wlo|wifi|80211|assoc|auth" | tail -20
+		echo "dmesg last 5:"; dmesg 2>/dev/null | tail -5
+		echo "pci wireless:"; for d in /sys/bus/pci/devices/*/; do cls=$(cat "${d}class" 2>/dev/null); case "$cls" in 0x280000*) echo "  $d vendor=$(cat $d/vendor) device=$(cat $d/device)";; esac; done
 		echo "net:"; ip addr show 2>/dev/null; ip route show 2>/dev/null
-		echo "run/net:"; cat /run/net-*.conf 2>/dev/null
 	} >> "$JOURNAL_DIR/boot-journal.log" 2>/dev/null
 }
+
 journal_setup
-journal "BOOT: known-good a946537 + journal; $(cat /proc/cmdline 2>/dev/null | tr -d '\n' | cut -c1-160)"
+journal "BOOT v5 (hands-off): $(cat /proc/cmdline 2>/dev/null | tr -d '\n' | cut -c1-180)"
 
-# print every PCI network controller (class 0x280000) as vendor:device —
-# even a machine whose driver is missing then tells us exactly which radio
-# it has, on screen, instead of a silent black display
-say_pci_radios() {
-	for d in /sys/bus/pci/devices/*/; do
-		cls=$(cat "${d}class" 2>/dev/null)
-		case "$cls" in
-			0x280000*)
-				v=$(cat "${d}vendor" 2>/dev/null)
-				c=$(cat "${d}device" 2>/dev/null)
-				say "  pci radio: ${v#0x}:${c#0x}"
-				;;
-		esac
-	done
-	return 0
-}
-
-# radio/firmware diagnostics: what did the kernel say about wireless?
-say_radio_dmesg() {
-	dmesg 2>/dev/null | grep -iE "iwlwifi|rtw8|rtw89|brcm|mt79|ath10k|ath11k|firmware|rfkill" | tail -8 | while IFS= read -r l; do say "  $l"; done
-	return 0
-}
-
+# --- cmdline parse (after journal so early exits are recorded) ---
 WIFI_SPEC=""
 HWSIM=0
-WIFI_DHCP=1
 for x in $(cat /proc/cmdline 2>/dev/null); do
 	case "$x" in
-		bb.nowifi|bb.nowifi=1) exit 0 ;;
+		bb.nowifi|bb.nowifi=1) journal "bb.nowifi — wifi path skipped"; exit 0 ;;
 		bb.wifi=*) WIFI_SPEC="${x#bb.wifi=}" ;;
 		bb.wifi.hwsim=1) HWSIM=1 ;;
-		bb.wifi.dhcp=off) WIFI_DHCP=0 ;;
-		bb.wifi.isolate=1) HWSIM_ISOLATE=1 ;;
 	esac
 done
 
-say "wi-fi boot stick v4 (overlay 2026-11-06)"
-
-# ---- remote serial console (bb.debug=<workstation-ip>) ----
-# Captures everything from here on and mirrors it to the workstation via
-# UDP syslog (port 514). A "serial cable" over whatever network the machine
-# has. Enable with bb.debug=192.0.2.206 on the cmdline.
-DBG_TARGET=""
-for x in $(cat /proc/cmdline 2>/dev/null); do
-	case "$x" in bb.debug=*) DBG_TARGET="${x#bb.debug=}" ;; esac
-done
-if [ -n "$DBG_TARGET" ] && [ -p /run/bboot-dbg.out ] 2>/dev/null; then
-	: # already set up (idempotent)
-elif [ -n "$DBG_TARGET" ]; then
-	mkfifo /run/bboot-dbg.out 2>/dev/null || true
-	if [ -p /run/bboot-dbg.out ]; then
-		# reader FIRST (fifo write-open blocks until a reader exists)
-		(
-			BBC=/bin/busybox
-			while IFS= read -r l; do
-				echo "bboot: $l" | $BBC nc -u -w 1 "$DBG_TARGET" 514 2>/dev/null
-			done < /run/bboot-dbg.out
-		) </dev/null >/dev/null 2>&1 &
-		# redirect our stderr through the fifo — everything we say from now
-		# on also goes to the workstation
-		exec 2>/run/bboot-dbg.out
-		say "remote serial console active -> $DBG_TARGET:514 (UDP)"
-	fi
-fi
-
-# Remote-unlock setup ("leave the stick in the machine" mode): route all
-# further init output through tee so the unlock URI lands in
-# /run/bboot.log (bbootd honors BBOOT_CONSOLE=stdout; we are sourced into
-# /init's shell, so the exec + export reach it). A poller then ships the
-# URI to the relay, NIP-44-encrypted to the owner — bunlock on the
-# workstation answers it. bb.noremote=1 disables the whole mechanism.
+# --- find wifi.conf on the stick ---
 CONF=""
 if [ -n "$WIFI_SPEC" ] && [ -f "$WIFI_SPEC" ]; then
 	CONF="$WIFI_SPEC"
@@ -152,36 +93,28 @@ else
 		[ -n "$dev" ] && break
 		sleep 2
 	done
-	if [ -z "$dev" ]; then
-		say "no partition labeled BBOOT; staying wired"
-	elif ! modprobe vfat 2>/dev/null && ! modprobe fat 2>/dev/null; then
-		say "vfat module unavailable; staying wired"
-	else
-		mkdir -p /run/bboot-wifi
-		if mount -t vfat -o ro "$dev" /run/bboot-wifi 2>/dev/null; then
-			if [ -f /run/bboot-wifi/wifi.conf ]; then
-				CONF=/run/bboot-wifi/wifi.conf
-			else
-				say "$dev mounted but has no wifi.conf; staying wired"
+	if [ -n "$dev" ]; then
+		if modprobe vfat 2>/dev/null || modprobe fat 2>/dev/null; then
+			mkdir -p /run/bboot-wifi
+			if mount -t vfat -o ro "$dev" /run/bboot-wifi 2>/dev/null; then
+				[ -f /run/bboot-wifi/wifi.conf ] && CONF=/run/bboot-wifi/wifi.conf
 			fi
-		else
-			say "mount $dev failed; staying wired"
 		fi
 	fi
 fi
 if [ -z "$CONF" ]; then
-	say "no wifi.conf anywhere; staying wired"
+	journal "no wifi.conf; staying wired"
 	exit 0
 fi
-say "config found"
+journal "wifi.conf found on the stick"
 
-# --- hwsim self-test (bb.wifi.hwsim=1): two virtual radios, hostapd as a
-# remote-unlock is handled by the /sbin/bbootd wrapper (hook installs it)
+# --- PHASE 1: HANDS OFF — wait for udev to bring up the radio ---
+# udev loads drivers and creates interfaces in its own time. On the
+# 20-core Legion, iwlwifi loads at ~11.5s but our previous scripts'
+# rfkill/rescan/modprobe interference prevented the interface from
+# appearing. Doing NOTHING works (proven: on a bb.nowifi boot, wlo1
+# appeared via udev without any script involvement).
 
-# enumerate wifi interfaces by sysfs, never by name: predictable udev names
-# (wlp3s0, enp2s0 — active in this initrd, seen on real hardware 2026-11-06)
-# mean wlan* globs find NOTHING. phy80211 marks mac80211 devices; the
-# legacy "wireless" file covers old wext drivers.
 radios() {
 	for d in /sys/class/net/*; do
 		if [ -e "$d/phy80211" ] || [ -e "$d/wireless" ]; then
@@ -191,281 +124,113 @@ radios() {
 	return 0
 }
 
-HWSIM_AP=""
-run_hwsim_test() {
-	say "hwsim: creating two virtual radios"
-	modprobe -q mac80211_hwsim 2>/dev/null || { say "hwsim module missing"; return 1; }
-	i=0
-	n=0
-	while [ "$i" -lt 15 ]; do
-		n=$(radios | grep -c .)
-		[ "$n" -ge 2 ] && break
-		sleep 1
-		i=$((i + 1))
-	done
-	[ "$n" -ge 2 ] || { say "hwsim: radios did not appear"; return 1; }
-	HWSIM_AP=$(radios | sed -n 1p)
-	DEV=$(radios | sed -n 2p)
-	say "hwsim: AP on $HWSIM_AP, station on $DEV"
-	cat > /run/hostapd-hwsim.conf <<EOF
-driver=nl80211
-interface=$HWSIM_AP
-ssid=klh-test-ap
-hw_mode=g
-channel=6
-auth_algs=1
-wpa=2
-wpa_passphrase=not-a-real-psk-8chars # leak-ok: hwsim test-AP passphrase (synthetic, coordinated with unit fixture)
-wpa_key_mgmt=WPA-PSK
-rsn_pairwise=CCMP
-EOF
-	hostapd -B /run/hostapd-hwsim.conf >/run/hostapd-hwsim.log 2>&1 || {
-		say "hwsim: hostapd failed to start:"
-		head -6 /run/hostapd-hwsim.log 2>/dev/null | while IFS= read -r l; do say "  $l"; done
-		command -v hostapd >/dev/null 2>&1 || say "  (hostapd binary not in PATH)"
-		return 1
-	}
-	# Bridge the AP radio with the (wired) virtio NIC, like a real home
-	# router does. The station's DHCP then comes from the REAL network
-	# behind ens3/eth0, and the relay is reachable THROUGH THE AIR — the
-	# faithful wireless-only-machine reproduction.
-	BB=/bin/busybox
-	if [ "${HWSIM_ISOLATE:-0}" = 1 ]; then
-		ip addr add 10.250.0.1/24 dev "$HWSIM_AP" 2>/dev/null || true
-		ip link set "$HWSIM_AP" up 2>/dev/null || true
-		cat > /run/udhcpd-hwsim.conf <<EOF
-interface	$HWSIM_AP
-start	10.250.0.100
-end	10.250.0.200
-opt	subnet	255.255.255.0
-opt	router	10.250.0.1
-opt	dns	10.250.0.1
-EOF
-		"$BB" udhcpd /run/udhcpd-hwsim.conf >/dev/null 2>&1 || true
-		say "hwsim: ISOLATED AP net (lease will work, relay unreachable — fallback test)"
-	elif "$BB" brctl addbr br0 2>/dev/null; then
-		"$BB" brctl addif br0 "$HWSIM_AP" 2>/dev/null
-		WIRED=""
-		for d in /sys/class/net/*; do
-			n=${d##*/}
-			case "$n" in
-				lo | br0 | "$HWSIM_AP" | "$DEV" | wlan*) continue ;;
-			esac
-			WIRED=$n
-			break
-		done
-		if [ -n "$WIRED" ]; then
-			ip link set "$WIRED" up 2>/dev/null || true
-			"$BB" brctl addif br0 "$WIRED"
-			say "hwsim: bridged $HWSIM_AP (AP) with $WIRED (wired) — wifi now carries real DHCP"
-		fi
-		ip link set br0 up 2>/dev/null || true
-	else
-		say "hwsim: bridge unavailable; isolated AP net (relay unreachable via wifi on purpose)"
-	fi
-	say "hwsim: AP is up; associating the station over the air"
-	return 0
-}
-
-say "loading radio drivers"
-
-# RF-kill FIRST, before waiting for radios: Windows fast-start can leave
-# CNVi/AX2xx radios soft/hard-blocked in a state that survives warm
-# reboots — no interface appears, and the old unblock ran only after a
-# radio was detected (i.e., never when it was needed). Also rescan PCI in
-# case the card never enumerated.
-modprobe -q rfkill 2>/dev/null || true
-for i in 1 2 3; do
-	BB=/bin/busybox
-	$BB rfkill unblock all 2>/dev/null || true
-	echo 1 > /sys/bus/pci/rescan 2>/dev/null || true
-	sleep 1
-done
-say "rfkill state:"
-$BB rfkill list 2>/dev/null | while IFS= read -r l; do say "  $l"; done
-[ -e /sys/bus/pci/rescan ] && say "pci rescan done"
-
-# WPA2 crypto: the kernel refuses key installation without these
-for m in arc4 ecb cbc ccm cmac gcm aes_x86_64 aes_generic; do
-	modprobe -q "$m" 2>/dev/null || true
-done
-modprobe -q rfkill 2>/dev/null || true
-modprobe -q cfg80211 2>/dev/null || true
-modprobe -q mac80211 2>/dev/null || true
-for m in iwlwifi iwlwifi_pci ath9k ath10k_pci ath11k_pci rtw88_pci rtw89_pci \
-	brcmfmac mt7921e rtl8xxxu rt2800usb; do
-	modprobe -q "$m" 2>/dev/null || true
-done
+if [ "$HWSIM" -eq 1 ]; then
+	journal "hwsim mode: creating virtual radios"
+	modprobe -q mac80211_hwsim 2>/dev/null || true
+	sleep 5
+fi
 
 DEV=""
-if [ "$HWSIM" -eq 1 ]; then
-	run_hwsim_test || exit 0
+i=0
+while [ $i -lt 30 ]; do
+	DEV=$(radios | sed -n 1p)
+	[ -n "$DEV" ] && break
+	sleep 1
+	i=$((i + 1))
+done
+
+if [ -n "$DEV" ]; then
+	journal "radio appeared after ${i}s (hands-off udev): $DEV"
 else
+	journal "no radio after 30s hands-off wait"
+	# --- PHASE 2: LAST RESORT — rfkill + PCI rescan + modprobe ---
+	# Only if udev failed. This is the old approach that worked on t7a
+	# but interfered on the Legion. Used as a second chance.
+	journal "trying active intervention (rfkill + rescan + modprobe)"
+	modprobe -q rfkill 2>/dev/null || true
+	for _j in 1 2 3; do
+		busybox rfkill unblock all 2>/dev/null || true
+		echo 1 > /sys/bus/pci/rescan 2>/dev/null || true
+		sleep 1
+	done
+	for m in iwlwifi iwlwifi_pci ath10k_pci ath11k_pci rtw88_pci rtw89_pci \
+		brcmfmac mt7921e mt7925e; do
+		modprobe -q "$m" 2>/dev/null || true
+	done
+	sleep 10
 	i=0
-	while [ "$i" -lt 20 ]; do
+	while [ $i -lt 15 ]; do
 		DEV=$(radios | sed -n 1p)
 		[ -n "$DEV" ] && break
 		sleep 1
 		i=$((i + 1))
 	done
-fi
-if [ -z "$DEV" ] && [ "$HWSIM" -ne 1 ]; then
-	say "NO RADIO APPEARED after driver load. PCI network controllers on this machine:"
-	say_pci_radios
-	say "kernel wireless messages:"
-	say_radio_dmesg
-	say "if your radio is listed above but no wlan appeared, the driver or firmware is missing — report the vendor:device id"
-	exit 0
-fi
-if [ -z "$DEV" ]; then
-	say "no radio appeared; staying wired"
-	exit 0
-fi
-
-# unblock soft-killed radios (airplane mode / kill switch state)
-/bin/busybox rfkill unblock wifi 2>/dev/null || true
-/bin/busybox rfkill unblock all 2>/dev/null || true
-
-say "using radio $DEV; interfaces now:"
-iw dev 2>/dev/null | grep -E "Interface|type" | while IFS= read -r l; do say "  $l"; done
-
-# DHCP directly on the associated radio with klibc's ipconfig — the SAME
-# binary and /run/net-<dev>.conf format the normal path uses (drop-in
-# compatible with configure_networking's state checks). Then commit to
-# wifi only if the relay is reachable THROUGH it. Committing means:
-# export DEVICE (run_scripts sources us into /init's shell, so the export
-# reaches configure_networking, whose first line then returns immediately)
-# — the escalating 2..100s ipconfig retry loop is skipped entirely.
-# This mirrors the dracut network-wireless pattern: early wpa_supplicant,
-# explicit per-interface DHCP, recorded state.
-# Failing open: no lease or relay unreachable -> tear our state down and
-# let the normal path run (wired ethernet still gets its chance).
-wifi_dhcp() {
-	dev=$1
-	say "requesting a DHCP lease on $dev via ipconfig (32s budget)"
-	if ! ipconfig -t 32 "$dev" >/run/ipconfig.log 2>&1 || [ ! -s "/run/net-$dev.conf" ]; then
-		say "no lease on $dev; leaving DHCP to the normal path. ipconfig said:"
-		tail -5 /run/ipconfig.log 2>/dev/null | while IFS= read -r l; do say "  $l"; done
-		rm -f "/run/net-$dev.conf"
-		return 1
-	fi
-	# shellcheck disable=SC1090 # runtime-generated initramfs-tools net conf
-	. "/run/net-$dev.conf"
-	say "lease: $IPV4ADDR gw $IPV4GATEWAY dns $IPV4DNS0"
-	BB=/bin/busybox
-	r=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^bb.relays=//p' | cut -d, -f1)
-	hp=${r#*//}
-	h=${hp%%:*}; p=${hp##*:}; [ "$p" = "$hp" ] && p=443
-	if ( echo | "$BB" nc -w 3 "$h" "$p" ) >/dev/null 2>&1; then
-		export DEVICE="$dev"
-		say "relay $h:$p reachable via $dev — committed; the DHCP retry grind is skipped"
+	if [ -n "$DEV" ]; then
+		journal "radio appeared after active intervention: $DEV"
 	else
-		say "relay $h:$p NOT reachable via $dev — dropping this lease entirely, normal path takes over"
-		rm -f "/run/net-$dev.conf"
-		ip addr flush dev "$dev" 2>/dev/null || true
-		ip link set "$dev" down 2>/dev/null || true
-	fi
-	return 0
-}
-
-say "associating $DEV (timeout 90s)"
-wpa_supplicant -B -q -i "$DEV" -c "$CONF" -P /run/bboot-wifi.pid -f /run/wpa_supplicant.log || {
-	say "wpa_supplicant failed to start; staying wired"
-	tail -5 /run/wpa_supplicant.log 2>/dev/null | while IFS= read -r l; do say "  $l"; done
-	exit 0
-}
-
-i=0
-ok=1
-while [ "$i" -lt 90 ]; do
-	if iw "$DEV" link 2>/dev/null | grep -q '^Connected to'; then
-		ok=0
-		break
-	fi
-	if [ -f /run/bboot-wifi.pid ] && ! kill -0 "$(cat /run/bboot-wifi.pid)" 2>/dev/null; then
-		say "wpa_supplicant exited; staying wired. Its log:"
-		tail -6 /run/wpa_supplicant.log 2>/dev/null | while IFS= read -r l; do say "  $l"; done
+		journal "NO RADIO after hands-off + active intervention"
+		journal_dump
+		say "NO RADIO — full diagnostics written to the stick's journal"
 		exit 0
 	fi
+fi
+
+# --- associate with the AP ---
+journal "associating with AP on $DEV ..."
+wpa_supplicant_conf=/run/bboot-wifi/wpa_supplicant.conf
+cp "$CONF" "$wpa_supplicant_conf" 2>/dev/null || CONF="$wpa_supplicant_conf"
+
+# scan first (proves the radio actually works)
+ip link set "$DEV" up 2>/dev/null || true
+sleep 2
+SCAN=$(iw dev "$DEV" scan 2>/dev/null | grep -c "^BSS ")
+journal "scan found $SCAN networks"
+if [ "$SCAN" -eq 0 ]; then
+	journal "scan found ZERO networks — radio present but non-functional"
+	journal_dump
+	exit 0
+fi
+
+# wpa_supplicant
+wpa_supplicant -B -i "$DEV" -c "$CONF" 2>/dev/null || {
+	journal "wpa_supplicant failed to start"
+	journal_dump
+	exit 0
+}
+
+# wait for association (up to 30 seconds)
+i=0
+while [ $i -lt 30 ]; do
+	STATUS=$(wpa_cli -i "$DEV" status 2>/dev/null | grep -c "wpa_state=COMPLETED")
+	[ "$STATUS" -ge 1 ] && break
 	sleep 1
 	i=$((i + 1))
 done
-if [ "$ok" -eq 0 ]; then
-	say "associated"
-	# CRITICAL for real hardware: disable WiFi power save. CNVi/AX2xx default
-	# to aggressive PS; under heavy streaming the radio sleeps through
-	# beacons, the AP declares the station dead and deauths (Reason: 2 =
-	# PREV_AUTH_NOT_VALID — the exact loop seen on the desktop 2026-11-10).
-	iw "$DEV" set power_save off 2>/dev/null || true
-	say "power_save off (streaming-safe)"
-	if [ "$WIFI_DHCP" -eq 1 ]; then
-		wifi_dhcp "$DEV" || true
-	else
-		say "bb.wifi.dhcp=off — DHCP left to the normal path"
-	fi
-	# HANDOFF: copy the wifi config into the mounted rootfs so the real
-	# system can reconnect after switch_root (the initramfs's wpa_supplicant
-	# dies with the switch; without this, the rootfs has no idea how to
-	# re-associate and the machine cycles forever — found live on the
-	# desktop, 2026-11-10)
-	LOWER=/run/bboot/lower
-	if [ -d "$LOWER" ] && [ -f "$CONF" ]; then
-		mkdir -p "$LOWER/etc/wpa_supplicant" "$LOWER/etc/systemd/system" 2>/dev/null
-		cp "$CONF" "$LOWER/etc/wpa_supplicant/wifi.conf" 2>/dev/null || true
-		# udhcpc needs an event script to apply the lease
-		install -D -m 0755 /dev/null "$LOWER/usr/local/sbin/klh-udhcpc-script" 2>/dev/null
-		cat > "$LOWER/usr/local/sbin/klh-udhcpc-script" <<'UDH'
-#!/bin/sh
-# busybox udhcpc event script: apply the lease
-case "$1" in
-bound|renew)
-	ip addr flush dev "$interface" 2>/dev/null
-	ip addr add "$ip/$mask" dev "$interface" 2>/dev/null
-	ip link set "$interface" up
-	[ -n "$router" ] && ip route add default via "${router%% *}" dev "$interface" 2>/dev/null
-	: > /etc/resolv.conf
-	for d in $dns; do echo "nameserver $d" >> /etc/resolv.conf; done
-	echo "Wi-Fi handoff: lease $ip via $router"
-	;;
-deconfig)
-	ip addr flush dev "$interface" 2>/dev/null
-	;;
-esac
-exit 0
-UDH
-		chmod 0755 "$LOWER/usr/local/sbin/klh-udhcpc-script" 2>/dev/null || true
-		cat > "$LOWER/etc/systemd/system/klh-wifi-handoff.service" <<UNIT
-[Unit]
-Description=Wi-Fi handoff from initramfs (re-associate after switch_root)
-After=systemd-modules-load.service
-Before=network.target
-Wants=network.target
-ConditionPathExists=/etc/wpa_supplicant/wifi.conf
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/sh -c '/sbin/wpa_supplicant -B -q -i \$(ls /sys/class/net/ | grep -E "^wl" | head -1) -c /etc/wpa_supplicant/wifi.conf && sleep 2 && /bin/busybox udhcpc -i \$(ls /sys/class/net/ | grep -E "^wl" | head -1) -n -q -t 10 -T 3 -s /usr/local/sbin/klh-udhcpc-script'
-ExecStartPost=/bin/sh -c 'ip addr show \$(ls /sys/class/net/ | grep -E "^wl" | head -1) | grep -q "inet " && echo "Wi-Fi handoff: connected"'
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-		ln -sf /etc/systemd/system/klh-wifi-handoff.service \
-			"$LOWER/etc/systemd/system/multi-user.target.wants/klh-wifi-handoff.service" 2>/dev/null || true
-		say "Wi-Fi handoff: config + service installed into the rootfs"
-	fi
-else
-	say "association TIMED OUT after 90s. Last wpa_supplicant messages:"
-	tail -8 /run/wpa_supplicant.log 2>/dev/null | while IFS= read -r l; do say "  $l"; done
-	say "current link state:"
-	iw "$DEV" link 2>/dev/null | while IFS= read -r l; do say "  $l"; done
-	say "dropping radio and staying wired"
-	kill "$(cat /run/bboot-wifi.pid 2>/dev/null)" 2>/dev/null || true
-	sleep 2
-	say "networks visible to this radio (SSIDs shown so you can see if yours is in range):"
-	iw dev "$DEV" scan 2>/dev/null | grep -E "^BSS|SSID:" | head -24 | while IFS= read -r l; do say "  $l"; done
-	say "if your SSID is absent: out of range / RF kill / band mismatch; if present: check PSK in wifi.conf"
-	ip link set "$DEV" down 2>/dev/null || true
+if [ "$STATUS" -lt 1 ]; then
+	journal "association FAILED after 30s (wpa_state != COMPLETED)"
+	journal_dump
+	exit 0
 fi
-exit 0
+journal "associated! (took ${i}s)"
+
+# DHCP over the air
+journal "requesting DHCP over $DEV ..."
+ipconfig -t 30 "$DEV" 2>&1 | while IFS= read -r l; do journal "  dhcp: $l"; done
+
+# check we got an IP
+GOT_IP=$(ip -4 addr show "$DEV" 2>/dev/null | grep -c "inet ")
+if [ "$GOT_IP" -eq 0 ]; then
+	journal "DHCP over wifi FAILED (no IP on $DEV)"
+	journal_dump
+	exit 0
+fi
+IP=$(ip -4 addr show "$DEV" 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
+journal "WIFI BOOT SUCCESSFUL: $DEV has $IP"
+journal "handing off to bboot (manifest fetch over wifi)"
+
+# copy wifi config into the rootfs for post-switch_root reconnection
+LOWER=/run/bboot/lower
+if [ -d "$LOWER" ]; then
+	mkdir -p "$LOWER/etc/wpa_supplicant" 2>/dev/null
+	cp "$CONF" "$LOWER/etc/wpa_supplicant/wifi.conf" 2>/dev/null || true
+fi

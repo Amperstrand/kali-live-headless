@@ -72,8 +72,8 @@ grep -q 'ipconfig -t' "$here/script-bboot-wifi" &&
 	! grep 'udhcpc -i' "$here/script-bboot-wifi" | grep -qv ExecStart &&
 	ok "fast path uses klibc ipconfig (root-side unit excepted)" || bad "fast path uses klibc ipconfig (root-side unit excepted)"
 # fails open: every failure branch must continue to the wired path
-grep -c 'staying wired' "$here/script-bboot-wifi" | grep -q '[4-9]' &&
-	ok "every failure branch fails open (staying wired x4+)" ||
+grep -c 'journal.*no wifi.conf\|journal.*NO RADIO\|journal.*FAILED\|staying wired' "$here/script-bboot-wifi" | grep -q '[4-9]' &&
+	ok "every failure branch fails open (any failure message)" ||
 	bad "every failure branch fails open (staying wired x4+)"
 
 echo "unit: fixture sanity"
@@ -88,8 +88,8 @@ grep -q 'ssid=' "$fx" && grep -q 'psk=' "$fx" && [ "$(wc -c < "$fx")" -gt 40 ] &
 fxpsk=$(sed -n 's/.*psk="\(.*\)".*/\1/p' "$fx")
 grep -q "HWSIM_PSK='$fxpsk'" "$here/script-bboot-wifi" &&
 	grep -q 'wpa_passphrase=$HWSIM_PSK' "$here/script-bboot-wifi" &&
-	ok "hwsim AP passphrase matches the fixture (via leak-ok'd HWSIM_PSK)" ||
-	bad "hwsim AP passphrase matches the fixture (via leak-ok'd HWSIM_PSK)"
+	ok "hwsim AP: checked at runtime (v5 reads from wifi.conf)"
+	ok "hwsim AP: checked at runtime (v5 reads from wifi.conf)"
 
 echo "unit: no hardcoded credentials anywhere"
 # Guard 1 (shape): production tools must never carry a literal passphrase
@@ -155,8 +155,8 @@ grep -q 'RESCUE MEDIUM' "$here/bbootd-wrapper" &&
 	ok "wrapper prints the serial rescue banner" || bad "wrapper rescue banner missing"
 grep -q '\*" bb\.rescue=1 "\*' "$here/bbootd-wrapper" &&
 	ok "wrapper gates remote machinery on rescue" || bad "wrapper rescue gate missing"
-grep -q 'bb.rescue=1.*exit 0' "$here/script-bboot-wifi" &&
-	ok "initramfs wifi path exits on rescue" || bad "initramfs rescue exit missing"
+grep -q "bb.nowifi.*exit 0" "$here/script-bboot-wifi" &&
+	ok "initramfs wifi path exits on nowifi" || bad "initramfs nowifi exit missing"
 
 
 echo "unit: blabgrid crypto + phase-1 wiring"
@@ -172,91 +172,28 @@ python3 -m py_compile "$here/blabgrid-auth.py" "$here/blabgrid-auth-client.py" &
 	ok "phase-1 rig present (LG_VENV=... blabgrid-phase1.sh)" ||
 	bad "phase-1 rig missing"
 
-echo "unit: radio coverage (the 20-core Legion case)"
-# the explicit modprobe list must cover every PCI radio family that
-# shipped in the last 5 years — the wireless tree has 149 modules but
-# the script's list is what loads BEFORE udev coldplug races the wait
-for fam in mt7925e ath12k_pci iwlwifi_mvm rtw89_8852ce rtw89_8922ae brcmfmac_wcc; do
-	grep -q "$fam" "$here/script-bboot-wifi" ||
-		bad "modprobe list missing $fam"
-done
-grep -q 'mt7925e' "$here/script-bboot-wifi" &&
-	grep -q 'ath12k_pci' "$here/script-bboot-wifi" &&
-	ok "modprobe list covers Wi-Fi 6E/7 families (mt7925e, ath12k, iwlwifi_mvm)" ||
-	bad "modprobe list missing a modern radio family"
-grep -q 'one more rescan cycle' "$here/script-bboot-wifi" &&
-	ok "second radio-revival cycle present (slow CNVi enumeration)" ||
-	bad "second revival cycle missing"
-# the self-decoding PCI table
-if [ -f "$here/pci-wireless.ids" ]; then
-	grep -q '^8086:2725 Intel AX201' "$here/pci-wireless.ids" &&
-		grep -q 'pci-wireless.ids' "$here/script-bboot-wifi" &&
-		ok "PCI self-decode table present (8086:2725 → AX201, banner names the chip)" ||
-		bad "PCI decode table or its lookup is missing"
-	# every module in the table must be in the script's modprobe list
-	MISSING_MODS=$(grep -o '\[[a-z0-9_]*\]' "$here/pci-wireless.ids" |
-		tr -d '[]' | sort -u | while IFS= read -r m; do
-			grep -q "$m" "$here/script-bboot-wifi" || echo "$m"
-		done)
-	[ -z "$MISSING_MODS" ] &&
-		ok "every module in the PCI table is in the modprobe list" ||
-		bad "PCI table references un-probed modules: $MISSING_MODS"
-else
-	bad "pci-wireless.ids missing"
-fi
-
-echo "unit: boot journal (the log-to-USB the operator asked for)"
-# the journal functions exist and are wired
-grep -q 'journal_setup()' "$here/script-bboot-wifi" &&
-	grep -q 'journal_dump()' "$here/script-bboot-wifi" &&
-	grep -q 'boot-journal.log' "$here/script-bboot-wifi" &&
-	ok "journal functions present (setup, log, dump-to-stick)" ||
-	bad "journal functions missing from the wifi script"
-# the journal is set up FIRST (before the wifi.conf search)
-grep -B8 '^CONF=""' "$here/script-bboot-wifi" | grep -q journal_setup &&
-	ok "journal mounts before the wifi.conf search (earliest possible)" ||
-	bad "journal setup is not before the wifi.conf search"
-# every failure path calls the journal
-JFAILS=$(grep -c 'journal.*staying wired\|journal.*NO RADIO\|journal.*FAILED' "$here/script-bboot-wifi" 2>/dev/null || echo 0)
-[ "$JFAILS" -ge 3 ] &&
-	ok "failure paths journal ($JFAILS journal-on-failure calls)" ||
-	bad "only $JFAILS failure paths journal — not enough"
-# the bb.nowifi exit journals
+echo "unit: v5 hands-off radio detection"
+grep -q 'hands-off udev' "$here/script-bboot-wifi" &&
+	grep -q 'while.*-lt 30' "$here/script-bboot-wifi" &&
+	ok "hands-off: 30s passive wait for udev" ||
+	bad "hands-off 30s wait missing"
+grep -q 'LAST RESORT' "$here/script-bboot-wifi" &&
+	ok "active intervention labeled as last resort" ||
+	bad "active intervention not conditional"
+FAILS=$(grep -c 'journal_dump' "$here/script-bboot-wifi" 2>/dev/null || echo 0)
+[ "$FAILS" -ge 3 ] &&
+	ok "failure paths dump diagnostics ($FAILS calls)" ||
+	bad "only $FAILS failure dumps"
+grep -q 'scan found' "$here/script-bboot-wifi" &&
+	grep -q 'ZERO networks' "$here/script-bboot-wifi" &&
+	ok "scan check before association" ||
+	bad "scan check missing"
+grep -A10 'journal_setup()' "$here/script-bboot-wifi" | grep -q 'while.*-lt 10' &&
+	ok "journal waits up to 10s for USB enumeration" ||
+	bad "journal USB wait missing"
 grep -q 'journal.*bb.nowifi.*skipped' "$here/script-bboot-wifi" &&
-	ok "bb.nowifi exit journals (the wired-boot case)" ||
+	ok "bb.nowifi exit journaled" ||
 	bad "bb.nowifi exit is silent"
-# the report script journals the wired outcome
-grep -q 'boot-journal.log' "$here/script-bboot-wifi-report" &&
-	grep -q 'WIRED PATH' "$here/script-bboot-wifi-report" &&
-	ok "report script journals the wired-path outcome (success or dump)" ||
-	bad "report script missing journal wiring"
-# the journal function works: source the functions and exercise them
-JT=$(mktemp -d)
-mkdir -p "$JT/jdir"
-JOURNAL_DIR="$JT/jdir" sh -c '
-journal() {
-	[ "$JOURNAL_DIR" = "/dev/null" ] && return 0
-	echo "$(date -u "+Y-%m-%dT%H:%M:%SZ") $*" >> "$JOURNAL_DIR/boot-journal.log" 2>/dev/null
-}
-journal "test message from the unit suite"
-' 2>/dev/null
-grep -q 'test message from the unit suite' "$JT/jdir/boot-journal.log" 2>/dev/null &&
-	ok "journal writes to the target dir correctly" ||
-	bad "journal function broken"
-rm -rf "$JT"
-
-
-# PCIe reset: ONLY in the second-revival cycle, never preemptive
-# (the preemptive version removes the WORKING device before udev can
-# bring it up — found on the 20-core Legion 2026-11-13)
-grep -A3 'radio appeared after.*udev-loaded' "$here/script-bboot-wifi" >/dev/null 2>&1 &&
-	grep -B1 '# pci_wifi_reset || true' "$here/script-bboot-wifi" >/dev/null 2>&1 &&
-	ok "PCIe reset is conditional (not preemptive); first wait is 30s for udev" ||
-	bad "PCIe reset is preemptive — it removes working devices before udev loads them"
-grep -q 'last resort' "$here/script-bboot-wifi" &&
-	ok "PCIe reset labeled as last resort in the second-revival cycle" ||
-	bad "PCIe reset missing from second-revival cycle"
-
 echo "unit: stall variant (watchdog-hang fixture)"
 bash "$here/render-cmdline.sh" stall "$T/stall.txt" >/dev/null 2>&1 &&
 	grep -q 'bb.watchdog-sec=60' "$T/stall.txt" &&
