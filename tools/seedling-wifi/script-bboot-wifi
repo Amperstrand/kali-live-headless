@@ -71,17 +71,13 @@ journal_dump() {
 journal_setup
 journal "BOOT v5.1: $(cat /proc/cmdline 2>/dev/null | tr -d '\n' | cut -c1-180)"
 
-# --- static IP on the wired NIC (deterministic, no DHCP dependency) ---
-# The kernel 'ip=' parameter is parsed by initramfs-tools' /init, but our
-# boot=bboot flow bypasses that — the bboot script calls its own
-# configure_networking. This sets the IP directly, immediately, from
-# the script, on the wired interface. No DHCP server needed, no fallback
-# to klibc's 192.168.1.x autoconfig (found on the Legion 2026-11-13:
-# the machine ARP'd from 192.168.1.2 despite ip=10.42.0.2 on the cmdline).
-ip link set enp2s0 up 2>/dev/null || true
-ip addr add 10.42.0.2/24 dev enp2s0 2>/dev/null || true
-ip route add default via 10.42.0.1 dev enp2s0 2>/dev/null || true
-journal "static IP: 10.42.0.2 on enp2s0 (gateway 10.42.0.1)"
+# --- ethernet: klibc autoconfig assigns 192.168.1.2 when DHCP fails ---
+# The Legion is on a DIRECT link to our laptop (no lab LAN router).
+# klibc ipconfig's DHCP ladder times out, then falls back to
+# 192.168.1.2 automatically (proven on every boot). Our laptop IS
+# 192.168.1.1 on the USB ethernet adapter, with NAT to the lab LAN.
+# Working WITH the fallback instead of against it.
+journal "waiting for klibc autoconfig (expects 192.168.1.2 on enp2s0)"
 
 # --- cmdline parse (after journal so early exits are recorded) ---
 WIFI_SPEC=""
