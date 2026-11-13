@@ -341,27 +341,33 @@ pci_wifi_reset() {
 	return 1
 }
 
-# try the reset BEFORE the first radio wait (prevention is better than
-# the second-revival cure)
-pci_wifi_reset || true
+# try the reset ONLY in the second-revival cycle (NOT preemptively —
+# the 2026-11-13 boot proved udev brings up iwlwifi naturally in ~11s;
+# a preemptive PCIe reset removes the WORKING device and the
+# re-enumeration may not complete, making things worse)
+# pci_wifi_reset || true
 
 DEV=""
 if [ "$HWSIM" -eq 1 ]; then
 	run_hwsim_test || exit 0
 else
 	i=0
-	while [ "$i" -lt 20 ]; do
+	while [ "$i" -lt 30 ]; do
 		DEV=$(radios | sed -n 1p)
 		[ -n "$DEV" ] && break
 		sleep 1
 		i=$((i + 1))
 	done
 fi
+if [ -n "$DEV" ]; then
+	journal "radio appeared after ${i}s: $DEV (udev-loaded, no explicit modprobe)"
+fi
 if [ -z "$DEV" ] && [ "$HWSIM" -ne 1 ]; then
 	# second revival cycle (2026-11-12, the 20-core desktop case): some
 	# radios enumerate on a SECOND rescan — slow PCIe init, CNVi that
 	# missed the first enumeration window, firmware load racing the wait.
 	# One more unblock+rescan wave and a shorter wait before giving up.
+	journal "no radio after 30s wait — trying PCIe reset + rescan (last resort)"
 	say "no radio on the first wait — PCIe reset + one more rescan cycle"
 	pci_wifi_reset || true
 	for i in 1 2 3; do

@@ -245,6 +245,18 @@ grep -q 'test message from the unit suite' "$JT/jdir/boot-journal.log" 2>/dev/nu
 	bad "journal function broken"
 rm -rf "$JT"
 
+
+# PCIe reset: ONLY in the second-revival cycle, never preemptive
+# (the preemptive version removes the WORKING device before udev can
+# bring it up — found on the 20-core Legion 2026-11-13)
+grep -A3 'radio appeared after.*udev-loaded' "$here/script-bboot-wifi" >/dev/null 2>&1 &&
+	grep -B1 '# pci_wifi_reset || true' "$here/script-bboot-wifi" >/dev/null 2>&1 &&
+	ok "PCIe reset is conditional (not preemptive); first wait is 30s for udev" ||
+	bad "PCIe reset is preemptive — it removes working devices before udev loads them"
+grep -q 'last resort' "$here/script-bboot-wifi" &&
+	ok "PCIe reset labeled as last resort in the second-revival cycle" ||
+	bad "PCIe reset missing from second-revival cycle"
+
 echo "unit: stall variant (watchdog-hang fixture)"
 bash "$here/render-cmdline.sh" stall "$T/stall.txt" >/dev/null 2>&1 &&
 	grep -q 'bb.watchdog-sec=60' "$T/stall.txt" &&
