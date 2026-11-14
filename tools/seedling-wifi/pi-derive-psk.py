@@ -42,7 +42,11 @@ def main():
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(2)
-    secret = bytes.fromhex(sys.argv[1].strip())
+    try:
+        secret = bytes.fromhex(sys.argv[1].strip())
+    except ValueError:
+        print("error: pairing secret must be hex (32 hex chars = 128 bits)", file=sys.stderr)
+        sys.exit(2)
     psk = hkdf_sha256(secret, b"klh-pi-wifi/v1", 32).hex()  # leak-ok: provisioning tool — derives per-card PSKs from caller input, never embeds a secret value
     print(f'network={{\n  ssid="YOURSSID"\n  psk={psk}\n  key_mgmt=WPA-PSK\n  scan_ssid=1\n}}')  # leak-ok: provisioning output — DERIVED per-card PSK from caller input, no embedded secret
     if len(sys.argv) > 2:

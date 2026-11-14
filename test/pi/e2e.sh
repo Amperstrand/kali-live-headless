@@ -82,7 +82,7 @@ stage_x86() {
 	cp /usr/share/edk2/x64/OVMF_VARS.4m.fd "$TMPDIR/vars-$TS.fd"
 	tmux kill-session -t pie2e-x86 2>/dev/null; rm -f "$serial"
 	tmux new-session -d -s pie2e-x86 "timeout 900 qemu-system-x86_64 -m 2048 -smp 2 -enable-kvm \
-		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd \
+		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
 		-drive if=pflash,format=raw,file=$TMPDIR/vars-$TS.fd \
 		-drive file=$img,format=raw,if=virtio -display none -serial file:$serial \
 		-netdev user,id=n1 -device virtio-net-pci,netdev=n1"
@@ -259,6 +259,52 @@ stage_x86shim() {
 	say "stage x86shim: PASS (refusal without MOK; positive = documented one-time enrollment)"
 }
 
+stage_x86foreign() {
+	# the swapped-card attack: a VALIDLY-SIGNED UKI from a DIFFERENT key
+	# (an attacker's) under our Secure Boot — must be refused. This is
+	# the core SB promise; byte-tamper tests cannot cover it.
+	local serial="$LOGDIR/pi-x86foreign-$TS.log"
+	local unsigned="$SEED/out/bboot-wifi-universal.efi"
+	[ -s "$unsigned" ] || { say "stage x86foreign: unsigned UKI missing"; fail=$((fail + 1)); failed+=(x86foreign); return 1; }
+	command -v sbsign >/dev/null || { say "stage x86foreign: sbsign missing"; fail=$((fail + 1)); failed+=(x86foreign); return 1; }
+	# throwaway attacker key
+	openssl req -newkey rsa:2048 -nodes -keyout "$TMPDIR/attacker-$TS.key" \
+		-new -x509 -days 30 -subj "/CN=attacker-$TS/" -out "$TMPDIR/attacker-$TS.crt" >/dev/null 2>&1
+	sbsign --key "$TMPDIR/attacker-$TS.key" --cert "$TMPDIR/attacker-$TS.crt" \
+		--out "$TMPDIR/uki-foreign-$TS.efi" "$unsigned" >/dev/null 2>&1 ||
+		{ say "stage x86foreign: attacker signing failed"; fail=$((fail + 1)); failed+=(x86foreign); return 1; }
+	local img="$TMPDIR/pi-foreign-$TS.img"
+	PI_X86_UKI="$TMPDIR/uki-foreign-$TS.efi" bash "$here/make-pi-sd.sh" "$img" 0 --targets=x86 >/dev/null 2>&1
+	bash "$here/klh-seedling-wifi.sh" make-sb-vars "$SEED/qemu-m1/vars-sb.fd" >/dev/null 2>&1
+	cp "$SEED/qemu-m1/vars-sb.fd" "$TMPDIR/vars-foreign-$TS.fd"
+	say "stage x86foreign: VALIDLY-SIGNED-but-foreign UKI under OUR Secure Boot — must be refused"
+	tmux kill-session -t pie2e-foreign 2>/dev/null; rm -f "$serial"
+	tmux new-session -d -s pie2e-foreign "timeout 300 qemu-system-x86_64 \\
+		-machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on \\
+		-m 2048 -smp 2 -enable-kvm \\
+		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd \\
+		-drive if=pflash,format=raw,file=$TMPDIR/vars-foreign-$TS.fd \\
+		-drive file=$img,format=raw,if=virtio -display none -serial file:$serial \\
+		-netdev user,id=n1 -device virtio-net-pci,netdev=n1"
+	local waited=0
+	while [ $waited -lt 240 ]; do
+		grep -qiE "access denied|security violation|rejected" "$serial" 2>/dev/null && break
+		grep -q "bboot:" "$serial" 2>/dev/null && break
+		sleep 10
+		waited=$((waited + 10))
+	done
+	if grep -q "bboot:" "$serial" 2>/dev/null; then
+		say "stage x86foreign: FAILED — a foreign-keyed UKI EXECUTED under our SB (the swapped-card attack succeeds!)"
+		fail=$((fail + 1)); failed+=(x86foreign); return 1
+	fi
+	grep -qiE "access denied|security violation|rejected" "$serial" 2>/dev/null ||
+		{ say "stage x86foreign: FAILED — no execution and no rejection evidence"; fail=$((fail + 1)); failed+=(x86foreign); return 1; }
+	say "stage x86foreign: evidence:"
+	grep -iE "access denied|security violation|rejected" "$serial" 2>/dev/null | head -2 | sed 's/^/    /'
+	rm -f "$img" "$TMPDIR/uki-foreign-$TS.efi" "$TMPDIR/attacker-$TS.key" "$TMPDIR/attacker-$TS.crt" "$TMPDIR/vars-foreign-$TS.fd"
+	say "stage x86foreign: PASS (foreign signer refused — the swapped-card attack blocked)"
+}
+
 stage_arm64() {
 	local serial="$LOGDIR/pi-arm64-$TS.log"
 	say "stage arm64: arm64 kernel + the arm64 card initrd (unpinned)"
@@ -282,6 +328,7 @@ for s in $STAGES; do
 	x86sb) stage_x86sb && pass=$((pass + 1)) ;;
 	x86nosb) stage_x86nosb && pass=$((pass + 1)) ;;
 	x86shim) stage_x86shim && pass=$((pass + 1)) ;;
+	x86foreign) stage_x86foreign && pass=$((pass + 1)) ;;
 	armhf) stage_armhf && pass=$((pass + 1)) ;;
 	arm64) stage_arm64 && pass=$((pass + 1)) ;;
 	*) say "unknown stage $s"; exit 2 ;;
