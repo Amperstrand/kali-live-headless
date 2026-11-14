@@ -17,17 +17,30 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 
 out=${1:?usage: make-pi-sd.sh <out.img|device> [size-mb|--direct|--deterministic|--arm64]}
-direct=0 size=${2:-512} DET=0 ARM64=0
+direct=0 size=${2:-0} DET=0 TARGETS=${PI_TARGETS:-}
 for a in "$@"; do
 	case "$a" in
 		--direct) direct=1; dev=$1 ;;
 		--deterministic) DET=1 ;;
-		--arm64) ARM64=1 ;;
-		--universal) UNIVERSAL=1 ;;
+		--arm64) TARGETS=pi4 ;;
+		--universal) TARGETS=pi1,pi2,pi4,x86 ;;
+		--targets=*) TARGETS=${a#--targets=} ;;
 	esac
 done
-[ -n "${size:-}" ] || size=512
-case "$size" in -*) size=512 ;; esac
+[ -n "$TARGETS" ] || TARGETS=pi1,pi2
+case "$TARGETS" in *pi1*|*pi2*|*pi4*|*x86*) ;; *) echo "targets must be from: pi1,pi2,pi4,x86" >&2; exit 2 ;; esac
+has() { case ",$TARGETS," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+# auto-size when not given: firmware+overlays+slack ≈ 96MB, then
+# ~150MB per Pi target, 170MB for the x86 UKI (payload-driven, so a
+# specialized card stays small and an anything-card just fits)
+if [ "$size" = 0 ]; then
+	size=96
+	has pi1 && size=$((size + 150))
+	has pi2 && size=$((size + 150))
+	has pi4 && size=$((size + 155))
+	has x86 && size=$((size + 170))
+	size=$(( (size + 127) / 128 * 128 ))
+fi
 # --deterministic: fixed GPT GUIDs, fixed FAT serial, all mtimes pinned to
 # PI_EPOCH — identical inputs rebuild a byte-identical image, so the
 # published sha256 is verifiable by anyone before flashing. The pinned
@@ -46,49 +59,43 @@ DET_PART_GUID=${DET_PART_GUID:-17314945-0000-4000-8000-000017314945}
 DET_FAT_SERIAL=${DET_FAT_SERIAL:-17314944}
 
 SEED=${SEEDLING_DIR:-$HOME/src/seedling-m1}
-if [ "$UNIVERSAL" = 1 ]; then
-	# ONE card for every board generation: the firmware's [piN] filters
-	# pick kernel+initrd per board, and the wrapper's arch tag makes each
-	# board chase its NATIVE image (pi:32 / pi:64) — one unpinned card,
-	# no per-board flashing. Artifacts from BOTH arch trees.
-	PI=$SEED/pi
-	PI2=$SEED/pi64
-	STAGE=$PI/sd-boot-staging
-	STAGE2=$PI2/sd-boot-staging
-	KERNELS="kernel.img kernel7.img"
-	DTBS="bcm2708-rpi-b.dtb bcm2708-rpi-b-plus.dtb bcm2709-rpi-2-b.dtb"
-	INITRDS="$PI/initrd-6.18.50+rpt-rpi-v6.img $PI/initrd-6.18.50+rpt-rpi-v7.img"
-elif [ "$ARM64" = 1 ]; then
-	# Pi 4/5 (aarch64): kernel8.img + the arm64 initrd; firmware staged
-	# from an arm64 RPi OS image. One card serves ONE arch family — the
-	# streamed userland differs (arm64 vs the ARMv6 RPi OS 32-bit build).
-	PI=$SEED/pi64
-	KERNELS="kernel8.img"
-	INITRDS="$PI/initrd-arm64-v8.img"
-	DTBS="bcm2711-rpi-4-b.dtb"
-else
-	PI=$SEED/pi
-	KERNELS="kernel.img kernel7.img"
-	INITRDS="$PI/initrd-6.18.50+rpt-rpi-v6.img $PI/initrd-6.18.50+rpt-rpi-v7.img"
-	DTBS="bcm2708-rpi-b.dtb bcm2708-rpi-b-plus.dtb bcm2709-rpi-2-b.dtb"
-fi
+# TARGET-DRIVEN selection (--targets=pi1,pi2,pi4,x86; the old flags are
+# aliases). The firmware's [piN] filters pick kernel+initrd per board,
+# the wrapper's arch tag picks the image (pi:32/pi:64/x86_64) — targets
+# only decide WHAT THE CARD CARRIES, never what a given machine boots.
+PI=$SEED/pi
+PI2=$SEED/pi64
 STAGE=$PI/sd-boot-staging
+STAGE2=$PI2/sd-boot-staging
+KERNELS=""
+DTBS=""
+INITRDS=""
+has pi1 && { KERNELS="$KERNELS kernel.img"; INITRDS="$INITRDS $PI/initrd-6.18.50+rpt-rpi-v6.img"; }
+has pi2 && { KERNELS="$KERNELS kernel7.img"; INITRDS="$INITRDS $PI/initrd-6.18.50+rpt-rpi-v7.img"; DTBS="$DTBS bcm2709-rpi-2-b.dtb"; }
+if has pi4; then
+	KERNELS="$KERNELS kernel8.img"
+	INITRDS="$INITRDS $PI2/initrd-arm64-v8.img"
+fi
+has pi1 && DTBS="$DTBS bcm2708-rpi-b.dtb bcm2708-rpi-b-plus.dtb"
+if has pi4; then DTBS="$DTBS bcm2711-rpi-4-b.dtb bcm2711-rpi-400.dtb bcm2712-rpi-5-b.dtb"; fi
 
 [ -d "$STAGE" ] || { echo "missing $STAGE (stage it from a RPi OS image first)" >&2; exit 1; }
 for f in bootcode.bin start.elf $KERNELS; do
-	[ -s "$STAGE/$f" ] || { echo "missing firmware file: $STAGE/$f" >&2; exit 1; }
+	fdir=$STAGE
+	[ -s "$STAGE/$f" ] || fdir=$STAGE2
+	[ -s "$fdir/$f" ] || { echo "missing firmware file: $f (staged from neither arch tree)" >&2; exit 1; }
 done
 for f in $INITRDS; do
 	[ -s "$f" ] || { echo "missing $f (build in the arch chroot)" >&2; exit 1; }
 done
-if [ "$UNIVERSAL" = 1 ]; then
-	[ -s "$STAGE2/kernel8.img" ] || { echo "missing $STAGE2/kernel8.img" >&2; exit 1; }
-	[ -s "$PI2/initrd-arm64-v8.img" ] || { echo "missing pi64 initrd" >&2; exit 1; }
-	# the x86 half of the anything-card (optional): a UKI at the standard
-	# UEFI fallback path makes the same medium boot any x86 box; UEFI
-	# ignores the Pi files, the Pi firmware ignores the EFI dir.
+if has x86; then
+	# the x86 personality: a UKI at the standard UEFI fallback path makes
+	# the same medium boot any x86 box; UEFI ignores the Pi files, the
+	# Pi firmware ignores the EFI dir.
 	X86_UKI=${PI_X86_UKI:-$SEED/out/bboot-wifi-universal.efi}
-	[ -s "$X86_UKI" ] || X86_UKI=""
+	[ -s "$X86_UKI" ] || { echo "missing $X86_UKI (build-uki --variant universal)" >&2; exit 1; }
+else
+	X86_UKI=""
 fi
 
 # The Pi manifest to pin (444c48f5… = RPi OS 13 Lite with root login
@@ -115,7 +122,7 @@ else
 	# build a standalone FAT image, then place it at the partition start
 	truncate -s "${size}M" "$out"
 	sgdisk -o "$out" >/dev/null
-	if [ "$UNIVERSAL" = 1 ]; then
+	if has x86; then
 		# EFI System type: UEFI boots the UKI; the Pi firmware does not
 		# care about partition type codes
 		sgdisk -n 1:2048:0 -t 1:ef00 -c 1:"BBOOT" "$out" >/dev/null
@@ -191,110 +198,62 @@ if [ "$direct" != 1 ]; then
 fi
 
 for f in bootcode.bin start.elf fixup.dat fixup_cd.dat fixup4.dat fixup4cd.dat fixup4x.dat fixup4db.dat fixup_x.dat fixup_db.dat $KERNELS; do
-	[ -s "$STAGE/$f" ] && copy "$STAGE/$f" "$f"
+	fsrc=$STAGE
+	[ -s "$STAGE/$f" ] || fsrc=$STAGE2
+	[ -s "$fsrc/$f" ] && copy "$fsrc/$f" "$f"
 done
-for d in $DTBS; do copy "$STAGE/$d" "$d"; done
+for d in $DTBS; do
+	dsrc=$STAGE
+	[ -s "$STAGE/$d" ] || dsrc=$STAGE2
+	copy "$dsrc/$d" "$d"
+done
 [ -f "$PI/.wifi.conf" ] && copy "$PI/.wifi.conf" wifi.conf
 copy "$PI/.pairing.txt" pairing.txt
 if [ -d "$STAGE/overlays" ]; then
 	if [ "$direct" = 1 ]; then cp -r "$STAGE/overlays" "$mdir/"; else mcopy -i "$out" -s "$STAGE/overlays" ::; fi
 fi
-if [ "$ARM64" = 1 ]; then
-	copy $INITRDS initrd-v8.img
-elif [ "$UNIVERSAL" = 1 ]; then
-	copy "$PI/initrd-6.18.50+rpt-rpi-v6.img" initrd-v6.img
-	copy "$PI/initrd-6.18.50+rpt-rpi-v7.img" initrd-v7.img
+has pi1 && copy "$PI/initrd-6.18.50+rpt-rpi-v6.img" initrd-v6.img
+has pi2 && copy "$PI/initrd-6.18.50+rpt-rpi-v7.img" initrd-v7.img
+if has pi4; then
 	copy "$PI2/initrd-arm64-v8.img" initrd-v8.img
-	copy "$STAGE2/kernel8.img" kernel8.img
 	copy "$STAGE2/start4.elf" start4.elf 2>/dev/null || true
 	copy "$STAGE2/fixup4.dat" fixup4.dat 2>/dev/null || true
-for d in bcm2711-rpi-4-b.dtb bcm2711-rpi-400.dtb bcm2712-rpi-5-b.dtb; do
-		[ -s "$STAGE2/$d" ] && copy "$STAGE2/$d" "$d"
-	done
-	# the x86 personality: standard UEFI fallback loader on the same FAT
-	if [ -n "$X86_UKI" ]; then
-		mmd -i "$out" ::/EFI ::/EFI/BOOT 2>/dev/null || true
-		copy "$X86_UKI" "EFI/BOOT/BOOTX64.EFI"
-	fi
-else
-	copy "$PI/initrd-6.18.50+rpt-rpi-v6.img" initrd-v6.img
-	copy "$PI/initrd-6.18.50+rpt-rpi-v7.img" initrd-v7.img
+fi
+# the x86 personality: standard UEFI fallback loader on the same FAT
+if [ -n "$X86_UKI" ]; then
+	mmd -i "$out" ::/EFI ::/EFI/BOOT 2>/dev/null || true
+	copy "$X86_UKI" "EFI/BOOT/BOOTX64.EFI"
 fi
 
 # config.txt: per-board kernel + initrd, serial console on (headless debug)
+# (generated once from the target set; --direct copies, image mode mcopies)
+{
+	echo "# Seedling appliance card — targets: $TARGETS"
+	has pi1 && printf '%s\n' '[pi1]' 'kernel=kernel.img' 'initramfs initrd-v6.img followkernel'
+	has pi2 && printf '%s\n' '[pi2]' 'kernel=kernel7.img' 'initramfs initrd-v7.img followkernel'
+	if has pi4; then
+		printf '%s\n' '[pi4]' 'kernel=kernel8.img' 'initramfs initrd-v8.img followkernel' 'arm_64bit=1'
+		printf '%s\n' '[pi5]' 'kernel=kernel8.img' 'initramfs initrd-v8.img followkernel' 'arm_64bit=1'
+	fi
+	printf '%s\n' '[all]' 'enable_uart=1' 'boot_delay=1'
+} > "$PI/.config.txt"
+# a card spanning both Pi arches cannot pin one manifest — unpinned,
+# the wrapper derives pi:32/pi:64 per board. Single-arch cards stay
+# pinned (frozen appliance) unless PI_UNPINNED=1.
+if { has pi4 && { has pi1 || has pi2; }; } || [ "${PI_UNPINNED:-0}" = 1 ]; then
+	printf '%s\n' "boot=bboot root=/dev/nbd0 console=serial0,115200 console=tty1 bb.npub=$NPUB bb.relays=$RELAY bb.servers=$SERVER" > "$PI/.cmdline.txt"
+else
+	printf '%s\n' "boot=bboot root=/dev/nbd0 console=serial0,115200 console=tty1 bb.manifest=$MANIFEST bb.npub=$NPUB bb.relays=$RELAY bb.servers=$SERVER" > "$PI/.cmdline.txt"
+fi
 if [ "$direct" = 1 ]; then
-	cat > "$mdir/config.txt" <<'EOF'
-# Seedling appliance card — Raspberry Pi 1/2
-[pi1]
-kernel=kernel.img
-initramfs initrd-v6.img followkernel
-[pi2]
-kernel=kernel7.img
-initramfs initrd-v7.img followkernel
-[all]
-enable_uart=1
-boot_delay=1
-EOF
-	printf '%s\n' "boot=bboot root=/dev/nbd0 console=serial0,115200 console=tty1 bb.manifest=$MANIFEST bb.npub=$NPUB bb.relays=$RELAY bb.servers=$SERVER" > "$mdir/cmdline.txt"	# wifi.conf: derived per-card PSK when PI_WIFI_SSID was set, else the
+	cp "$PI/.config.txt" "$mdir/config.txt"
+	cp "$PI/.cmdline.txt" "$mdir/cmdline.txt"
+	# wifi.conf: derived per-card PSK when PI_WIFI_SSID was set, else the
 	# shared creds (see the derived-PSK design note above)
 	[ -f "$PI/.wifi.conf" ] && cp "$PI/.wifi.conf" "$mdir/wifi.conf"
 	sync
 	umount "$mdir"; rmdir "$mdir"
 else
-	if [ "$UNIVERSAL" = 1 ]; then
-		printf '%s\n' \
-			'# Seedling appliance card — UNIVERSAL (Pi 1/2/4/5)' \
-			'# firmware picks kernel+initrd per board; the initrd wrapper' \
-			'# derives the pointer tag (pi:32/pi:64) from the running arch' \
-			'[pi1]' \
-			'kernel=kernel.img' \
-			'initramfs initrd-v6.img followkernel' \
-			'[pi2]' \
-			'kernel=kernel7.img' \
-			'initramfs initrd-v7.img followkernel' \
-			'[pi4]' \
-			'kernel=kernel8.img' \
-			'initramfs initrd-v8.img followkernel' \
-			'arm_64bit=1' \
-			'[pi5]' \
-			'kernel=kernel8.img' \
-			'initramfs initrd-v8.img followkernel' \
-			'arm_64bit=1' \
-			'[all]' \
-			'enable_uart=1' \
-			'boot_delay=1' > "$PI/.config.txt"
-	elif [ "$ARM64" = 1 ]; then
-		printf '%s\n' \
-			'# Seedling appliance card — Raspberry Pi 4/5 (aarch64)' \
-			'[pi4]' \
-			'kernel=kernel8.img' \
-			'initramfs initrd-v8.img followkernel' \
-			'[pi5]' \
-			'kernel=kernel8.img' \
-			'initramfs initrd-v8.img followkernel' \
-			'[all]' \
-			'arm_64bit=1' \
-			'enable_uart=1' \
-			'boot_delay=1' > "$PI/.config.txt"
-	else
-		printf '%s\n' \
-			'# Seedling appliance card — Raspberry Pi 1/2' \
-			'[pi1]' \
-			'kernel=kernel.img' \
-			'initramfs initrd-v6.img followkernel' \
-			'[pi2]' \
-			'kernel=kernel7.img' \
-			'initramfs initrd-v7.img followkernel' \
-			'[all]' \
-			'enable_uart=1' \
-			'boot_delay=1' > "$PI/.config.txt"
-	fi
-	if [ "$UNIVERSAL" = 1 ]; then
-		# unpinned by design: the wrapper derives pi:32/pi:64 per board
-		printf '%s\n' "boot=bboot root=/dev/nbd0 console=serial0,115200 console=tty1 bb.npub=$NPUB bb.relays=$RELAY bb.servers=$SERVER" > "$PI/.cmdline.txt"
-	else
-		printf '%s\n' "boot=bboot root=/dev/nbd0 console=serial0,115200 console=tty1 bb.manifest=$MANIFEST bb.npub=$NPUB bb.relays=$RELAY bb.servers=$SERVER" > "$PI/.cmdline.txt"
-	fi
 	mcopy -i "$out" "$PI/.config.txt" ::config.txt
 	mcopy -i "$out" "$PI/.cmdline.txt" ::cmdline.txt
 	if [ "$DET" = 1 ]; then
@@ -313,7 +272,8 @@ if [ "$direct" = 1 ]; then
 else
 	echo "wrote $out"
 fi
-echo "  pinned manifest: $MANIFEST"
+echo "  targets:         $TARGETS"
+echo "  pinned manifest: $MANIFEST${X86_UKI:+ (x86 side unpinned by its UKI)}"
 echo "  owner npub:      ${NPUB:0:16}…"
 echo "  pairing code:    $PAIRING_CODE (check this before granting the birth)"
 echo "  wifi:            $WIFI_MODE"

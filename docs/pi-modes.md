@@ -187,3 +187,29 @@ arch under one npub. PiKVM fits as additional tags (`pikvm:v2`,
 `pikvm:v3` …): the card stays universal, the HAT generation is chosen
 by which pointer the card follows — PiKVM's own kernels+overlays ride
 the card, their rootfs streams, certs live on STATE (see the playbook).
+
+## Target parameterization and the tradeoff matrix
+
+`--targets=pi1,pi2,pi4,x86` (old flags are aliases: `--arm64`=pi4,
+`--universal`=all four). Size auto-computes from payload. Measured:
+
+| card | image | build | boots |
+|---|---|---|---|
+| `--targets=pi1` | 256 MB | 12 s | Pi 1/Zero |
+| `--targets=pi4` | 256 MB | 12 s | Pi 4/5 (+3 with pi2) |
+| `--targets=x86` | 384 MB | 18 s | any x86 UEFI box |
+| `--universal` | 768 MB | 31 s | all of the above |
+
+**The boot-time answer: extra targets cost ZERO at boot.** Each
+machine's firmware loads only its own files by exact path (config.txt
+`[piN]` + `kernel=` on Pi, `\EFI\BOOT\BOOTX64.EFI` on UEFI) — the
+other targets' bytes are never read; the loaded initrd is byte-identical
+to a specialized card's. Costs are image size (dd time, ~30 s for the
+universal card on USB3) and build time only.
+
+Pinning rule: single-Pi-arch cards pin the manifest (frozen appliance);
+any card spanning both Pi arches is unpinned and self-selects via the
+arch tag (`PI_UNPINNED=1` forces it anywhere). The x86 UKI always
+carries its own embedded cmdline. Initrd/kernel artifacts are shared
+inputs across all flavors — building more card types does not rebuild
+them.
