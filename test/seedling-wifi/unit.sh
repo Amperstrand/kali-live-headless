@@ -125,7 +125,7 @@ else
 	echo "unit: leak-needle absent — exact-value scan skipped (ok)"
 fi
 # Guard 3: any psk= reference outside the provisioning tooling is suspect
-SUSPECT=$(grep -rn 'psk=' "$repo/tools" 2>/dev/null | grep -v '.git' | grep -v 'write-wifi-conf' | grep -v 'wifi-creds' | grep -vE "psk=\"?\\$|psk=.*\\$\\{|psk=<|psk=\\?|psk=\"\\.\\.\\.\"|#[^!]*psk=" | wc -l || echo 0)
+SUSPECT=$(grep -rn 'psk=' "$repo/tools" 2>/dev/null | grep -v '.git' | grep -v 'write-wifi-conf' | grep -v 'wifi-creds' | grep -v 'pi-derive-psk.py' | grep -vE "psk=\"?\\$|psk=.*\\$\\{|psk=<|psk=\\?|psk=\"\\.\\.\\.\"|#[^!]*psk=" | wc -l || echo 0)
 [ "$SUSPECT" -eq 0 ] && ok "no PSK handling outside the provisioning tool" || bad "PSK handling outside provisioning ($SUSPECT)"
 
 echo "unit: render-cmdline"

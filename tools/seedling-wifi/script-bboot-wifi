@@ -150,6 +150,7 @@ HWSIM=0
 for x in $(cat /proc/cmdline 2>/dev/null); do
 	case "$x" in
 		bb.nowifi|bb.nowifi=1) journal "bb.nowifi — wifi path skipped"; exit 0 ;;
+		bb.nowireless|bb.nowireless=1) journal "bb.nowireless — radio disabled, wired only, announcer kept"; exit 0 ;;
 		bb.wifi=*) WIFI_SPEC="${x#bb.wifi=}" ;;
 		bb.wifi.hwsim=1) HWSIM=1 ;;
 	esac
