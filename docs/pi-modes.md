@@ -213,3 +213,71 @@ arch tag (`PI_UNPINNED=1` forces it anywhere). The x86 UKI always
 carries its own embedded cmdline. Initrd/kernel artifacts are shared
 inputs across all flavors — building more card types does not rebuild
 them.
+
+## Secure Boot on x64: three supported approaches
+
+The UKI is the x86 boot target; Secure Boot is what makes the MACHINE
+(instead of the medium) the root of trust. All three approaches are
+supported; pick per machine.
+
+### 1. Own keys — PK/KEK/db all ours, no Microsoft (fleet default)
+
+- Mechanics: `sign-uki` (sbsign with the workspace db key) +
+  `make-sb-vars` for emulation; on real hardware enroll db/KEK/PK via
+  firmware setup or an automatable `dbupdate` EFI bundle (one-time).
+- Trust root: firmware keys + owner npub.
+- Protects: swapped media, tampered UKI — the firmware refuses anything
+  not signed by us, regardless of what's on the card/disk/network.
+- Cost: one enrollment interaction per machine; you are your own CA
+  (key hygiene is on us; the sb-keys stay out of the repo).
+- Tested: e2e stage `x86sb` — signed card boots the full chain, one
+  flipped byte is refused BY THE FIRMWARE.
+
+### 2. Shim + MOK (machines whose firmware you don't control)
+
+- Mechanics: the MS-signed shim (distro build) chains to our UKI; our
+  db cert is enrolled into MOK — the Machine Owner Key — via
+  MokManager, ONE-TIME per machine with a physical console interaction
+  (that manual step is the approach's inherent tradeoff, not an
+  implementation gap).
+- Trust root: Microsoft (db) + shim + MOK'd cert + owner npub.
+- Protects: tampered UKI (after MOK enrollment). Does NOT protect
+  against a swapped card carrying a differently-signed UKI unless that
+  key is also MOK'd.
+- Cost: the one-time MOK step; shim must stay current; your boundary
+  now includes Microsoft's CA (rare but real).
+- Tested: stage `x86shim` — headless coverage of the machine-checkable
+  parts (shim loads under an MS db; our UKI is refused without MOK).
+  The positive path is the documented one-time human enrollment.
+
+### 3. No Secure Boot (the card-is-root model)
+
+- Mechanics: nothing enrolled; the UKI is unsigned; our chain still
+  authenticates everything ABOVE it (signed pointer → hash-pinned
+  manifest → content-addressed chunks → per-boot unlock).
+- Trust root: the boot medium + owner npub — the same model the Pi
+  cards use (the card IS the pairing root).
+- Protects: the streamed system end-to-end; NOT the boot medium itself
+  (a swapped/tampered UKI executes).
+- Cost: zero setup. Coherent exactly when the medium is already
+  trusted.
+- Tested: stages `x86` (unsigned UKI boots) and `x86nosb` (a TAMPERED
+  UKI boots — proving the SB stages' refusal comes from SB, not from
+  some other breakage).
+
+### Choosing, and the x64-only upgrade path
+
+| | setup | root of trust | media swap | manual step |
+|---|---|---|---|---|
+| own keys | enroll once/machine | fw keys + npub | refused | firmware setup |
+| shim+MOK | MOK once/machine | MS + shim + npub | executes* | MokManager console |
+| no SB | none | medium + npub | executes | none |
+
+(*unless every authorized key is also MOK'd)
+
+Upgrade path unique to x64: TPM2 attestation-gated unlock (quote PCRs
+before the signer releases the image key) composes with any of the
+three and turns "trust the firmware config" into "prove the booted
+image" — testable with swtpm. SB itself never covers the firmware
+supply chain (Boot Guard territory) and physical firmware access can
+de-enroll keys: physical security remains an assumption everywhere.
