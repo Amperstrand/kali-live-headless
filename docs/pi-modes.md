@@ -129,3 +129,34 @@ brcmfmac, all 141 brcm firmware files, wpa_supplicant and iw (verified
 in the image); the radio path (hands-off wait → associate → DHCP over
 the air) is the same code proven nightly in the amd64 e2e `assoc`
 stage. Hardware-day assert: real brcm silicon.
+
+## The board matrix and the universal card
+
+| board | arch | kernels | initrd | native image |
+|---|---|---|---|---|
+| Pi 1 / Zero (1.x) | armv6l | kernel.img | initrd-v6.img | pi:32 pointer |
+| Pi 2 / 3 | armv7l | kernel7.img | initrd-v7.img | pi:32 pointer |
+| Pi 4 / 400 / CM4 | aarch64 | kernel8.img | initrd-v8.img | pi:64 pointer |
+| Pi 5 | aarch64 | kernel8.img | initrd-v8.img | pi:64 pointer |
+
+**`--universal` builds ONE card for all of them.** The mechanism, proven
+in QEMU for both arches (2026-11-14):
+
+1. The GPU firmware's `[piN]` config.txt filters pick the kernel and
+   initrd per board — that part is stock Raspberry Pi behavior.
+2. Our `bbootd-wrapper` derives the pointer tag from the RUNNING arch
+   (`uname -m`: armv6l/armv7l → `pi:32`, aarch64 → `pi:64`) when the
+   cmdline pins neither a manifest nor a tag, and passes the synthesized
+   cmdline via bbootd's `-cmdline` flag — `/proc/cmdline` untouched.
+3. The owner publishes both pointers under one npub; every board boots
+   its NATIVE userland from the same card. Evidence: `uni32.log`
+   ("looking up pi:32 … image pi-raspios-state … root mounted") and
+   `uni64.log` ("looking up pi:64 … image pi-raspios64 … root mounted").
+
+Card modes summary:
+- `--universal` — one card, any board, arch-native via pointer tags
+  (the fleet default; also the flash-and-walk-away option when you
+  don't know which Pi is in the drawer)
+- default (32-bit) / `--arm64` — single-family cards with a PINNED
+  manifest: frozen appliances, no pointer dependency
+- any mode + `PI_WIFI_SSID` — derived per-card PSK (see § Wi-Fi)

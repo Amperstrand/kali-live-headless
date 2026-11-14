@@ -23,6 +23,7 @@ for a in "$@"; do
 		--direct) direct=1; dev=$1 ;;
 		--deterministic) DET=1 ;;
 		--arm64) ARM64=1 ;;
+		--universal) UNIVERSAL=1 ;;
 	esac
 done
 [ -n "${size:-}" ] || size=512
@@ -45,7 +46,19 @@ DET_PART_GUID=${DET_PART_GUID:-17314945-0000-4000-8000-000017314945}
 DET_FAT_SERIAL=${DET_FAT_SERIAL:-17314944}
 
 SEED=${SEEDLING_DIR:-$HOME/src/seedling-m1}
-if [ "$ARM64" = 1 ]; then
+if [ "$UNIVERSAL" = 1 ]; then
+	# ONE card for every board generation: the firmware's [piN] filters
+	# pick kernel+initrd per board, and the wrapper's arch tag makes each
+	# board chase its NATIVE image (pi:32 / pi:64) — one unpinned card,
+	# no per-board flashing. Artifacts from BOTH arch trees.
+	PI=$SEED/pi
+	PI2=$SEED/pi64
+	STAGE=$PI/sd-boot-staging
+	STAGE2=$PI2/sd-boot-staging
+	KERNELS="kernel.img kernel7.img"
+	DTBS="bcm2708-rpi-b.dtb bcm2708-rpi-b-plus.dtb bcm2709-rpi-2-b.dtb"
+	INITRDS="$PI/initrd-6.18.50+rpt-rpi-v6.img $PI/initrd-6.18.50+rpt-rpi-v7.img"
+elif [ "$ARM64" = 1 ]; then
 	# Pi 4/5 (aarch64): kernel8.img + the arm64 initrd; firmware staged
 	# from an arm64 RPi OS image. One card serves ONE arch family — the
 	# streamed userland differs (arm64 vs the ARMv6 RPi OS 32-bit build).
@@ -68,6 +81,10 @@ done
 for f in $INITRDS; do
 	[ -s "$f" ] || { echo "missing $f (build in the arch chroot)" >&2; exit 1; }
 done
+if [ "$UNIVERSAL" = 1 ]; then
+	[ -s "$STAGE2/kernel8.img" ] || { echo "missing $STAGE2/kernel8.img" >&2; exit 1; }
+	[ -s "$PI2/initrd-arm64-v8.img" ] || { echo "missing pi64 initrd" >&2; exit 1; }
+fi
 
 # The Pi manifest to pin (444c48f5… = RPi OS 13 Lite with root login
 # enabled, packed 2026-11-13; the earlier c1e2cc41 build hit sulogin on
@@ -173,6 +190,16 @@ if [ -d "$STAGE/overlays" ]; then
 fi
 if [ "$ARM64" = 1 ]; then
 	copy $INITRDS initrd-v8.img
+elif [ "$UNIVERSAL" = 1 ]; then
+	copy "$PI/initrd-6.18.50+rpt-rpi-v6.img" initrd-v6.img
+	copy "$PI/initrd-6.18.50+rpt-rpi-v7.img" initrd-v7.img
+	copy "$PI2/initrd-arm64-v8.img" initrd-v8.img
+	copy "$STAGE2/kernel8.img" kernel8.img
+	copy "$STAGE2/start4.elf" start4.elf 2>/dev/null || true
+	copy "$STAGE2/fixup4.dat" fixup4.dat 2>/dev/null || true
+	for d in bcm2711-rpi-4-b.dtb bcm2711-rpi-400.dtb bcm2712-rpi-5-b.dtb; do
+		[ -s "$STAGE2/$d" ] && copy "$STAGE2/$d" "$d"
+	done
 else
 	copy "$PI/initrd-6.18.50+rpt-rpi-v6.img" initrd-v6.img
 	copy "$PI/initrd-6.18.50+rpt-rpi-v7.img" initrd-v7.img
@@ -192,14 +219,35 @@ initramfs initrd-v7.img followkernel
 enable_uart=1
 boot_delay=1
 EOF
-	printf '%s\n' "boot=bboot root=/dev/nbd0 console=serial0,115200 console=tty1 bb.manifest=$MANIFEST bb.npub=$NPUB bb.relays=$RELAY bb.servers=$SERVER" > "$mdir/cmdline.txt"
-	# wifi.conf: derived per-card PSK when PI_WIFI_SSID was set, else the
+	printf '%s\n' "boot=bboot root=/dev/nbd0 console=serial0,115200 console=tty1 bb.manifest=$MANIFEST bb.npub=$NPUB bb.relays=$RELAY bb.servers=$SERVER" > "$mdir/cmdline.txt"	# wifi.conf: derived per-card PSK when PI_WIFI_SSID was set, else the
 	# shared creds (see the derived-PSK design note above)
 	[ -f "$PI/.wifi.conf" ] && cp "$PI/.wifi.conf" "$mdir/wifi.conf"
 	sync
 	umount "$mdir"; rmdir "$mdir"
 else
-	if [ "$ARM64" = 1 ]; then
+	if [ "$UNIVERSAL" = 1 ]; then
+		printf '%s\n' \
+			'# Seedling appliance card — UNIVERSAL (Pi 1/2/4/5)' \
+			'# firmware picks kernel+initrd per board; the initrd wrapper' \
+			'# derives the pointer tag (pi:32/pi:64) from the running arch' \
+			'[pi1]' \
+			'kernel=kernel.img' \
+			'initramfs initrd-v6.img followkernel' \
+			'[pi2]' \
+			'kernel=kernel7.img' \
+			'initramfs initrd-v7.img followkernel' \
+			'[pi4]' \
+			'kernel=kernel8.img' \
+			'initramfs initrd-v8.img followkernel' \
+			'arm_64bit=1' \
+			'[pi5]' \
+			'kernel=kernel8.img' \
+			'initramfs initrd-v8.img followkernel' \
+			'arm_64bit=1' \
+			'[all]' \
+			'enable_uart=1' \
+			'boot_delay=1' > "$PI/.config.txt"
+	elif [ "$ARM64" = 1 ]; then
 		printf '%s\n' \
 			'# Seedling appliance card — Raspberry Pi 4/5 (aarch64)' \
 			'[pi4]' \
@@ -225,7 +273,12 @@ else
 			'enable_uart=1' \
 			'boot_delay=1' > "$PI/.config.txt"
 	fi
-	printf '%s\n' "boot=bboot root=/dev/nbd0 console=serial0,115200 console=tty1 bb.manifest=$MANIFEST bb.npub=$NPUB bb.relays=$RELAY bb.servers=$SERVER" > "$PI/.cmdline.txt"
+	if [ "$UNIVERSAL" = 1 ]; then
+		# unpinned by design: the wrapper derives pi:32/pi:64 per board
+		printf '%s\n' "boot=bboot root=/dev/nbd0 console=serial0,115200 console=tty1 bb.npub=$NPUB bb.relays=$RELAY bb.servers=$SERVER" > "$PI/.cmdline.txt"
+	else
+		printf '%s\n' "boot=bboot root=/dev/nbd0 console=serial0,115200 console=tty1 bb.manifest=$MANIFEST bb.npub=$NPUB bb.relays=$RELAY bb.servers=$SERVER" > "$PI/.cmdline.txt"
+	fi
 	mcopy -i "$out" "$PI/.config.txt" ::config.txt
 	mcopy -i "$out" "$PI/.cmdline.txt" ::cmdline.txt
 	if [ "$DET" = 1 ]; then

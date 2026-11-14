@@ -142,4 +142,22 @@ fi
 ) &
 
 exec >/run/bboot.out 2>&1
-BBOOT_CONSOLE=stdout exec /sbin/bbootd.real "$@"
+
+# --- universal-card arch tag: when the cmdline pins no manifest and no
+# d-tag, derive the pointer tag from the RUNNING arch so one unpinned
+# card boots every board generation on its NATIVE userland:
+# Pi 1/2/Zero (armv6l/armv7l) chase pi:32, Pi 4/5 (aarch64) chase pi:64.
+# The owner publishes both pointers under one npub. bbootd takes the
+# synthesized cmdline via its -cmdline flag (never touches /proc).
+CM=$(cat /proc/cmdline 2>/dev/null)
+case "$CM" in
+*bb.manifest=*|*bb.d=*)
+	BBOOT_CONSOLE=stdout exec /sbin/bbootd.real "$@"
+	;;
+esac
+case "$(uname -m)" in
+armv6l|armv7l) TAG=pi:32 ;;
+aarch64)       TAG=pi:64 ;;
+*)             TAG=bboot:default ;;
+esac
+BBOOT_CONSOLE=stdout exec /sbin/bbootd.real "$@" -cmdline "$CM bb.d=$TAG"
