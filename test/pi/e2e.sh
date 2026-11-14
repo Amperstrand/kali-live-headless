@@ -179,6 +179,86 @@ stage_x86sb() {
 	say "stage x86sb: PASS"
 }
 
+stage_x86nosb() {
+	# the control for the SB stages: the SAME tampered UKI must BOOT
+	# when Secure Boot is off — proving the x86sb refusal came from SB,
+	# not from a broken image or firmware path
+	local serial="$LOGDIR/pi-x86nosb-$TS.log" tampered="$TMPDIR/uki-nosb-$TS.efi"
+	local signed="$SEED/out/bboot-wifi-universal-signed.efi"
+	[ -s "$signed" ] || { say "stage x86nosb: signed UKI missing (run x86sb first)"; fail=$((fail + 1)); failed+=(x86nosb); return 1; }
+	cp "$signed" "$tampered"
+	printf '\x5a' | dd of="$tampered" bs=1 seek=100000 conv=notrunc status=none
+	local img="$TMPDIR/pi-nosb-$TS.img"
+	PI_X86_UKI="$tampered" bash "$here/make-pi-sd.sh" "$img" 0 --targets=x86 >/dev/null 2>&1 ||
+		{ say "stage x86nosb: card build failed"; fail=$((fail + 1)); failed+=(x86nosb); return 1; }
+	say "stage x86nosb: TAMPERED UKI + stock vars (SB off) — must boot (the control)"
+	cp /usr/share/edk2/x64/OVMF_VARS.4m.fd "$TMPDIR/vars-nosb-$TS.fd"
+	tmux kill-session -t pie2e-nosb 2>/dev/null; rm -f "$serial"
+	tmux new-session -d -s pie2e-nosb "timeout 900 qemu-system-x86_64 -m 2048 -smp 2 -enable-kvm \
+		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+		-drive if=pflash,format=raw,file=$TMPDIR/vars-nosb-$TS.fd \
+		-drive file=$img,format=raw,if=virtio -display none -serial file:$serial \
+		-netdev user,id=n1 -device virtio-net-pci,netdev=n1"
+	run_signer "$serial" x86nosb || { fail=$((fail + 1)); failed+=(x86nosb); return 1; }
+	wait_for "$serial" "root mounted" 600 x86nosb || { fail=$((fail + 1)); failed+=(x86nosb); return 1; }
+	say "stage x86nosb: tampered UKI booted without SB (root mounted) — control established"
+	rm -f "$img" "$tampered" "$TMPDIR/vars-nosb-$TS.fd"
+	say "stage x86nosb: PASS"
+}
+
+stage_x86shim() {
+	# shim + MOK: the MS-signed shim chains under a Microsoft db; our
+	# UKI (our cert) is refused WITHOUT the one-time MOK enrollment —
+	# the headless-machine-checkable part of that approach's tradeoff.
+	# Positive path = the documented one-time MokManager enrollment.
+	local serial="$LOGDIR/pi-x86shim-$TS.log"
+	local shim="$SEED/pi/shim/shimx64.efi"
+	local msvars="$SEED/pi/shim/vars-ms.fd"
+	if [ ! -s "$shim" ] || [ ! -s "$msvars" ]; then
+		say "stage x86shim: SKIP — stage shim/vars first (MS-signed shim + MS-cert vars); see docs/pi-modes.md §2"
+		return 1
+	fi
+	local signed="$SEED/out/bboot-wifi-universal-signed.efi"
+	[ -s "$signed" ] || { say "stage x86shim: signed UKI missing"; fail=$((fail + 1)); failed+=(x86shim); return 1; }
+	# shim (as BOOTX64.EFI) loads grubx64.efi next — our signed UKI takes
+	# that slot on the card
+	local img="$TMPDIR/pi-shim-$TS.img"
+	PI_X86_UKI="$signed" bash "$here/make-pi-sd.sh" "$img" 0 --targets=x86 >/dev/null 2>&1
+	# swap the UKI to grubx64.efi and put shim at the fallback path
+	local esp_start=2047 sect=$(( $(stat -c%s "$img") / 512 - 2048 + 1 ))
+	dd if="$img" of="$TMPDIR/shim-esp-$TS.img" bs=512 skip="$esp_start" count="$sect" status=none
+	mmove -i "$TMPDIR/shim-esp-$TS.img" ::/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/grubx64.efi 2>/dev/null
+	mcopy -i "$TMPDIR/shim-esp-$TS.img" "$shim" ::/EFI/BOOT/BOOTX64.EFI
+	dd if="$TMPDIR/shim-esp-$TS.img" of="$img" bs=512 seek="$esp_start" count="$sect" conv=notrunc status=none
+	say "stage x86shim: MS-signed shim + our UKI (as grubx64.efi), MS db, SB on — expect shim loads, UKI refused (no MOK)"
+	cp "$msvars" "$TMPDIR/vars-shim-$TS.fd"
+	tmux kill-session -t pie2e-shim 2>/dev/null; rm -f "$serial"
+	tmux new-session -d -s pie2e-shim "timeout 300 qemu-system-x86_64 \\
+		-machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on \\
+		-m 2048 -smp 2 -enable-kvm \\
+		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd \\
+		-drive if=pflash,format=raw,file=$TMPDIR/vars-shim-$TS.fd \\
+		-drive file=$img,format=raw,if=virtio -display none -serial file:$serial \\
+		-netdev user,id=n1 -device virtio-net-pci,netdev=n1"
+	local waited=0
+	while [ $waited -lt 240 ]; do
+		grep -qiE "access denied|security violation|rejected" "$serial" 2>/dev/null && break
+		grep -q "bboot:" "$serial" 2>/dev/null && break
+		sleep 10
+		waited=$((waited + 10))
+	done
+	if grep -q "bboot:" "$serial" 2>/dev/null; then
+		say "stage x86shim: UNEXPECTED — our UKI executed without MOK (verify the shim actually chained)"
+		fail=$((fail + 1)); failed+=(x86shim); return 1
+	fi
+	grep -qiE "access denied|security violation|rejected" "$serial" 2>/dev/null ||
+		{ say "stage x86shim: FAILED — no execution AND no rejection evidence (what happened?)"; fail=$((fail + 1)); failed+=(x86shim); return 1; }
+	say "stage x86shim: evidence (the firmware/shim refusal):"
+	grep -iE "access denied|security violation|rejected" "$serial" 2>/dev/null | head -2 | sed 's/^/    /'
+	rm -f "$img" "$TMPDIR/shim-esp-$TS.img" "$TMPDIR/vars-shim-$TS.fd"
+	say "stage x86shim: PASS (refusal without MOK; positive = documented one-time enrollment)"
+}
+
 stage_arm64() {
 	local serial="$LOGDIR/pi-arm64-$TS.log"
 	say "stage arm64: arm64 kernel + the arm64 card initrd (unpinned)"
@@ -200,6 +280,8 @@ for s in $STAGES; do
 	case $s in
 	x86) stage_x86 && pass=$((pass + 1)) ;;
 	x86sb) stage_x86sb && pass=$((pass + 1)) ;;
+	x86nosb) stage_x86nosb && pass=$((pass + 1)) ;;
+	x86shim) stage_x86shim && pass=$((pass + 1)) ;;
 	armhf) stage_armhf && pass=$((pass + 1)) ;;
 	arm64) stage_arm64 && pass=$((pass + 1)) ;;
 	*) say "unknown stage $s"; exit 2 ;;
