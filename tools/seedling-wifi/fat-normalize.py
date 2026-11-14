@@ -43,7 +43,10 @@ class Fat:
         self.root_off = self.fat_off + self.nfats * self.fat_sz * self.bps
         self.root_bytes = root_cnt * 32
         self.data_off = self.root_off + (self.root_bytes if not self.is32 else 0)
+        self.fat_end = self.fat_off + self.nfats * self.fat_sz * self.bps
         self.clus_bytes = self.spc * self.bps
+        # cluster-range guard: valid data clusters are 2 .. 2+n-1
+        self.n_clusters = 2 + max(0, (len(img) - self.data_off) // self.clus_bytes) if self.clus_bytes else 2
         if self.is32:
             self.eoc = 0x0FFFFFF8
             self.fat_ent = self._fat32
@@ -70,7 +73,11 @@ def normalize(path: str, epoch: int) -> int:
 
         def fix_entry(off: int) -> int:
             nonlocal fixed
-            if off < fs.data_off or off + 32 > len(img):  # never touch FAT/root meta
+            # never write into the FAT tables or reserved sectors; the
+            # FAT16 root dir region (between FATs and data) IS a legal
+            # directory — found by the pi1 deterministic unit test: the
+            # old data_off guard skipped it entirely (FAT32 was fine)
+            if off < fs.fat_end or off + 32 > len(img):
                 return
             first = img[off]
             if first in (0x00, 0xE5):
@@ -108,7 +115,16 @@ def normalize(path: str, epoch: int) -> int:
                     and attr & 0x10
                     and name not in (b".          ", b"..         ")
                 ):
-                    subdirs.append(struct.unpack_from("<H", img, e + 26)[0])
+                    # subdir first cluster: 32-bit on FAT32 (high at
+                    # +20, low at +26) — reading only +26 as <H sent the
+                    # walk into bogus low clusters on large images
+                    # (subdirs allocated past cluster 65535), making it
+                    # grind the whole FAT (found: the universal-card
+                    # determinism test)
+                    cl = struct.unpack_from("<H", img, e + 26)[0]
+                    if fs.is32:
+                        cl |= struct.unpack_from("<H", img, e + 20)[0] << 16
+                    subdirs.append(cl)
             return subdirs
 
         if fs.is32:
@@ -118,7 +134,7 @@ def normalize(path: str, epoch: int) -> int:
         seen = set()
         while pending:
             c = pending.pop()
-            while 2 <= c < fs.eoc and c not in seen:
+            while 2 <= c < fs.eoc and c not in seen and c < fs.n_clusters:
                 seen.add(c)
                 off = fs.cluster_off(c)
                 pending += walk_dir(off, fs.clus_bytes)

@@ -183,10 +183,13 @@ fi
 # deterministic mode: pin every file mtime that lands in FAT dir entries
 if [ "$DET" = 1 ]; then
 	find "$STAGE" -maxdepth 1 -type f -exec touch -d "@$PI_EPOCH" {} +
-	for f in "$PI/initrd-6.18.50+rpt-rpi-v6.img" "$PI/initrd-6.18.50+rpt-rpi-v7.img"; do
-		touch -d "@$PI_EPOCH" "$f"
+	[ -d "$STAGE2" ] && find "$STAGE2" -maxdepth 1 -type f -exec touch -d "@$PI_EPOCH" {} +
+	for f in "$PI/initrd-6.18.50+rpt-rpi-v6.img" "$PI/initrd-6.18.50+rpt-rpi-v7.img" \
+		"$PI2/initrd-arm64-v8.img"; do
+		[ -s "$f" ] && touch -d "@$PI_EPOCH" "$f"
 	done
 	touch -d "@$PI_EPOCH" "$PI/.pairing.txt"
+	[ -f "$PI/.wifi.conf" ] && touch -d "@$PI_EPOCH" "$PI/.wifi.conf"
 fi
 
 copy() { # copy host-file → boot-partition path
