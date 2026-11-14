@@ -18,7 +18,7 @@ tpl=$here/cmdline.template
 # defaults (QEMU constants — safe to have here)
 MANIFEST=${MANIFEST:?set MANIFEST (workspace wifi-env.sh)}
 NPUB=${NPUB:?set NPUB (workspace wifi-env.sh)}
-gateway=10.0.2.2
+gateway=${GATEWAY:-10.0.2.2}
 # NTP for dead-RTC machines: public pools by default; a LAN router (if
 # set in the workspace env) goes first — never in the repo template
 ntp_servers="pool.ntp.org,time.cloudflare.com"
@@ -75,6 +75,14 @@ case "$variant" in
 		# event", found via the update stage).
 		consoles="console=ttyS0,115200"
 		extra="bb.d=bboot:m1"
+		server=$gateway:8443
+		;;
+	universal)
+		# the anything-card UKI: no manifest AND no d-tag — the wrapper
+		# derives the pointer tag from the RUNNING arch (x86_64 here;
+		# the Pi initrds map to pi:32/pi:64). One medium, every machine.
+		consoles="console=ttyS0,115200"
+		extra=""
 		server=$gateway:8443
 		;;
 	stall)
@@ -140,7 +148,7 @@ line=$(sed -e "s|@CONSOLES@|$consoles|" \
 	-e "s|@RELAYS@|wss://$server|" \
 	-e "s|@SERVERS@|${srv_list:-https://$server}|" \
 	-e "s|@NTP@|$ntp_servers|" "$tpl")
-if [ "$variant" = pointer ]; then
+if [ "$variant" = pointer ] || [ "$variant" = universal ]; then
 	line=$(printf '%s' "$line" | sed 's|bb.manifest=[^ ]* ||')
 fi
 line=$(echo "$line" | tr -s ' ' | sed 's| $||')

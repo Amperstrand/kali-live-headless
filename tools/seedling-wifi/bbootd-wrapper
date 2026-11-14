@@ -158,6 +158,7 @@ esac
 case "$(uname -m)" in
 armv6l|armv7l) TAG=pi:32 ;;
 aarch64)       TAG=pi:64 ;;
+x86_64)        TAG=x86_64 ;;
 *)             TAG=bboot:default ;;
 esac
 BBOOT_CONSOLE=stdout exec /sbin/bbootd.real "$@" -cmdline "$CM bb.d=$TAG"

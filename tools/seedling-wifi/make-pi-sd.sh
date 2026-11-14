@@ -84,6 +84,11 @@ done
 if [ "$UNIVERSAL" = 1 ]; then
 	[ -s "$STAGE2/kernel8.img" ] || { echo "missing $STAGE2/kernel8.img" >&2; exit 1; }
 	[ -s "$PI2/initrd-arm64-v8.img" ] || { echo "missing pi64 initrd" >&2; exit 1; }
+	# the x86 half of the anything-card (optional): a UKI at the standard
+	# UEFI fallback path makes the same medium boot any x86 box; UEFI
+	# ignores the Pi files, the Pi firmware ignores the EFI dir.
+	X86_UKI=${PI_X86_UKI:-$SEED/out/bboot-wifi-universal.efi}
+	[ -s "$X86_UKI" ] || X86_UKI=""
 fi
 
 # The Pi manifest to pin (444c48f5… = RPi OS 13 Lite with root login
@@ -110,7 +115,13 @@ else
 	# build a standalone FAT image, then place it at the partition start
 	truncate -s "${size}M" "$out"
 	sgdisk -o "$out" >/dev/null
-	sgdisk -n 1:2048:0 -t 1:0700 -c 1:"BBOOT" "$out" >/dev/null
+	if [ "$UNIVERSAL" = 1 ]; then
+		# EFI System type: UEFI boots the UKI; the Pi firmware does not
+		# care about partition type codes
+		sgdisk -n 1:2048:0 -t 1:ef00 -c 1:"BBOOT" "$out" >/dev/null
+	else
+		sgdisk -n 1:2048:0 -t 1:0700 -c 1:"BBOOT" "$out" >/dev/null
+	fi
 	if [ "$DET" = 1 ]; then
 		sgdisk -U "$DET_DISK_GUID" "$out" >/dev/null
 		sgdisk -u "1:$DET_PART_GUID" "$out" >/dev/null
@@ -197,9 +208,14 @@ elif [ "$UNIVERSAL" = 1 ]; then
 	copy "$STAGE2/kernel8.img" kernel8.img
 	copy "$STAGE2/start4.elf" start4.elf 2>/dev/null || true
 	copy "$STAGE2/fixup4.dat" fixup4.dat 2>/dev/null || true
-	for d in bcm2711-rpi-4-b.dtb bcm2711-rpi-400.dtb bcm2712-rpi-5-b.dtb; do
+for d in bcm2711-rpi-4-b.dtb bcm2711-rpi-400.dtb bcm2712-rpi-5-b.dtb; do
 		[ -s "$STAGE2/$d" ] && copy "$STAGE2/$d" "$d"
 	done
+	# the x86 personality: standard UEFI fallback loader on the same FAT
+	if [ -n "$X86_UKI" ]; then
+		mmd -i "$out" ::/EFI ::/EFI/BOOT 2>/dev/null || true
+		copy "$X86_UKI" "EFI/BOOT/BOOTX64.EFI"
+	fi
 else
 	copy "$PI/initrd-6.18.50+rpt-rpi-v6.img" initrd-v6.img
 	copy "$PI/initrd-6.18.50+rpt-rpi-v7.img" initrd-v7.img

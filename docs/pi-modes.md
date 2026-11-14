@@ -160,3 +160,30 @@ Card modes summary:
 - default (32-bit) / `--arm64` — single-family cards with a PINNED
   manifest: frozen appliances, no pointer dependency
 - any mode + `PI_WIFI_SSID` — derived per-card PSK (see § Wi-Fi)
+
+## The anything-card: Pi 1/2/4/5 + any x86 box, one medium
+
+`make-pi-sd.sh --universal` (900 MB class) now also carries
+`EFI/BOOT/BOOTX64.EFI` — the unpinned x86 UKI — on the same FAT
+partition (typed EFI System). UEFI boots the UKI and ignores the Pi
+files; the Pi firmware boots config.txt and ignores the EFI dir. The
+wrapper's arch map does the rest:
+
+| machine | boot path | uname | chases | boots |
+|---|---|---|---|---|
+| Pi 1/Zero | GPU fw → kernel.img | armv6l | pi:32 | RPi OS 32-bit |
+| Pi 2/3 | GPU fw → kernel7.img | armv7l | pi:32 | RPi OS 32-bit |
+| Pi 4/5 | GPU fw → kernel8.img | aarch64 | pi:64 | RPi OS 64-bit |
+| any x86 UEFI | UKI | x86_64 | x86_64 | the amd64 image |
+
+All three proven in QEMU (uni32.log, uni64.log, unix86.log — the last
+one boots the CARD IMAGE itself as a disk under OVMF: UKI → x86_64 tag
+→ pointer → unlock → root mounted). The card works from an SD slot and
+from a USB reader alike — same bytes.
+
+The x86 UKI is built unpinned (`build-uki --variant universal`,
+GATEWAY env for the LAN server); the owner publishes one pointer per
+arch under one npub. PiKVM fits as additional tags (`pikvm:v2`,
+`pikvm:v3` …): the card stays universal, the HAT generation is chosen
+by which pointer the card follows — PiKVM's own kernels+overlays ride
+the card, their rootfs streams, certs live on STATE (see the playbook).
