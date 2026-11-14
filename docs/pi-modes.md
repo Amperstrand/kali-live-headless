@@ -70,3 +70,47 @@ flaky upstream — use the Debian/RPi OS modes there.
   `nixos-dev`, …) = many functions, switched by event.
 - Mixed fleets: Pi 1/2 cards follow `pi:32`, Pi 4/5 cards follow
   `pi:64` — same owner, per-arch pointers.
+
+## The pairing code: fingerprint, not password
+
+`PAIRING_CODE = sha256(pairing-secret)[:8]` — a **display fingerprint**
+for the human granting the birth (TOFU check), in the same family as
+Signal safety numbers or SSH key fingerprints. It is NOT the secret and
+NOT an input to any key derivation.
+
+- The secret is the 128-bit random value on the card; identity derives
+  as HKDF(secret, board-serial). Brute-forcing the 8-hex code reveals
+  nothing about the secret (preimage resistance) — there is nothing to
+  "crack open".
+- What the code defends: approving the WRONG birth. A rogue device's
+  birth matches the expected code with p = 2⁻³² per attempt (was 2⁻²⁴
+  with 6 hex; bumped — cheap). The legitimate birth also simply arrives
+  first in the normal case.
+- Residual risk: an attacker spamming births against an AUTO-granting
+  daemon. Rule: first grants are human-confirmed (the code check IS the
+  confirmation step); repeated mismatches rate-limit the announcer.
+- What nothing defends (by the stated threat model): cloning the card
+  copies the pairing root wholesale — the card IS the root of trust,
+  exactly like a YubiKey.
+
+## Wi-Fi on the Pi 4/5: where the PSK lives, and wifi boot
+
+The PSK sits in `wifi.conf` on the card's FAT partition — **plaintext,
+exactly like every standard Raspberry Pi setup** (wpa_supplicant.conf on
+a world-readable boot partition is the ecosystem default). It is also
+redundant with the threat model: the card already carries the pairing
+root; hiding the PSK on the same medium protects nothing the model
+promises to protect.
+
+Wifi boot IS wired for the Pi 4/5: the arm64 initrd carries brcmfmac,
+all 141 brcm firmware files, wpa_supplicant and iw (verified in the
+image); the premount script's radio path (hands-off wait → associate →
+DHCP over the air) is the same code proven nightly in the amd64 e2e
+`assoc` stage. Untouched-by-hardware caveat applies as everywhere else.
+
+If the PSK-off-the-card property ever matters, the clean design is a
+**signed config chunk**: wifi.conf as an owner-signed (or image-key-
+encrypted) blob fetched from Blossom after the wired/first unlock —
+the secret then never touches removable media. Note the bootstrapping
+tradeoff: the first boot still needs a network to fetch the config, so
+first-boot-wired is the honest sequencing.
