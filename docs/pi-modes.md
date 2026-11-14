@@ -93,24 +93,39 @@ NOT an input to any key derivation.
   copies the pairing root wholesale — the card IS the root of trust,
   exactly like a YubiKey.
 
-## Wi-Fi on the Pi 4/5: where the PSK lives, and wifi boot
+## Wi-Fi on the Pi 4/5: the card-resident credential, by design
 
-The PSK sits in `wifi.conf` on the card's FAT partition — **plaintext,
-exactly like every standard Raspberry Pi setup** (wpa_supplicant.conf on
-a world-readable boot partition is the ecosystem default). It is also
-redundant with the threat model: the card already carries the pairing
-root; hiding the PSK on the same medium protects nothing the model
-promises to protect.
+Wifi boot REQUIRES the PSK before the network exists — so it must live
+on the card. The design embraces that instead of fighting it:
 
-Wifi boot IS wired for the Pi 4/5: the arm64 initrd carries brcmfmac,
-all 141 brcm firmware files, wpa_supplicant and iw (verified in the
-image); the premount script's radio path (hands-off wait → associate →
-DHCP over the air) is the same code proven nightly in the amd64 e2e
-`assoc` stage. Untouched-by-hardware caveat applies as everywhere else.
+**Derived per-card PSK.** `psk = HKDF-SHA256(pairing-secret,
+"klh-pi-wifi/v1")` (`pi-derive-psk.py`) — the PSK is a *view* of the
+pairing root, not a second secret:
 
-If the PSK-off-the-card property ever matters, the clean design is a
-**signed config chunk**: wifi.conf as an owner-signed (or image-key-
-encrypted) blob fetched from Blossom after the wired/first unlock —
-the secret then never touches removable media. Note the bootstrapping
-tradeoff: the first boot still needs a network to fetch the config, so
-first-boot-wired is the honest sequencing.
+- **nothing new is stored** — the pairing secret was already the root
+  of trust; the PSK adds zero secret surface to the card
+- **per-card for free** — every card gets a distinct PSK, so a stolen
+  card means deleting ONE station key on the AP, never re-keying the
+  fleet (needs a Multi-PSK capable AP; OpenWrt and most managed APs
+  have it)
+- **rotates with the card** — a rebuilt card has a new PSK and a new
+  machine identity together; no orphaned credentials
+- **raw 64-hex form** (`psk=<hex>`, unquoted) — no passphrase PBKDF2,
+  no human-guessable surface, standard wpa_supplicant syntax
+- **provisioning** at build time: `make-pi-sd.sh PI_WIFI_SSID=…` derives
+  and embeds it and prints the AP provisioning line; without
+  `PI_WIFI_SSID` the shared `wifi-creds` file is copied verbatim (the
+  fleet-shared-PSK mode: leak = rotate everywhere)
+
+**Why not encrypt wifi.conf on the card?** The key and the ciphertext
+would live on the same medium — security theater. The honest framing:
+a wifi PSK is a *revocable, per-card, network-access* credential; the
+identity credentials (pairing root, npub grant) are separate and
+unaffected by its loss. Stolen card = AP-side PSK delete + owner-side
+unlock refusal; nothing else to rotate.
+
+Wifi boot is wired end-to-end for the Pi 4/5: the arm64 initrd carries
+brcmfmac, all 141 brcm firmware files, wpa_supplicant and iw (verified
+in the image); the radio path (hands-off wait → associate → DHCP over
+the air) is the same code proven nightly in the amd64 e2e `assoc`
+stage. Hardware-day assert: real brcm silicon.

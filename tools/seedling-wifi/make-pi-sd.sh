@@ -120,8 +120,30 @@ if [ -n "${PI_PAIRING:-}" ]; then
 else
 	PAIRING=$(head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')
 fi
-PAIRING_CODE=$(printf '%s' "$PAIRING" | sha256sum | cut -c1-6)
+# 8 hex chars = 32 bits of DISPLAY fingerprint (see docs/pi-modes.md:
+# this is a TOFU check for the human, NOT the secret — the secret is the
+# 128-bit pairing value; the code is sha256(secret)[:8] so a rogue birth
+# matches by chance with p=2^-32 per attempt)
+PAIRING_CODE=$(printf '%s' "$PAIRING" | sha256sum | cut -c1-8)
 printf 'pairing-secret=%s\n' "$PAIRING" > "$PI/.pairing.txt"
+
+# --- card-resident wifi credentials (the derived-PSK design) ---
+# wifi boot REQUIRES the PSK pre-network, so it lives on the card. With
+# PI_WIFI_SSID set, the PSK is DERIVED from the pairing secret
+# (pi-derive-psk.py): nothing new is stored, it is per-card (AP-side
+# revocation of one card, never a fleet re-key), and it rotates with the
+# card. Without it, the shared wifi-creds file is copied verbatim (the
+# fleet-shared-PSK mode: leak = rotate everywhere).
+if [ -n "${PI_WIFI_SSID:-}" ]; then
+	python3 "$here/pi-derive-psk.py" "$PAIRING" |
+		sed "s/YOURSSID/$PI_WIFI_SSID/" > "$PI/.wifi.conf"
+	WIFI_MODE="derived per-card PSK (revocable AP-side)"
+elif [ -f "$SEED/wifi-creds" ]; then
+	cp "$SEED/wifi-creds" "$PI/.wifi.conf"
+	WIFI_MODE="shared fleet PSK (copied from wifi-creds)"
+else
+	WIFI_MODE="none (wired boot)"
+fi
 
 # deterministic mode: pin every file mtime that lands in FAT dir entries
 if [ "$DET" = 1 ]; then
@@ -144,6 +166,7 @@ for f in bootcode.bin start.elf fixup.dat fixup_cd.dat fixup4.dat fixup4cd.dat f
 	[ -s "$STAGE/$f" ] && copy "$STAGE/$f" "$f"
 done
 for d in $DTBS; do copy "$STAGE/$d" "$d"; done
+[ -f "$PI/.wifi.conf" ] && copy "$PI/.wifi.conf" wifi.conf
 copy "$PI/.pairing.txt" pairing.txt
 if [ -d "$STAGE/overlays" ]; then
 	if [ "$direct" = 1 ]; then cp -r "$STAGE/overlays" "$mdir/"; else mcopy -i "$out" -s "$STAGE/overlays" ::; fi
@@ -170,8 +193,9 @@ enable_uart=1
 boot_delay=1
 EOF
 	printf '%s\n' "boot=bboot root=/dev/nbd0 console=serial0,115200 console=tty1 bb.manifest=$MANIFEST bb.npub=$NPUB bb.relays=$RELAY bb.servers=$SERVER" > "$mdir/cmdline.txt"
-	# wifi.conf if a dongle path is ever wanted
-	[ -f "$SEED/wifi-creds" ] && cp "$SEED/wifi-creds" "$mdir/wifi.conf"
+	# wifi.conf: derived per-card PSK when PI_WIFI_SSID was set, else the
+	# shared creds (see the derived-PSK design note above)
+	[ -f "$PI/.wifi.conf" ] && cp "$PI/.wifi.conf" "$mdir/wifi.conf"
 	sync
 	umount "$mdir"; rmdir "$mdir"
 else
@@ -223,6 +247,7 @@ fi
 echo "  pinned manifest: $MANIFEST"
 echo "  owner npub:      ${NPUB:0:16}…"
 echo "  pairing code:    $PAIRING_CODE (check this before granting the birth)"
+echo "  wifi:            $WIFI_MODE"
 if [ "$DET" = 1 ]; then
 	echo "  deterministic build (epoch $PI_EPOCH):"
 	echo "    image sha256:  $(sha256sum "$out" | cut -d' ' -f1)"
