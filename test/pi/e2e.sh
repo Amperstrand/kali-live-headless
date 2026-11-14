@@ -82,7 +82,7 @@ stage_x86() {
 	cp /usr/share/edk2/x64/OVMF_VARS.4m.fd "$TMPDIR/vars-$TS.fd"
 	tmux kill-session -t pie2e-x86 2>/dev/null; rm -f "$serial"
 	tmux new-session -d -s pie2e-x86 "timeout 900 qemu-system-x86_64 -m 2048 -smp 2 -enable-kvm \
-		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd \
 		-drive if=pflash,format=raw,file=$TMPDIR/vars-$TS.fd \
 		-drive file=$img,format=raw,if=virtio -display none -serial file:$serial \
 		-netdev user,id=n1 -device virtio-net-pci,netdev=n1"
@@ -111,6 +111,74 @@ stage_armhf() {
 	say "stage armhf: PASS"
 }
 
+stage_x86sb() {
+	# Secure Boot for the x86 half of the card: sign the universal UKI,
+	# boot the CARD under OVMF with our db/KEK/PK enrolled (no Microsoft),
+	# then prove a one-byte tamper is refused by the FIRMWARE — the trust
+	# root moves from the removable card into the machine itself.
+	local serial="$LOGDIR/pi-x86sb-$TS.log" serial_t="$LOGDIR/pi-x86sb-$TS.tampered.log"
+	local signed="$SEED/out/bboot-wifi-universal-signed.efi" tampered="$TMPDIR/uki-tampered-$TS.efi"
+	command -v sbsign >/dev/null || { say "stage x86sb: sbsign missing"; fail=$((fail + 1)); failed+=(x86sb); return 1; }
+	command -v virt-fw-vars >/dev/null || { say "stage x86sb: virt-fw-vars missing"; fail=$((fail + 1)); failed+=(x86sb); return 1; }
+	[ -f /usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd ] || { say "stage x86sb: secboot OVMF missing"; fail=$((fail + 1)); failed+=(x86sb); return 1; }
+	[ -s "$SEED/sb-keys/db.key" ] || bash "$here/klh-seedling-wifi.sh" sign-uki --variant universal >/dev/null 2>&1 ||
+		{ say "stage x86sb: signing failed"; fail=$((fail + 1)); failed+=(x86sb); return 1; }
+	bash "$here/klh-seedling-wifi.sh" sign-uki --variant universal >/dev/null 2>&1 ||
+		{ say "stage x86sb: sign-uki failed"; fail=$((fail + 1)); failed+=(x86sb); return 1; }
+	[ -s "$signed" ] || { say "stage x86sb: signed UKI missing"; fail=$((fail + 1)); failed+=(x86sb); return 1; }
+	bash "$here/klh-seedling-wifi.sh" make-sb-vars "$SEED/qemu-m1/vars-sb.fd" >/dev/null 2>&1 ||
+		{ say "stage x86sb: make-sb-vars failed"; fail=$((fail + 1)); failed+=(x86sb); return 1; }
+
+	# 1. the signed card must boot the full chain under SB
+	local img="$TMPDIR/pi-sb-$TS.img"
+	PI_X86_UKI="$signed" bash "$here/make-pi-sd.sh" "$img" 0 --targets=x86 >/dev/null 2>&1 ||
+		{ say "stage x86sb: card build failed"; fail=$((fail + 1)); failed+=(x86sb); return 1; }
+	cp "$SEED/qemu-m1/vars-sb.fd" "$TMPDIR/vars-sb-$TS.fd"
+	say "stage x86sb: booting the SIGNED card under Secure Boot (own PK/KEK/db, no Microsoft)"
+	tmux kill-session -t pie2e-x86sb 2>/dev/null; rm -f "$serial"
+	tmux new-session -d -s pie2e-x86sb "timeout 900 qemu-system-x86_64 \
+		-machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on \
+		-m 2048 -smp 2 -enable-kvm \
+		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd \
+		-drive if=pflash,format=raw,file=$TMPDIR/vars-sb-$TS.fd \
+		-drive file=$img,format=raw,if=virtio -display none -serial file:$serial \
+		-netdev user,id=n1 -device virtio-net-pci,netdev=n1"
+	run_signer "$serial" x86sb || { fail=$((fail + 1)); failed+=(x86sb); return 1; }
+	wait_for "$serial" "root mounted" 600 x86sb || { fail=$((fail + 1)); failed+=(x86sb); return 1; }
+	say "stage x86sb: signed evidence:"
+	grep -E "looking up x86_64|image key accepted|root mounted" "$serial" | head -3 | sed 's/^/    /'
+
+	# 2. one flipped byte in the UKI -> the FIRMWARE must refuse to boot it
+	cp "$signed" "$tampered"
+	printf '\x5a' | dd of="$tampered" bs=1 seek=100000 conv=notrunc status=none
+	local imgt="$TMPDIR/pi-sb-tampered-$TS.img"
+	PI_X86_UKI="$tampered" bash "$here/make-pi-sd.sh" "$imgt" 0 --targets=x86 >/dev/null 2>&1
+	cp "$SEED/qemu-m1/vars-sb.fd" "$TMPDIR/vars-sbt-$TS.fd"
+	rm -f "$serial_t"
+	tmux kill-session -t pie2e-x86sbt 2>/dev/null
+	tmux new-session -d -s pie2e-x86sbt "timeout 240 qemu-system-x86_64 \
+		-machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on \
+		-m 2048 -smp 2 -enable-kvm \
+		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd \
+		-drive if=pflash,format=raw,file=$TMPDIR/vars-sbt-$TS.fd \
+		-drive file=$imgt,format=raw,if=virtio -display none -serial file:$serial_t \
+		-netdev user,id=n1 -device virtio-net-pci,netdev=n1"
+	local waited=0
+	while [ $waited -lt 180 ]; do
+		grep -qiE "security violation|secure boot.*violat|image.*rejected" "$serial_t" 2>/dev/null && break
+		grep -q "bboot:" "$serial_t" 2>/dev/null && break
+		sleep 10
+		waited=$((waited + 10))
+	done
+	if grep -q "bboot:" "$serial_t" 2>/dev/null; then
+		say "stage x86sb: FAILED — TAMPERED UKI executed (firmware did not enforce)"
+		fail=$((fail + 1)); failed+=(x86sb); return 1
+	fi
+	say "stage x86sb: tampered UKI refused by firmware (no bboot execution; waited ${waited}s)"
+	rm -f "$img" "$imgt" "$tampered" "$TMPDIR/vars-sb-$TS.fd" "$TMPDIR/vars-sbt-$TS.fd"
+	say "stage x86sb: PASS"
+}
+
 stage_arm64() {
 	local serial="$LOGDIR/pi-arm64-$TS.log"
 	say "stage arm64: arm64 kernel + the arm64 card initrd (unpinned)"
@@ -131,6 +199,7 @@ need
 for s in $STAGES; do
 	case $s in
 	x86) stage_x86 && pass=$((pass + 1)) ;;
+	x86sb) stage_x86sb && pass=$((pass + 1)) ;;
 	armhf) stage_armhf && pass=$((pass + 1)) ;;
 	arm64) stage_arm64 && pass=$((pass + 1)) ;;
 	*) say "unknown stage $s"; exit 2 ;;
