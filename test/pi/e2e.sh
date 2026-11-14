@@ -61,7 +61,9 @@ wait_for() { # serial pattern timeout_s label
 
 run_signer() { # serial label — self-contained unlock (the amd64-e2e pattern)
 	local serial=$1 label=$2 uri
-	wait_for "$serial" "nostrconnect://" 300 "$label-signer" || return 1
+	# 900s: TCG boots take 6-10 min to reach the unlock (the 300s cut
+	# failed a healthy armhf boot — found by the first harness run)
+	wait_for "$serial" "nostrconnect://" 900 "$label-signer" || return 1
 	uri=$(grep -oP 'nostrconnect://\S+' "$serial" | head -1)
 	say "stage $label: answering unlock $uri"
 	SSL_CERT_FILE="$SEED/testenv-m1/pki/ca.crt" \
