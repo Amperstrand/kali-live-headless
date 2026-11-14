@@ -16,12 +16,13 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 
-out=${1:?usage: make-pi-sd.sh <out.img|device> [size-mb|--direct|--deterministic]}
-direct=0 size=${2:-512} DET=0
+out=${1:?usage: make-pi-sd.sh <out.img|device> [size-mb|--direct|--deterministic|--arm64]}
+direct=0 size=${2:-512} DET=0 ARM64=0
 for a in "$@"; do
 	case "$a" in
 		--direct) direct=1; dev=$1 ;;
 		--deterministic) DET=1 ;;
+		--arm64) ARM64=1 ;;
 	esac
 done
 [ -n "${size:-}" ] || size=512
@@ -44,15 +45,28 @@ DET_PART_GUID=${DET_PART_GUID:-17314945-0000-4000-8000-000017314945}
 DET_FAT_SERIAL=${DET_FAT_SERIAL:-17314944}
 
 SEED=${SEEDLING_DIR:-$HOME/src/seedling-m1}
-PI=$SEED/pi
+if [ "$ARM64" = 1 ]; then
+	# Pi 4/5 (aarch64): kernel8.img + the arm64 initrd; firmware staged
+	# from an arm64 RPi OS image. One card serves ONE arch family — the
+	# streamed userland differs (arm64 vs the ARMv6 RPi OS 32-bit build).
+	PI=$SEED/pi64
+	KERNELS="kernel8.img"
+	INITRDS="$PI/initrd-arm64-v8.img"
+	DTBS="bcm2711-rpi-4-b.dtb"
+else
+	PI=$SEED/pi
+	KERNELS="kernel.img kernel7.img"
+	INITRDS="$PI/initrd-6.18.50+rpt-rpi-v6.img $PI/initrd-6.18.50+rpt-rpi-v7.img"
+	DTBS="bcm2708-rpi-b.dtb bcm2708-rpi-b-plus.dtb bcm2709-rpi-2-b.dtb"
+fi
 STAGE=$PI/sd-boot-staging
 
 [ -d "$STAGE" ] || { echo "missing $STAGE (stage it from a RPi OS image first)" >&2; exit 1; }
-for f in bootcode.bin start.elf kernel.img kernel7.img; do
+for f in bootcode.bin start.elf $KERNELS; do
 	[ -s "$STAGE/$f" ] || { echo "missing firmware file: $STAGE/$f" >&2; exit 1; }
 done
-for f in initrd-6.18.50+rpt-rpi-v6.img initrd-6.18.50+rpt-rpi-v7.img; do
-	[ -s "$PI/$f" ] || { echo "missing $PI/$f (build in the ARM chroot)" >&2; exit 1; }
+for f in $INITRDS; do
+	[ -s "$f" ] || { echo "missing $f (build in the arch chroot)" >&2; exit 1; }
 done
 
 # The Pi manifest to pin (444c48f5… = RPi OS 13 Lite with root login
@@ -126,18 +140,20 @@ if [ "$direct" != 1 ]; then
 	copy() { mcopy -i "$out" "$1" ::/"$2"; }
 fi
 
-for f in bootcode.bin start.elf fixup.dat fixup_cd.dat fixup4.dat fixup4cd.dat fixup4x.dat fixup4db.dat fixup_x.dat fixup_db.dat kernel.img kernel7.img; do
+for f in bootcode.bin start.elf fixup.dat fixup_cd.dat fixup4.dat fixup4cd.dat fixup4x.dat fixup4db.dat fixup_x.dat fixup_db.dat $KERNELS; do
 	[ -s "$STAGE/$f" ] && copy "$STAGE/$f" "$f"
 done
-copy "$STAGE/bcm2708-rpi-b.dtb" bcm2708-rpi-b.dtb
-copy "$STAGE/bcm2708-rpi-b-plus.dtb" bcm2708-rpi-b-plus.dtb
-copy "$STAGE/bcm2709-rpi-2-b.dtb" bcm2709-rpi-2-b.dtb
+for d in $DTBS; do copy "$STAGE/$d" "$d"; done
 copy "$PI/.pairing.txt" pairing.txt
 if [ -d "$STAGE/overlays" ]; then
 	if [ "$direct" = 1 ]; then cp -r "$STAGE/overlays" "$mdir/"; else mcopy -i "$out" -s "$STAGE/overlays" ::; fi
 fi
-copy "$PI/initrd-6.18.50+rpt-rpi-v6.img" initrd-v6.img
-copy "$PI/initrd-6.18.50+rpt-rpi-v7.img" initrd-v7.img
+if [ "$ARM64" = 1 ]; then
+	copy $INITRDS initrd-v8.img
+else
+	copy "$PI/initrd-6.18.50+rpt-rpi-v6.img" initrd-v6.img
+	copy "$PI/initrd-6.18.50+rpt-rpi-v7.img" initrd-v7.img
+fi
 
 # config.txt: per-board kernel + initrd, serial console on (headless debug)
 if [ "$direct" = 1 ]; then
@@ -159,17 +175,32 @@ EOF
 	sync
 	umount "$mdir"; rmdir "$mdir"
 else
-	printf '%s\n' \
-		'# Seedling appliance card — Raspberry Pi 1/2' \
-		'[pi1]' \
-		'kernel=kernel.img' \
-		'initramfs initrd-v6.img followkernel' \
-		'[pi2]' \
-		'kernel=kernel7.img' \
-		'initramfs initrd-v7.img followkernel' \
-		'[all]' \
-		'enable_uart=1' \
-		'boot_delay=1' > "$PI/.config.txt"
+	if [ "$ARM64" = 1 ]; then
+		printf '%s\n' \
+			'# Seedling appliance card — Raspberry Pi 4/5 (aarch64)' \
+			'[pi4]' \
+			'kernel=kernel8.img' \
+			'initramfs initrd-v8.img followkernel' \
+			'[pi5]' \
+			'kernel=kernel8.img' \
+			'initramfs initrd-v8.img followkernel' \
+			'[all]' \
+			'arm_64bit=1' \
+			'enable_uart=1' \
+			'boot_delay=1' > "$PI/.config.txt"
+	else
+		printf '%s\n' \
+			'# Seedling appliance card — Raspberry Pi 1/2' \
+			'[pi1]' \
+			'kernel=kernel.img' \
+			'initramfs initrd-v6.img followkernel' \
+			'[pi2]' \
+			'kernel=kernel7.img' \
+			'initramfs initrd-v7.img followkernel' \
+			'[all]' \
+			'enable_uart=1' \
+			'boot_delay=1' > "$PI/.config.txt"
+	fi
 	printf '%s\n' "boot=bboot root=/dev/nbd0 console=serial0,115200 console=tty1 bb.manifest=$MANIFEST bb.npub=$NPUB bb.relays=$RELAY bb.servers=$SERVER" > "$PI/.cmdline.txt"
 	mcopy -i "$out" "$PI/.config.txt" ::config.txt
 	mcopy -i "$out" "$PI/.cmdline.txt" ::cmdline.txt
