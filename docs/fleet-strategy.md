@@ -105,3 +105,37 @@ verify sig + d-tag → apply files/units/env into the RAM overlay →
 systemctl enable units in the target root → write
 /run/klh-provision.done + a journal line. Deployed as
 klh-provision.service in the image, ordered after network-online.
+
+## FIPS mesh — the flat-network proof (2026-11-15, live on real hardware)
+
+**Proven:** laptop + Legion formed a FIPS mesh over wifi with zero
+configuration (mDNS discovery → Noise IK auth → spanning tree → mesh
+IPv6 addresses on fips0). The Legion's Blossom server served the boot
+manifest (15KB) and a 4MB chunk over the mesh in 0.43s (~10MB/s).
+
+**What this means architecturally:**
+- No SSID password needed (the AP runs open; FIPS provides the security)
+- No DHCP needed (FIPS assigns mesh IPv6 from the keypair)
+- No IP configuration of any kind
+- WiFi/ethernet agnostic (FIPS bridges transports transparently)
+- Each booted machine can serve boot chunks to any mesh peer
+- The USB stick becomes bootstrap-ONLY (once per fleet, not per machine)
+- Machines that boot from the mesh can immediately serve the next machine
+
+**What remains for full integration:**
+1. Bake `fips` into the initrd (it's a single binary, ~8MB)
+2. The initrd's network bringup becomes: start FIPS on any link →
+   fetch manifest/chunks from any mesh peer's Blossom → unlock via
+   any mesh peer's relay → boot
+3. Regenerate TLS certs with mesh addresses in the SANs (or use
+   the CA to issue a mesh-wildcard cert)
+4. The bb.servers/bb.relays cmdline parameters accept mesh IPv6
+   addresses (they're just URLs — already work)
+
+**Related work from the research:**
+- ADAM (EPFL): decentralized mesh software distribution — each node
+  pulls updates from one-hop neighbours; epidemic propagation
+- FIPS's own examples include `sidecar-nostr-relay` — a relay running
+  exclusively over the FIPS mesh, exactly our pattern
+- The diskless-node literature (PXE/NFS/oneSIS) all assume DHCP+TFTP
+  infrastructure; FIPS replaces that entire layer
