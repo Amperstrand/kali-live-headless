@@ -129,3 +129,70 @@ sub-units, all managed by the same nostr-native infrastructure.
 2. **Single VM test** — boot one VM from a Blossom image, SSH into it
 3. **FIPS sidecar** — prove a VM is reachable via the mesh
 4. **Multi-VM test** — two VMs, each with its own identity, both mesh-reachable
+
+## VM networking: internet egress through a gateway (the MAAS pattern)
+
+### The problem
+VMs need internet access, but:
+- They must NOT reach the host's LAN (192.168/16, 10/8, 172.16/12)
+- They must NOT use the host's public IP (exposes the machine owner)
+- They must NOT be directly on the LAN (bridged = attack surface)
+
+### The solution: same pattern as the MAAS WireGuard egress
+
+```
+VM → FIPS mesh → gateway VPS → internet (via VPS's public IP)
+```
+
+The FIPS project ships `fips-gateway` for exactly this:
+
+> "LAN gateway: outbound (LAN clients reach mesh destinations through
+> a DNS-allocated virtual IPv6 pool and nftables NAT) and inbound
+> (mesh-to-LAN port-forwarding)."
+
+### Implementation
+
+**On the host (gaming PC):**
+```bash
+# Firewall: VMs can ONLY reach the mesh, never the LAN
+iptables -A FORWARD -i virbr0 -d 192.168.0.0/16 -j DROP
+iptables -A FORWARD -i virbr0 -d 10.0.0.0/8 -j DROP
+iptables -A FORWARD -i virbr0 -d 172.16.0.0/12 -j DROP
+iptables -A FORWARD -i virbr0 -j DROP  # default deny
+# The ONLY exception: mesh traffic (fd00::/8 via fips0)
+ip6tables -A FORWARD -i virbr0 -o fips0 -j ACCEPT
+```
+
+**On the gateway VPS:**
+```bash
+# fips-gateway in outbound mode
+# NATs mesh-originated traffic through the VPS's public IP
+fips-gateway --mode outbound
+```
+
+**What this achieves:**
+1. VMs have internet (through the gateway's IP)
+2. VMs cannot reach the host's LAN (firewall + no route)
+3. The host's public IP is never used for VM traffic
+4. The gaming PC owner's identity is protected
+5. All VM traffic is encrypted end-to-end (FIPS mesh)
+6. Access control per-VM (FIPS ACLs on the gateway)
+7. The gateway is a single, revocable chokepoint
+
+### Comparison with the MAAS WireGuard setup
+
+| Aspect | MAAS (WireGuard) | Fleet (FIPS) |
+|---|---|---|
+| Tunnel | WireGuard (static keys) | FIPS mesh (nostr keypairs) |
+| Peer discovery | Manual (hardcoded IPs) | Automatic (mDNS / nostr relays) |
+| Access control | IP-based firewall rules | npub-based ACLs |
+| Identity | Server IP + port | Cryptographic (npub) |
+| NAT | iptables MASQUERADE on exit node | fips-gateway (nftables NAT) |
+| Public IP exposure | VPS IP only | VPS IP only |
+| Revocation | Rebuild WireGuard config | Remove npub from ACL |
+
+### What the internet sees
+- VM outbound traffic: the gateway VPS's IP (e.g., 203.0.113.5)
+- The gaming PC's IP: NEVER used for VM traffic
+- The gaming PC's location: NOT correlated with VM activity
+- The VM's identity: a FIPS npub (pseudonymous, not an IP)
