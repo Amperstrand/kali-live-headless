@@ -70,21 +70,18 @@ LOOP=$(sudo -n losetup -f --show -o $((DATA_START * 512)) \
 	--sizelimit $((DATA_SECTORS * 512)) "$OUT")
 sudo -n mkfs.ext4 -q -L BLOBS "$LOOP"
 
+SEED=${SEEDLING_DIR:-$HOME/src/seedling-m1}
 sudo -n mkdir -p /mnt/selfcontained
 sudo -n mount "$LOOP" /mnt/selfcontained
 
 # copy the blobs
-sudo -n mkdir -p /mnt/selfcontained/blobs /mnt/selfcontained/pki
+sudo -n mkdir -p /mnt/selfcontained/blobs
 sudo -n cp "$PACKDIR"/* /mnt/selfcontained/blobs/ 2>/dev/null || true
 
-# copy the pki (if available)
-SEED=${SEEDLING_DIR:-$HOME/src/seedling-m1}
-if [ -d "$SEED/testenv-m1/pki" ]; then
-	# ONLY the CA cert (public trust anchor) — server.key is NEVER put on
-	# the stick (it would let anyone impersonate the Blossom server).
-	# The blobs themselves are encrypted + hash-verified = harmless.
-	sudo -n cp "$SEED"/testenv-m1/pki/ca.crt /mnt/selfcontained/pki/
-fi
+# NO certificates on the stick (v8: the server's TLS key is pinned
+# on the cmdline via bb.server-key=sha256:… — no ca.crt needed.
+# The blobs are encrypted + hash-verified = public ciphertext.
+# See docs/trust-anchor-analysis.md for the full reasoning.)
 
 # copy the events (if available)
 if [ -f "$SEED/testenv-m1/events.jsonl" ]; then
