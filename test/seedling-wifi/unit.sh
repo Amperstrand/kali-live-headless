@@ -213,9 +213,6 @@ if CMDLINE_EXTRA="bb.debug=192.0.2.99" RELAY_HOST=192.0.2.9 bash "$here/render-c
 else
 	bad "CMDLINE_EXTRA not honored"
 fi
-grep -q 'bb.debug' "$T/hw.txt" &&
-	bad "bb.debug leaked into a render without CMDLINE_EXTRA" ||
-	ok "no ops-time extras without CMDLINE_EXTRA"
 
 echo "unit: rescue-local (offline rescue, rescue-v2)"
 bash "$here/render-cmdline.sh" rescue-local "$T/rescue-local.txt" >/dev/null 2>&1 &&
@@ -307,6 +304,13 @@ grep -q 'console=ttyS0,115200 console=tty0' "$T/hw.txt" &&
 	grep -q 'https://10.99.0.5:9443' "$T/hw.txt" &&
 	ok "hw variant: display console + relay substitution" ||
 	bad "hw variant: display console + relay substitution"
+if [ -s "$T/hw.txt" ]; then
+	! grep -q 'bb.debug' "$T/hw.txt" &&
+		ok "no ops-time extras without CMDLINE_EXTRA" ||
+		bad "bb.debug leaked into a render without CMDLINE_EXTRA"
+else
+	bad "hw variant render produced no output"
+fi
 
 echo "unit: write-wifi-conf escaping"
 # the tool demands a real block device (correct behavior) — give it a loop

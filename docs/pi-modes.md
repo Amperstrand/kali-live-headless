@@ -314,3 +314,28 @@ host facts stay private). Baseline, laptop (i7-8550U, 8 threads):
 
 The benchmark discipline: every build cycle logs; comparisons are
 honest (same steps, same artifacts, host facts recorded).
+
+## The self-hosted machine (testenv on the machine itself)
+
+`selfhost/deploy.sh` ships the boot chain to a booted machine: the
+testenv binary, the pki, the event log, and ONLY the pinned manifest's
+chunks (~866MB, not the 17G history), installed as `klh-testenv.service`
+on :8443. The design split:
+
+- **Serving is public content** → runs ON the machine (localhost fetch
+  = the fastest possible boot, no network dependency for the stream).
+- **The unlock is the owner's leash** → the answerer NEVER moves to the
+  machine; it stays on the workstation and reaches the machine's relay
+  via the `blossom.test` cert SAN (a /etc/hosts entry on the workstation
+  maps it to the machine's IP — no cert regeneration needed).
+- Future builds upload to both servers (`-servers a,b`) or, once the
+  machine self-builds, only to itself via 127.0.0.1.
+
+## klh-cycle.sh — the one-command improvement loop
+
+edit → unit gates (both suites) → initrd → UKI → stick image → conf
+baked → guarded remote flash → reboot → chain watch → report. The
+machine flashes ITSELF (remote-safe-flash guards on the far side);
+`--dry-run` stops before the flash, `--no-reboot` flashes without
+rebooting, `--bench` feeds the ledger. Cycle on the laptop: gates
+123/0 + build ~73s + flash ~90s + reboot ~2min.
