@@ -196,3 +196,55 @@ fips-gateway --mode outbound
 - The gaming PC's IP: NEVER used for VM traffic
 - The gaming PC's location: NOT correlated with VM activity
 - The VM's identity: a FIPS npub (pseudonymous, not an IP)
+
+## PROVEN: the self-assembling host (2026-11-16)
+
+The full chain now converges from a cold power-on with zero manual
+steps, in ~4.5 minutes on the Legion:
+
+```
+power on → v10 UKI boots from the stick (lean 1.28G rootfs,
+           manifest-pinned, server-key-pinned)
+         → wifi joins, unlock via owner signer, rootfs streams on demand
+         → init-bottom provisioner applies the legion config event:
+             blobs:  24MB vmhost (QEMU, qemu-img, nft, seabios, libs)
+                     13MB tools  (current klh-vm, klh-provision)
+             files:  vm-isolate (nft ruleset), resolv.conf
+             unit:   klh-vm.service (enabled)
+         → systemd reaches multi-user
+         → klh-vm.service:
+             finds the boot UKI on the mounted ESP (/run/bboot-journal)
+             extracts .linux/.initrd PE sections (Go debug/pe)
+             starts VMs per the kind-30081 event (direct-kernel boot)
+         → each VM: DHCP → manifest fetch → owner unlock → rootfs
+           streams from Blossom → root mounts → per-VM machine-config
+           (kind 30080, d=vm-<id>) applies → sub-unit running
+```
+
+### Blob provisioning (the lean-boot principle)
+
+Rootfs stays small; capability ships as Blossom blobs pinned by hash
+in the signed config event. Integrity is transitive: the owner's
+signature covers the event, the event pins each blob's sha256, the
+fetch verifies the hash. The 24MB QEMU stack replaced a 1.87G rootfs
+bake that would have blown the boot watchdog — same capability, 50x
+less boot-time traffic, and packages update by publishing one event
+instead of re-baking the image.
+
+### The v8 trust model, realized
+
+`bb.server-key=sha256:<cert-DER-SHA256>` on the kernel cmdline pins
+the Blossom/relay TLS peer. No CA exists anywhere on the stick; the
+pinned client carries both relay dials and blob fetches
+(`nostr.PinServerKey`). A wrong pin refuses everything (verified).
+The initrd still carries extra-ca.pem for bbootd itself — removed
+once bbootd learns the pin.
+
+### Networking status and the honest caveat
+
+The VMs run on QEMU user-mode networking (SLIRP). vm-isolate's nft
+rules target the bridge path (virbr0) — they install and await the
+tap/bridge upgrade. Today's SLIRP VMs NAT through the host and CAN
+reach RFC1918; per-VM isolation lands with either restrict=on +
+host-relay-forwarding or the tap bridge. The FIPS-per-VM design
+(docs above) remains the target: VM egress only via the mesh gateway.
