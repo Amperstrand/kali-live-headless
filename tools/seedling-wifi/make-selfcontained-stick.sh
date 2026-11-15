@@ -80,8 +80,10 @@ sudo -n cp "$PACKDIR"/* /mnt/selfcontained/blobs/ 2>/dev/null || true
 # copy the pki (if available)
 SEED=${SEEDLING_DIR:-$HOME/src/seedling-m1}
 if [ -d "$SEED/testenv-m1/pki" ]; then
-	sudo -n cp "$SEED"/testenv-m1/pki/server.crt "$SEED"/testenv-m1/pki/server.key \
-		"$SEED"/testenv-m1/pki/ca.crt /mnt/selfcontained/pki/
+	# ONLY the CA cert (public trust anchor) — server.key is NEVER put on
+	# the stick (it would let anyone impersonate the Blossom server).
+	# The blobs themselves are encrypted + hash-verified = harmless.
+	sudo -n cp "$SEED"/testenv-m1/pki/ca.crt /mnt/selfcontained/pki/
 fi
 
 # copy the events (if available)
