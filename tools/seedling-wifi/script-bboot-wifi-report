@@ -57,4 +57,22 @@ if [ -d /run/bboot-journal ] && [ -w /run/bboot-journal ]; then
 	fi
 fi
 
+# --- machine-config provisioner (kind 30080) ---
+# Runs at init-bottom: the network is up, the root is mounted at /root,
+# and the provisioner binary is IN the rootfs (no need to duplicate it
+# in the initrd). The provisioner fetches the newest kind-30080 event
+# for this machine's identity from the relays, verifies the owner's
+# signature, and applies files/units/env into the RAM overlay — every
+# boot converges to the declared state. Fail-open: a down relay must
+# not brick a remote machine.
+PROV="${rootmnt:-/root}/usr/local/bin/klh-provision"
+if [ -x "$PROV" ]; then
+	echo "bboot-wifi-report: running machine-config provisioner..." >&2
+	SSL_CERT_FILE="${rootmnt:-/root}/etc/bboot/extra-ca.pem" \
+		"$PROV" -root "${rootmnt:-/root}" 2>&1 |
+		while IFS= read -r line; do echo "  provision: $line" >&2; done
+else
+	echo "bboot-wifi-report: provisioner not found at $PROV (skipping)" >&2
+fi
+
 exit 0
