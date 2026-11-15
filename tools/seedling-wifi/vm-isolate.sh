@@ -1,68 +1,37 @@
 #!/bin/bash
-# vm-isolate.sh — enforce VM network isolation on the host.
-#
-# The security guarantees:
-#   1. VMs CANNOT reach RFC 1918 (192.168/16, 10/8, 172.16/12)
-#   2. VMs CANNOT reach the host's LAN interface
-#   3. VMs can ONLY reach: the FIPS mesh (fd00::/8 via fips0)
-#   4. VM internet goes through the mesh → gateway → internet
-#
-# This script runs on the HOST (baked into the rootfs, applied at boot).
-# It creates a dedicated chain (KLH-VM-ISOLATE) and hooks it into
-# FORWARD. The rules are ADDITIVE — they don't break existing host
-# networking, they only restrict VM traffic.
+# vm-isolate.sh — enforce VM network isolation (nftables).
+# VMs can ONLY reach: the FIPS mesh → gateway → internet.
+# VMs CANNOT reach: RFC 1918, the host, or the LAN.
 set -euo pipefail
 
-BRIDGE=${1:-virbr0}   # the VM bridge interface
-MESH_IF=${2:-fips0}   # the FIPS mesh interface
-
-IPTABLES=${IPTABLES:-iptables}
-IP6TABLES=${IP6TABLES:-ip6tables}
+BRIDGE=${1:-virbr0}
+MESH_IF=${2:-fips0}
 
 echo "vm-isolate: isolating $BRIDGE (mesh: $MESH_IF)"
 
-# --- create the chain (idempotent) ---
-$IPTABLES -C KLH-VM-ISOLATE 2>/dev/null || $IPTABLES -N KLH-VM-ISOLATE
-$IPTABLES -F KLH-VM-ISOLATE
+# Clean any previous rules (idempotent)
+nft list table inet klh-vm-isolate 2>/dev/null && nft delete table inet klh-vm-isolate
+nft add table inet klh-vm-isolate
+nft add chain inet klh-vm-isolate forward 'type filter hook forward priority -10 policy accept'
 
-# --- rule 1: DROP all VM traffic to RFC 1918 (IPv4) ---
-for cidr in 192.168.0.0/16 10.0.0.0/8 172.16.0.0/12; do
-	$IPTABLES -A KLH-VM-ISOLATE -i "$BRIDGE" -d "$cidr" -j DROP
-done
+# DROP VM traffic to RFC 1918
+nft add rule inet klh-vm-isolate forward iifname "$BRIDGE" ip daddr 192.168.0.0/16 drop
+nft add rule inet klh-vm-isolate forward iifname "$BRIDGE" ip daddr 10.0.0.0/8 drop
+nft add rule inet klh-vm-isolate forward iifname "$BRIDGE" ip daddr 172.16.0.0/12 drop
 
-# --- rule 2: DROP all VM traffic to link-local and multicast ---
-$IPTABLES -A KLH-VM-ISOLATE -i "$BRIDGE" -d 169.254.0.0/16 -j DROP
-$IPTABLES -A KLH-VM-ISOLATE -i "$BRIDGE" -d 224.0.0.0/4 -j DROP
+# DROP link-local and multicast from VMs
+nft add rule inet klh-vm-isolate forward iifname "$BRIDGE" ip daddr 169.254.0.0/16 drop
+nft add rule inet klh-vm-isolate forward iifname "$BRIDGE" ip daddr 224.0.0.0/4 drop
 
-# --- rule 3: DROP all VM traffic NOT going through the mesh ---
-# (the ONLY allowed path from a VM is through fips0)
-$IPTABLES -A KLH-VM-ISOLATE -i "$BRIDGE" -o "$MESH_IF" -j ACCEPT
-$IPTABLES -A KLH-VM-ISOLATE -i "$BRIDGE" -j DROP
+# ALLOW VM traffic ONLY through the mesh interface
+nft add rule inet klh-vm-isolate forward iifname "$BRIDGE" oifname "$MESH_IF" accept
 
-# --- rule 4: DROP VM traffic to the host itself ---
-$IPTABLES -A KLH-VM-ISOLATE -i "$BRIDGE" -o lo -j DROP
+# IPv6: same rule — VMs can only use the mesh
+nft add rule inet klh-vm-isolate forward iifname "$BRIDGE" oifname "$MESH_IF" meta nfproto ipv6 accept
 
-# --- hook into FORWARD (idempotent) ---
-$IPTABLES -C FORWARD -i "$BRIDGE" -j KLH-VM-ISOLATE 2>/dev/null || \
-	$IPTABLES -I FORWARD 1 -i "$BRIDGE" -j KLH-VM-ISOLATE
+# DROP everything else from VMs (the catch-all)
+nft add rule inet klh-vm-isolate forward iifname "$BRIDGE" drop
 
-# --- IPv6: same rules ---
-$IP6TABLES -C KLH-VM-ISOLATE6 2>/dev/null || $IP6TABLES -N KLH-VM-ISOLATE6
-$IP6TABLES -F KLH-VM-ISOLATE6
-
-# VMs can ONLY use fd00::/8 (the FIPS mesh)
-$IP6TABLES -A KLH-VM-ISOLATE6 -i "$BRIDGE" -o "$MESH_IF" -j ACCEPT
-$IP6TABLES -A KLH-VM-ISOLATE6 -i "$BRIDGE" -j DROP
-
-$IP6TABLES -C FORWARD -i "$BRIDGE" -j KLH-VM-ISOLATE6 2>/dev/null || \
-	$IP6TABLES -I FORWARD 1 -i "$BRIDGE" -j KLH-VM-ISOLATE6
-
-# --- verify ---
-echo "vm-isolate: rules installed:"
-echo "  IPv4 chain KLH-VM-ISOLATE:"
-$IPTABLES -L KLH-VM-ISOLATE -n --line-numbers | head -10
-echo "  IPv6 chain KLH-VM-ISOLATE6:"
-$IP6TABLES -L KLH-VM-ISOLATE6 -n --line-numbers | head -5
-echo ""
-echo "vm-isolate: VMs on $BRIDGE can ONLY reach the internet via $MESH_IF → gateway"
-echo "vm-isolate: VMs CANNOT reach any RFC 1918 network, the host, or the LAN"
+echo "vm-isolate: rules installed"
+nft list table inet klh-vm-isolate | wc -l
+echo "vm-isolate: VMs on $BRIDGE can ONLY reach via $MESH_IF → gateway → internet"
