@@ -261,37 +261,53 @@ fi
 
 # --- associate with the AP ---
 journal "associating with AP on $DEV ..."
-wpa_supplicant_conf=/run/bboot-wifi/wpa_supplicant.conf
-cp "$CONF" "$wpa_supplicant_conf" 2>/dev/null || CONF="$wpa_supplicant_conf"
-
-# scan first (proves the radio actually works)
-ip link set "$DEV" up 2>/dev/null || true
-sleep 2
-SCAN=$(iw dev "$DEV" scan 2>/dev/null | grep -c "^BSS ")
-journal "scan found $SCAN networks"
-if [ "$SCAN" -eq 0 ]; then
-	journal "scan found ZERO networks — radio present but non-functional"
-	journal_dump
-	exit 0
+# the conf lands on WRITABLE tmpfs — never inside the stick's RO mount
+# (found live: the cp onto the ro vfat failed silently, the fallback
+# then pointed wpa_supplicant at a nonexistent file, and every wifi
+# boot died at 'wpa_supplicant failed to start')
+wpa_supplicant_conf=/tmp/wpa_supplicant.conf
+if ! cp "$CONF" "$wpa_supplicant_conf" 2>/dev/null; then
+	journal "conf copy failed — feeding the stick's file directly"
 fi
 
-# wpa_supplicant
-wpa_supplicant -B -i "$DEV" -c "$CONF" 2>/dev/null || {
-	journal "wpa_supplicant failed to start"
+# scan first (proves the radio actually works) — BOUNDED: the
+# synchronous iw scan blocks forever on some CNVi radios (found live on
+# the Legion: the journal's last line was 'associating...' forever).
+# A zero/failed scan no longer aborts: wpa_supplicant scans on its own.
+ip link set "$DEV" up 2>/dev/null || true
+sleep 2
+SCAN=$(timeout 15 iw dev "$DEV" scan 2>/dev/null | grep -c "^BSS ")
+journal "scan found $SCAN networks"
+if [ "$SCAN" -eq 0 ]; then
+	journal "scan found ZERO networks (or timed out) — letting wpa_supplicant try anyway"
+fi
+
+# wpa_supplicant — stderr captured: a silent failure here cost a full
+# hardware iteration ('failed to start' with the reason swallowed)
+WPA_ERR=$(mktemp /tmp/wpa-err.XXXXXX)
+wpa_supplicant -B -i "$DEV" -c "$wpa_supplicant_conf" 2>"$WPA_ERR" || {
+	journal "wpa_supplicant failed to start: $(tail -2 "$WPA_ERR" | tr '\n' ' ')"
 	journal_dump
 	exit 0
 }
 
-# wait for association (up to 30 seconds)
+# wait for association (up to 30 seconds). Check the KERNEL link state
+# via `iw dev link` — wpa_cli depends on the control socket, which the
+# daemon may never create (or it may exit after associating — seen live
+# on the Legion: associated and RX flowing, no ctrl socket, wpa_cli
+# blind). The kernel's view is the truth.
 i=0
+LINKED=0
 while [ $i -lt 30 ]; do
-	STATUS=$(wpa_cli -i "$DEV" status 2>/dev/null | grep -c "wpa_state=COMPLETED")
-	[ "$STATUS" -ge 1 ] && break
+	if iw dev "$DEV" link 2>/dev/null | grep -q "SSID:"; then
+		LINKED=1
+		break
+	fi
 	sleep 1
 	i=$((i + 1))
 done
-if [ "$STATUS" -lt 1 ]; then
-	journal "association FAILED after 30s (wpa_state != COMPLETED)"
+if [ "$LINKED" -lt 1 ]; then
+	journal "association FAILED after 30s (no link)"
 	journal_dump
 	exit 0
 fi
