@@ -33,6 +33,9 @@ get_exposure() {
 }
 
 case "$MODE" in
+ssh)
+	# handled by the appended ssh-posture block below
+	;;
 baseline)
 	get_exposure > "$BASELINE_FILE"
 	say "baseline captured to $BASELINE_FILE"
@@ -75,3 +78,42 @@ diff)
 	exit 1
 	;;
 esac
+
+# --- SSH posture check (run standalone: security-audit.sh ssh HOST) ---
+if [ "${1:-}" = "ssh" ] && [ -n "${2:-}" ]; then
+	HOST=$2
+	KEY=${KLH_KEY:-$HOME/.ssh/klh-seedling}
+	echo "=== SSH posture: $HOST"
+	# can we connect key-only?
+	if ssh -i "$KEY" -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no \
+		-o UserKnownHostsFile=/dev/null "root@$HOST" true 2>/dev/null; then
+		echo "  ✓ key auth works (BatchMode, no prompt)"
+	else
+		echo "  ✗ KEY AUTH FAILED — check authorized_keys or the key"
+		exit 1
+	fi
+	# is password auth rejected?
+	if ssh -i "$KEY" -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no \
+		-o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no "root@$HOST" true 2>/dev/null; then
+		echo "  ✗ PASSWORD AUTH STILL WORKS (pubkey disabled, still connected!)"
+		exit 1
+	else
+		echo "  ✓ password auth rejected (pubkey-only)"
+	fi
+	# does sshd say the right thing?
+	CONFIG=$(ssh -i "$KEY" -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no \
+		-o UserKnownHostsFile=/dev/null "root@$HOST" \
+		'cat /etc/ssh/sshd_config /etc/ssh/sshd_config.d/* 2>/dev/null' 2>/dev/null)
+	if echo "$CONFIG" | grep -q "^PasswordAuthentication no"; then
+		echo "  ✓ sshd: PasswordAuthentication no"
+	else
+		echo "  ⚠ sshd: PasswordAuthentication not explicitly 'no'"
+	fi
+	if echo "$CONFIG" | grep -q "^PermitRootLogin prohibit-password"; then
+		echo "  ✓ sshd: PermitRootLogin prohibit-password"
+	else
+		echo "  ⚠ sshd: PermitRootLogin not explicitly 'prohibit-password'"
+	fi
+	echo "  SSH posture: PASS"
+	exit 0
+fi
