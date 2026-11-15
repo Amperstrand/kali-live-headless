@@ -12,7 +12,7 @@ echo "vm-isolate: isolating $BRIDGE (mesh: $MESH_IF)"
 # Clean any previous rules (idempotent)
 nft list table inet klh-vm-isolate 2>/dev/null && nft delete table inet klh-vm-isolate
 nft add table inet klh-vm-isolate
-nft add chain inet klh-vm-isolate forward 'type filter hook forward priority -10 policy accept'
+nft add chain inet klh-vm-isolate forward '{ type filter hook forward priority -10; policy accept; }'
 
 # DROP VM traffic to RFC 1918
 nft add rule inet klh-vm-isolate forward iifname "$BRIDGE" ip daddr 192.168.0.0/16 drop
