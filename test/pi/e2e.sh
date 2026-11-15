@@ -305,6 +305,55 @@ stage_x86foreign() {
 	say "stage x86foreign: PASS (foreign signer refused — the swapped-card attack blocked)"
 }
 
+stage_provision() {
+	# the declarative machine-config layer: publish a kind-30080 event,
+	# boot the card, assert the provisioned file + unit + env landed
+	local serial="$LOGDIR/pi-provision-$TS.log"
+	local NPUB
+	NPUB=$(cd "$SEED" && BBOOT_NSEC=$(cat .m1-nsec) ./bin/bboot whoami 2>/dev/null | tail -1)
+	command -v "$SEED/bin/klh-provision" >/dev/null || { say "stage provision: SKIP — build klh-provision"; return 1; }
+
+	# publish a fresh config for a test machine id (unique per run)
+	local MID="provision-test-$TS"
+	cat > "$TMPDIR/prov-config-$TS.json" <<PCFG
+{
+  "version": 1,
+  "files": [{"path": "/etc/motd.d/fleet", "mode": "0644",
+             "content": "E2E PROVISION $TS\n"}],
+  "units": [{"name": "klh-e2e-proof.service", "enable": true,
+             "content": "[Unit]\nDescription=e2e provisioner proof\n[Service]\nType=oneshot\nExecStart=/bin/true\n[Install]\nWantedBy=multi-user.target\n"}],
+  "env": {"KLH_E2E": "$TS"}
+}
+PCFG
+	(cd "$SEED" && SSL_CERT_FILE=testenv-m1/pki/ca.crt ./bin/klh-provision \
+		-publish "$MID" -nsec-file .m1-nsec -relays wss://127.0.0.1:8443 \
+		"$TMPDIR/prov-config-$TS.json") >/dev/null 2>&1 ||
+		{ say "stage provision: publish FAILED"; fail=$((fail+1)); failed+=(provision); return 1; }
+	say "stage provision: published config for $MID"
+
+	# fetch+verify+apply into a temp root (the boot-time behavior, run here)
+	local R="$TMPDIR/provroot-$TS"
+	mkdir -p "$R"
+	(cd "$SEED" && SSL_CERT_FILE=testenv-m1/pki/ca.crt timeout 30 \
+		./bin/klh-provision -relays wss://127.0.0.1:8443 -npub "$NPUB" \
+		-id "$MID" -root "$R") >/dev/null 2>&1
+
+	local ok=0
+	grep -q "E2E PROVISION $TS" "$R/etc/motd.d/fleet" 2>/dev/null && ok=$((ok+1))
+	[ -e "$R/etc/systemd/system/multi-user.target.wants/klh-e2e-proof.service" ] && ok=$((ok+1))
+	grep -q "KLH_E2E=$TS" "$R/run/klh-env" 2>/dev/null && ok=$((ok+1))
+
+	if [ "$ok" -eq 3 ]; then
+		say "stage provision: PASS (file + enabled unit + env — $ok/3)"
+		pass=$((pass + 0)) # counted by caller
+		return 0
+	else
+		say "stage provision: FAILED — only $ok/3 items landed"
+		fail=$((fail + 1)); failed+=(provision)
+		return 1
+	fi
+}
+
 stage_arm64() {
 	local serial="$LOGDIR/pi-arm64-$TS.log"
 	say "stage arm64: arm64 kernel + the arm64 card initrd (unpinned)"
@@ -329,6 +378,7 @@ for s in $STAGES; do
 	x86nosb) stage_x86nosb && pass=$((pass + 1)) ;;
 	x86shim) stage_x86shim && pass=$((pass + 1)) ;;
 	x86foreign) stage_x86foreign && pass=$((pass + 1)) ;;
+	provision) stage_provision && pass=$((pass + 1)) ;;
 	armhf) stage_armhf && pass=$((pass + 1)) ;;
 	arm64) stage_arm64 && pass=$((pass + 1)) ;;
 	*) say "unknown stage $s"; exit 2 ;;
