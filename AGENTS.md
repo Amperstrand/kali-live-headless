@@ -548,3 +548,16 @@ Collaborators with write: `c03rad0r`, `felixfelix-bot`. No license by choice
 norm; revisit if outside contributors appear). Cross-repo lane state lives in
 `~/src/ops/workspace-state.md` — keep the kali-live-headless section current
 when the lane changes state.
+
+45. **`dd of=/dev/sdX` is one enumeration swap from disaster** (2026-11-15,
+   the Legion remote flash): the machine's own 953G Windows NVMe sat one
+   letter from the stick while we streamed a raw image over ssh. ALL stick
+   flashes go through `tools/seedling-wifi/safe-flash.sh` now — usb transport
+   + removable flag + ≤33GB ceiling + image-fits + nothing-mounted +
+   never-the-live-root, each bypassed only by `--force` WITH a typed
+   device-name confirmation. It also installs stable aliases
+   (`/dev/klh-stick-<serial4>` via udev) so we stop typing bare sdX names
+   entirely. Related: the same session proved a remotely-written FAT can be
+   left dirty (the "would change RO state" mount warning) and the firmware
+   then fails to boot the stick — flash from the laptop with mtools on the
+   UNMOUNTED device, or fsck.vfat the partition after any in-machine edit.
