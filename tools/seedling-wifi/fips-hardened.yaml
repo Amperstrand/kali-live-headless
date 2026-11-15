@@ -1,0 +1,53 @@
+# fips-hardened.yaml — the ONLY config pattern for running FIPS.
+#
+# The rules (each learned from a real exposure):
+#   1. NEVER policy: open — always allow-list known peers
+#   2. ALWAYS the mesh firewall — fips0 is default-deny for ingress
+#   3. NEVER ephemeral keys — persistent identity = ACL-able peers
+#   4. NEVER Nostr discovery on by default — it makes you GLOBALLY
+#      reachable (public relay adverts + NAT hole-punching)
+#   5. The TUN interface exists to route mesh traffic; nothing on the
+#      host should be reachable from the mesh unless explicitly allowed
+#
+# Usage: cp this template, fill in the peer npub(s), start FIPS.
+#        Then run security-audit.sh check to verify the exposure.
+node:
+  identity:
+    persistent: true       # keys saved to disk; peers can be ACL'd
+  rendezvous:
+    nostr:
+      enabled: false       # NEVER enable without understanding: this
+                           # publishes your endpoints on public relays
+                           # and enables NAT hole-punching = GLOBAL
+    lan:
+      enabled: true        # local-only discovery (same broadcast domain)
+
+transports:
+  udp:
+    bind_addr: "0.0.0.0:9001"
+
+# MESH FIREWALL: default-deny on fips0 ingress. Without this, any
+# service listening on [::] is reachable from mesh peers.
+firewall:
+  enabled: true
+  default: deny
+  # only open what's DELIBERATELY exposed (e.g. the Blossom server):
+  rules:
+    - action: allow
+      port: 8443
+      protocol: tcp
+      comment: "blossom server (ciphertext chunks, public by design)"
+
+# PEER ACL: only these npubs may join the mesh. Add peers explicitly;
+# never use policy: open.
+policy: allow-list
+peers:
+  # - npub: "npub1..."     # fill in known fleet members
+  #   alias: "legion"
+  #   addresses:
+  #     - transport: udp
+  #       addr: "192.168.13.225:9001"
+
+tun:
+  enabled: true
+  name: fips0

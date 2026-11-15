@@ -567,3 +567,20 @@ when the lane changes state.
    name proves nothing across enumerations), the ≤33GB ceiling, and the
    live-root/mounted checks. All sticks — local or remote — go through
    these two tools, never a raw dd again.
+46. **Every new network interface is a new attack surface** (found
+   2026-11-15, the FIPS proof): starting FIPS with `policy: open` silently
+   created fips0 and made every [::] listener reachable from mesh peers.
+   The laptop's SSH had password auth enabled BY DEFAULT — any mesh peer
+   could have attempted passwords. UFW's default-DROP saved us (by policy,
+   not by design), but the `ALLOW IN Anywhere` rules (53317, etc.) would
+   have covered fips0 too. The pattern: BEFORE starting any service that
+   creates an interface (FIPS, VPN, container networks):
+   1. Run `tools/seedling-wifi/security-audit.sh baseline`
+   2. Verify `PasswordAuthentication no` in sshd
+   3. Verify UFW has a DENY rule for the new interface
+   4. Start the service with the hardened config (NEVER policy: open)
+   5. Run `security-audit.sh check` — review the diff
+   FIPS specifically: `policy: open` + `rendezvous.nostr.enabled: true`
+   = GLOBALLY reachable (public relay adverts + NAT hole-punching).
+   The hardened template is `tools/seedling-wifi/fips-hardened.yaml`.
+   Standing UFW rules now deny fips0/tun0 ingress by default.
