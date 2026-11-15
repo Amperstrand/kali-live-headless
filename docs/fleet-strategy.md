@@ -63,3 +63,45 @@ PiKVM → project-chameleon.
 4. **The Pi day: AdGuard mode** — first function-X at fleet scale.
 5. TPM attestation tier + hardware-key custody tier (the x64/premium
    machines).
+
+## The machine-config event — spec v1 (2026-11-15)
+
+kind **30080** (parameterized like the pointer's 30078), signed by the
+owner npub (the same key as pointer/manifest — one key, whole fleet).
+
+- **d tag**: the machine's identity. v0 = the baked hostname (bb.id on
+  the cmdline overrides); v1 = the machine npub (once HKDF identity
+  lands). Forward-compatible: the provisioner accepts both.
+- **content**: plain JSON — public by design (no secrets, the Ignition
+  rule). NIP-44-encrypted variants are a later tier for private configs.
+
+```json
+{
+  "version": 1,
+  "files": [{"path": "/etc/adguard/ upstream.yaml", "mode": "0644",
+             "content": "..."}],
+  "units": [{"name": "adguard.service", "enable": true,
+             "content": "[Unit]..."}],
+  "env":   {"KLH_ROLE": "dns"}
+}
+```
+
+**Semantics (Ignition-inspired, fleet-adapted):**
+- Applied to the RAM overlay by a provisioning oneshot AFTER the
+  unlock (post-switch_root) — every boot converges to the declared
+  state; reboot = reset (the Talos property, for free, from the
+  read-only root + overlay).
+- Fail-closed on BAD SIGNATURE (never apply untrusted config);
+  fail-OPEN on fetch failure (a machine whose boot already succeeded
+  must not brick because a relay is down — warn, retry 5x, continue).
+- Secrets NEVER in the event: they ride the post-unlock fetch (the
+  Heads sealed-key pattern, over our NIP-44 channel).
+- Multiple 30080s (different d-tags) = one config per machine; the
+  newest signed event wins; publishing an older-valid one = rollback
+  (identical to the pointer semantics operators already know).
+
+**The provisioner** (`cmd/klh-provision`): fetch from bb.relays →
+verify sig + d-tag → apply files/units/env into the RAM overlay →
+systemctl enable units in the target root → write
+/run/klh-provision.done + a journal line. Deployed as
+klh-provision.service in the image, ordered after network-online.
