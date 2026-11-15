@@ -281,3 +281,36 @@ three and turns "trust the firmware config" into "prove the booted
 image" — testable with swtpm. SB itself never covers the firmware
 supply chain (Boot Guard territory) and physical firmware access can
 de-enroll keys: physical security remains an assumption everywhere.
+
+## Dual-host builds + benchmarks (laptop ⇄ the Legion)
+
+`build-bench.sh` runs the identical pipeline anywhere and appends
+per-step timings to `$SEEDLING_DIR/bench.tsv` (workspace, not the repo —
+host facts stay private). Baseline, laptop (i7-8550U, 8 threads):
+
+| step | seconds | size |
+|---|---|---|
+| initrd | 44.1 | 150MB |
+| uki | 3.4 | 162MB |
+| stick | 25.0 | 768MB |
+
+### Legion bring-up runbook (when it's back)
+
+1. **If a stick is in it**: power on — the wifi stick boots the fixed
+   image by itself; SSH to `192.168.13.225` (wifi) or `10.42.0.2`
+   (wired), key-only.
+2. **If the sticks are here**: reflash with `safe-flash.sh --wifi-conf
+   wifi-creds stick-wifi.img <by-id>` (wifi build) or `stick-eth.img`
+   (ethernet build), then as above.
+3. **On the machine**: run `build-bench.sh` for the comparison rows.
+   Two paths: natively (needs the build deps baked — see below) or in
+   the container (needs docker baked). NOTE: runtime `apt` on the
+   streamed image OOMs pathologically (31GB anon RSS, kernel-killed) —
+   the v4 rootfs bake must include the build toolchain so no runtime
+   package installs are needed.
+4. **v4 bake list**: tmux, curl, ca-certificates, the opencode binary,
+   docker OR the native build toolchain (initramfs-tools, erofs-utils,
+   sbsigntool, gcc or the container runtime).
+
+The benchmark discipline: every build cycle logs; comparisons are
+honest (same steps, same artifacts, host facts recorded).
