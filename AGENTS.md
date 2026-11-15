@@ -561,3 +561,9 @@ when the lane changes state.
    left dirty (the "would change RO state" mount warning) and the firmware
    then fails to boot the stick — flash from the laptop with mtools on the
    UNMOUNTED device, or fsck.vfat the partition after any in-machine edit.
+   **Corollary (same day):** the remote side gets the same discipline —
+   `remote-safe-flash.sh` (image on stdin) hard-blacklists nvme*/mmcblk*/
+   loop*/dm-*/md*/sr*, requires POSITIVE USB-tree resolution (a bare sdX
+   name proves nothing across enumerations), the ≤33GB ceiling, and the
+   live-root/mounted checks. All sticks — local or remote — go through
+   these two tools, never a raw dd again.
