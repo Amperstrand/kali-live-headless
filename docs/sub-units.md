@@ -248,3 +248,18 @@ tap/bridge upgrade. Today's SLIRP VMs NAT through the host and CAN
 reach RFC1918; per-VM isolation lands with either restrict=on +
 host-relay-forwarding or the tap bridge. The FIPS-per-VM design
 (docs above) remains the target: VM egress only via the mesh gateway.
+
+## The cgroup trap (found by the self-heal test, 2026-11-16)
+
+A `Type=oneshot` service that daemonizes children (QEMU) must keep
+them out of the death path: on `Deactivated successfully`, systemd
+kills the whole cgroup by default. The boot-time orchestrator unit
+survives because of `RemainAfterExit=yes`; a reconcile unit (which
+must run repeatedly) cannot use that — it would never re-trigger.
+`KillMode=process` is the answer for the reconcile unit: systemd
+kills only the (already-exited) main process, the daemonized VMs
+survive in the cgroup. Symptom of getting it wrong: QEMU "started",
+serial log opened at 0 bytes, process gone within a second, zero
+kernel output, nothing in the journal. Verified fix: kill a VM by
+pid → the reconcile timer restarts it within a minute → it boots
+from Blossom and re-provisions itself.
