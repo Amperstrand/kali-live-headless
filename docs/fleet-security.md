@@ -317,3 +317,54 @@ start running untrusted work).
 4. F5 VM egress (bridge/tap or restrict=on) — before real workloads
 5. F3 freshness anchor + F4 default-deny base ruleset
 6. F6 salt-derived host keys
+
+## Update 2026-11-16 (evening): R2 closed, F5 implemented, TPM tooling
+
+**R2 — DONE. The fleet CA exists and is pinned.**
+`fleet-ca-1` (ECDSA P-256, 10y, `CN=klh fleet CA 1`): generated
+deliberately, private key at `~/secrets/klh-pki/` (LUKS2 at rest),
+NOT in the public repo. Attested by the owner nsec: event
+`b8baccfc3c37` (kind 30080, d=fleet-ca-1) carries the PEM + DER hash.
+Stick v11 pins `bb.server-key=sha256:dd9d2903…b3d75` — the CA, not
+the leaf — so server leaf certs rotate freely with no reflash
+(the audit's rotation-capable stick generation). `PinServerKey` now
+verifies chain membership + leaf signatures when the pin matches a
+CA; leaf pins keep legacy behavior; expiry stays unchecked (F7).
+The testenv serves leaf+CA (full chain) so CA pins can match.
+
+**F5 — IMPLEMENTED (boot verification pending).** Isolated VMs are
+the DEFAULT (`isolate: false` opts out): SLIRP `restrict=on` closes
+the virtual network; the VM's single reachable address is
+`10.0.2.100:8443`, forwarded per-connection by `klh-vm -stdio-relay`
+(spawned via guestfwd) to the real fleet server. RFC1918, the
+internet, and the host are unreachable inside the VM's own network
+stack — no iptables needed, enforced below the guest's kernel.
+Each VM gets a deterministic hostfwd SSH port (22000+fnv1a(id)%500)
+for operator access. Internet egress for VMs remains exactly one
+design away: the mesh gateway (inr2) — the forward IS the fleet
+transport; a gateway behind it is the sanctioned exit.
+
+**F2 — narrowed.** bbootd still trusts via `extra-ca.pem` (no pin
+yet), but that file is now the dedicated fleet CA (not the shared
+testenv CA), rides inside the UKI (covered by Secure Boot in the
+own-keys/shim variants), and the stick v11 initrd carries exactly
+`dd9d2903…` (verified by extraction). Full bbootd pin support
+remains the last piece of the no-certificates-entirely goal.
+
+**TPM — tooling shipped, honest limits documented.**
+`tools/seedling-wifi/tpm-seal.sh` (systemd-creds + TPM2): seal at
+rest, unseal on this machine only, unit snippets for service-start
+decryption. Limits stated up front: TPM 2.0 cannot execute BIP-340
+(nostr schnorr) — an nsec cannot LIVE in the TPM; what it can do is
+SEALED-AT-REST (powered-off theft yields nothing). For key-lives-in-
+hardware semantics, pair with NIP-46 delegation (signer elsewhere).
+Current machines: the x280's TPM is firmware-disabled (BIOS action:
+F1 → Security → TPM 2.0 → Enabled — then the existing keys can be
+sealed without further code); the Legion HAS a TPM 2.0 (demonstration
+pending its return to the network).
+
+**New operational lesson.** A single-stream `dd` over wifi died with
+the ssh connection mid-flash and left a half-written stick (machine
+dark, initramfs rescue). `chunked-flash.sh` / `chunked-flash-push.sh`
+now flash in verified 32MiB chunks — resumable across ssh drops AND
+target reboots; correct chunks are skipped on rerun.
