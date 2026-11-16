@@ -188,6 +188,54 @@ explicitly), and the signing keys live in the workspace, never the repo.
 On real hardware the enrollment step is a one-time firmware action
 (MOK/sbctl-style) per machine; the signed stick then boots only there.
 
+## Secure Boot on stock laptops — the zero-enrollment chain (2026-11-16)
+
+The signed-UKI mode above proves our keys under **our** enrolled db — a
+stock Windows laptop trusts neither, and its firmware stopped the dogfood
+stick with `Invalid signature detected — check Secure Boot policy` before
+any of our code ran. The fix needs no keys of ours at all: the seedling
+kernel IS the stock Debian-signed kernel, so the stock Debian live chain
+applies unchanged:
+
+```
+firmware (Microsoft db) → shim   (MS-signed, Debian shim-signed package)
+                         → grub   (Debian-signed, grub-efi-amd64-signed)
+                         → vmlinuz (Debian archive-signed — verified)
+unverified: initrd, grub.cfg, wifi.conf — stock Debian live's own posture
+```
+
+- **No key enrollment, no firmware settings, BitLocker untouched** (booting
+  removable media changes nothing PCR7 measures). Works on any Secure Boot
+  machine: the trixie shim is dual-signed (MS UEFI CA **2011 + 2023**), so
+  old and new firmware dbs both verify it.
+- Tools: `make-sb-stick.sh` (layout above, GPT/BBOOT ESP) and `sb-proof.sh`
+  (the laptop simulator: OVMF secboot, **Microsoft-only db**, no MokList).
+  Proof matrix: delivered image boots to `seedling login:` end to end
+  (incl. the bboot fetch); one flipped byte in `grubx64.efi` → refused by
+  shim; one flipped byte in `vmlinuz` → refused by grub's kernel
+  verification. Both tamper hops asserted live, so the chain is measured,
+  not assumed.
+- Rebuild (workspace paths; signed binaries cached in `sb-chain/`):
+
+```sh
+# debs: shim-signed + grub-efi-amd64-signed (Debian trixie, SHA256-verified)
+bash tools/seedling-wifi/make-sb-stick.sh \
+  ~/src/seedling-m1/sb-chain/shimx64.efi \
+  ~/src/seedling-m1/sb-chain/grubx64.efi \
+  ~/src/seedling-m1/out/vmlinuz \
+  ~/src/seedling-m1/out/initrd-wifi.img \
+  ~/src/seedling-m1/cmdlines/cmdline-hw.txt \
+  WIFI_CONF sb-stick.img 768
+bash tools/seedling-wifi/sb-proof.sh sb-stick.img logs/
+```
+
+- First boot on a laptop: firmware boot menu → the USB entry → grub menu
+  (3 s) → association → QR. If a machine still says "invalid signature",
+  the suspects are (a) firmware that predates the 2011 UEFI CA (unlikely:
+  SB mandates it) or (b) a dbx revocation touching this shim/grew — recheck
+  with the proof harness before suspecting the payload.
+
+
 ## Availability + remote update (proven 2026-11-06)
 
 Two more properties, both now executable asserts:
