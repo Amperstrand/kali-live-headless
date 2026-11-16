@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # make-sb-stick.sh — Secure-Boot stick image via the stock Debian signed chain.
 #
-# usage: make-sb-stick.sh SHIM GRUB VMLINUZ INITRD CMDLINE WIFI_CONF OUT_IMG [SIZE_MB]
+# usage: make-sb-stick.sh [--copy SRC ESPPATH]... SHIM GRUB VMLINUZ INITRD CMDLINE WIFI_CONF OUT_IMG [SIZE_MB]
 #
+#   --copy SRC ESPPATH  extra file copied onto the ESP (repeatable) — e.g.
+#                       --copy rootfs.erofs ::/rescue/rootfs.erofs for the
+#                       offline rescue variant
 #   SHIM      Microsoft-signed shim  (shim-signed: /usr/lib/shim/shimx64.efi.signed)
 #   GRUB      Debian-signed grub     (grub-efi-amd64-signed: .../gcdx64.efi.signed)
 #   VMLINUZ   stock Debian kernel — MUST be archive-signed (Debian Secure Boot
@@ -22,21 +25,27 @@
 # machine. Everything we ship ourselves (initrd, cmdline, wifi.conf, grub.cfg)
 # rides unverified — exactly the trust posture of official Debian live images.
 set -euo pipefail
+EXTRA_SRC=() ; EXTRA_DST=()
+while [ "${1:-}" = "--copy" ]; do
+	EXTRA_SRC+=("${2:?--copy needs SRC}") ; EXTRA_DST+=("${3:?--copy needs ESPPATH}")
+	shift 3
+done
 SHIM=${1:?shim (shimx64.efi.signed)}
 GRUB=${2:?grub (gcdx64.efi.signed)}
 VMLINUZ=${3:?signed vmlinuz}
 INITRD=${4:?initrd}
 CMDLINE=${5:?cmdline file}
-CONF=${6:?wifi.conf}
+CONF=${6:?wifi.conf, or '-' to skip (offline rescue carries no secret)}
 IMG=${7:?output image}
 SIZE_MB=${8:-768}
 
 for t in sgdisk mkfs.vfat mmd mcopy; do
 	command -v $t >/dev/null || { echo "need $t (sgdisk + mtools)" >&2; exit 1; }
 done
-for f in "$SHIM" "$GRUB" "$VMLINUZ" "$INITRD" "$CMDLINE" "$CONF"; do
+for f in "$SHIM" "$GRUB" "$VMLINUZ" "$INITRD" "$CMDLINE"; do
 	[ -s "$f" ] || { echo "missing or empty: $f" >&2; exit 1; }
 done
+[ "$CONF" = "-" ] || [ -s "$CONF" ] || { echo "missing or empty: $CONF" >&2; exit 1; }
 
 CMD=$(tr -s ' \n' ' ' <"$CMDLINE")
 
@@ -67,7 +76,21 @@ mcopy -i "$IMG.esp" "$IMG.cfg" ::/EFI/debian/grub.cfg
 mcopy -i "$IMG.esp" "$IMG.cfg" ::/EFI/BOOT/grub.cfg
 mcopy -i "$IMG.esp" "$VMLINUZ" ::/vmlinuz
 mcopy -i "$IMG.esp" "$INITRD" ::/initrd.img
-mcopy -i "$IMG.esp" "$CONF" ::/wifi.conf
+[ "$CONF" = "-" ] || mcopy -i "$IMG.esp" "$CONF" ::/wifi.conf
+i=0
+while [ $i -lt ${#EXTRA_SRC[@]} ]; do
+	# mtools has no mkdir -p: walk the parent path one level at a time
+	# (mmd fails on an existing dir — ignore that error only)
+	acc=""
+	IFS='/' read -r -a _parts <<< "${EXTRA_DST[$i]#::/}"
+	for _p in "${_parts[@]:0:$(( ${#_parts[@]} - 1 ))}"; do
+		[ -n "$_p" ] || continue
+		acc="$acc/$_p"
+		mmd -i "$IMG.esp" "::$acc" 2>/dev/null || true
+	done
+	mcopy -i "$IMG.esp" "${EXTRA_SRC[$i]}" "${EXTRA_DST[$i]}"
+	i=$((i+1))
+done
 dd if="$IMG.esp" of="$IMG" bs=512 seek=2048 conv=notrunc status=none
 rm -f "$IMG.esp" "$IMG.cfg"
 echo "wrote $IMG (${SIZE_MB}MB Secure-Boot stick: shim -> signed grub -> signed kernel)"

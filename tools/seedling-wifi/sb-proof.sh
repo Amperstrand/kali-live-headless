@@ -48,27 +48,35 @@ sb_boot() { # img vars serial
 		>/dev/null 2>&1 || true
 }
 
-# tamper helper: flip one byte in the middle of an ESP file inside a COPY of
-# the image. mtools has no partition-table awareness — "@@1M" addresses the
-# FAT at byte offset 1MiB (sector 2048, where make-sb-stick.sh splices it).
-# The scratch file lives next to the logs (disk-backed): a tmpfs quota bit
-# this exact step once — mcopy wrote 0 bytes and the python step died on an
-# empty buffer (swallowed rc = silent garbage; every step checks now).
-tamper() { # img member
-	local img=$1 member=$2 tmp rc
-	tmp="$img.tamper-tmp"
-	rm -f "$tmp"   # mcopy prompts "overwrite?" on an existing local target
-	mcopy -i "$img@@1M" "::/$member" "$tmp" >/dev/null 2>&1
-	rc=$?
-	[ "$rc" -eq 0 ] && [ -s "$tmp" ] || { echo "tamper: extract failed (rc=$rc)" >&2; exit 1; }
-	python3 - "$tmp" <<'PYT'
+# tamper helpers — ONE working copy serves both negative boots (disk-frugal):
+# tamper_file flips a byte in a file extracted from the PRISTINE gate image;
+# put_member writes a file into the working copy's ESP.
+flip_byte() { # file -> flips the middle byte, in place
+	python3 - "$1" <<'PYT'
 import os, sys
-d = bytearray(open(sys.argv[1], "rb").read())
+p = sys.argv[1]
+d = bytearray(open(p, "rb").read())
 assert d, "empty extract"
 d[len(d)//2] ^= 0xFF
-open(sys.argv[1], "wb").write(d)
+open(p, "wb").write(d)
 PYT
-	mcopy -o -i "$img@@1M" "$tmp" "::/$member" >/dev/null 2>&1 || { echo "tamper: put-back failed" >&2; exit 1; }
+}
+tamper() { # pristine_img member working_img — extract pristine, flip, put back
+	local pristine=$1 member=$2 work=$3 tmp
+	tmp="$work.tamper-tmp"
+	rm -f "$tmp"   # mcopy prompts "overwrite?" on an existing local target
+	mcopy -i "$pristine@@1M" "::/$member" "$tmp" >/dev/null 2>&1 || { echo "tamper: extract failed" >&2; exit 1; }
+	[ -s "$tmp" ] || { echo "tamper: empty extract (tmpfs quota?)" >&2; exit 1; }
+	flip_byte "$tmp"
+	mcopy -o -i "$work@@1M" "$tmp" "::/$member" >/dev/null 2>&1 || { echo "tamper: put-back failed" >&2; exit 1; }
+	rm -f "$tmp"
+}
+restore() { # pristine_img member working_img — put the pristine file back
+	local pristine=$1 member=$2 work=$3 tmp
+	tmp="$work.restore-tmp"
+	rm -f "$tmp"
+	mcopy -i "$pristine@@1M" "::/$member" "$tmp" >/dev/null 2>&1 || { echo "restore: extract failed" >&2; exit 1; }
+	mcopy -o -i "$work@@1M" "$tmp" "::/$member" >/dev/null 2>&1 || { echo "restore: put-back failed" >&2; exit 1; }
 	rm -f "$tmp"
 }
 
@@ -86,13 +94,15 @@ if [ "${kern_a:-0}" -lt 1 ]; then
 fi
 say "sb-proof: A PASS — kernel reached under MS-only Secure Boot ($(grep -m1 -oE 'Linux version [^ ]+' "$LOG_A" | head -c 40)...)"
 
-# B — tampered grubx64 must be refused (shim hop)
-IMG_B=$LOGDIR/stick-tampered-grub.img
-cp "$IMG" "$IMG_B"
-tamper "$IMG_B" "EFI/BOOT/grubx64.efi"
+# B — tampered grubx64 must be refused (shim hop): one working copy, restored
+# between the two negative boots (disk-frugal; the restore is asserted by C
+# itself — if the restore failed, C's kernel would still be the tampered one)
+IMG_T=$LOGDIR/stick-tampered.img
+cp "$IMG" "$IMG_T"
+tamper "$IMG" "EFI/BOOT/grubx64.efi" "$IMG_T"
 LOG_B=$LOGDIR/boot-B-tampered-grub.log
 say "sb-proof: B — booting with a tampered grubx64.efi..."
-sb_boot "$IMG_B" "$VARS_MS" "$LOG_B"
+sb_boot "$IMG_T" "$VARS_MS" "$LOG_B"
 kern_b=$(grep -c -E 'Command line:|Linux version' "$LOG_B" 2>/dev/null || true)
 if [ "${kern_b:-0}" -ne 0 ]; then
 	say "sb-proof: FAIL — kernel booted DESPITE tampered grub"
@@ -100,13 +110,13 @@ if [ "${kern_b:-0}" -ne 0 ]; then
 fi
 say "sb-proof: B PASS — tampered grub refused, no kernel"
 
-# C — tampered kernel must be refused (grub/shim-lock hop)
-IMG_C=$LOGDIR/stick-tampered-kernel.img
-cp "$IMG" "$IMG_C"
-tamper "$IMG_C" "vmlinuz"
+# C — tampered kernel must be refused (grub/shim-lock hop): restore grub, flip
+# the kernel instead, same working copy
+restore "$IMG" "EFI/BOOT/grubx64.efi" "$IMG_T"
+tamper "$IMG" "vmlinuz" "$IMG_T"
 LOG_C=$LOGDIR/boot-C-tampered-kernel.log
 say "sb-proof: C — booting with a tampered kernel..."
-sb_boot "$IMG_C" "$VARS_MS" "$LOG_C"
+sb_boot "$IMG_T" "$VARS_MS" "$LOG_C"
 kern_c=$(grep -c -E 'Command line:|Linux version' "$LOG_C" 2>/dev/null || true)
 if [ "${kern_c:-0}" -ne 0 ]; then
 	say "sb-proof: FAIL — tampered kernel booted (kernel verification is NOT live)"

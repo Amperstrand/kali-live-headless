@@ -23,8 +23,8 @@
 # QEMU tests use virtual ETHERNET. Physical Wi-Fi hardware compatibility is
 # NOT covered here — see README.md "Physical hardware tests".
 #
-# Usage: ./test.sh [--level static|content|boot] [--stage bios|override|uefi|forensic|vmstore]
-#                  [--skip-qemu] [--only-static] [--no-uefi] [--no-forensic]
+# Usage: ./test.sh [--level static|content|boot] [--stage bios|override|uefi|forensic|vmstore|sb]
+#                  [--skip-qemu] [--only-static] [--no-uefi] [--no-forensic] [--no-sb]
 #                  [--iso PATH] [--ssh-key PATH]
 #
 # --stage runs exactly ONE QEMU boot stage (a cheap boot gate for a
@@ -49,7 +49,8 @@ SCRATCH="$REPO_DIR/test/scratch/run-$$-$(date +%s)"
 mkdir -p "$SCRATCH"
 
 # shellcheck disable=SC2034  # RUN_VMSTORE is consumed by the SOURCED test/stages/stage-f-vmstore.sh
-RUN_QEMU=true RUN_BIOS=true RUN_OVERRIDE=true RUN_UEFI=true RUN_FORENSIC=true RUN_VMSTORE=true
+# shellcheck disable=SC2034  # RUN_SB is consumed by the SOURCED test/stages/stage-sb.sh
+RUN_QEMU=true RUN_BIOS=true RUN_OVERRIDE=true RUN_UEFI=true RUN_FORENSIC=true RUN_VMSTORE=true RUN_SB=true
 ONLY_STATIC=false
 LEVEL="full"
 ISO_ARG="" SSH_KEY_ARG=""
@@ -65,6 +66,7 @@ ISO_ARG="" SSH_KEY_ARG=""
     --level)       LEVEL=${2:?}; shift 2 ;;
     --no-uefi)     RUN_UEFI=false; shift ;;
     --no-forensic) RUN_FORENSIC=false; shift ;;
+    --no-sb)       RUN_SB=false; shift ;;
     --iso)         ISO_ARG=${2:?}; shift 2 ;;
     --ssh-key)     SSH_KEY_ARG=${2:?}; shift 2 ;;
     -h|--help)     sed -n '2,30p' "$0"; exit 0 ;;
@@ -86,9 +88,10 @@ case "$LEVEL" in
   uefi)        RUN_BIOS=false; RUN_OVERRIDE=false; RUN_FORENSIC=false; RUN_VMSTORE=false ;;
   forensic)    RUN_BIOS=false; RUN_OVERRIDE=false; RUN_UEFI=false; RUN_VMSTORE=false ;;
   vmstore)     RUN_BIOS=false; RUN_OVERRIDE=false; RUN_UEFI=false; RUN_FORENSIC=false ;;
+  sb)          RUN_BIOS=false; RUN_OVERRIDE=false; RUN_UEFI=false; RUN_FORENSIC=false; RUN_VMSTORE=false ;;
   content)     RUN_QEMU=false ;;
   boot|full)   : ;;
-  *) klh_die "unknown --level/--stage '$LEVEL' (static | content | bios | override | uefi | forensic | vmstore | boot)" ;;
+  *) klh_die "unknown --level/--stage '$LEVEL' (static | content | bios | override | uefi | forensic | vmstore | sb | boot)" ;;
 esac
 klh_info "level: $LEVEL (static = no VM, content = + ISO inspection, boot = + QEMU boots); BASE=$KLH_BASE"
 
@@ -120,6 +123,14 @@ run() { # name command... (reserved)
 # PORT which persist past the stage-cde if-block. Guarded internally on
 # RUN_VMSTORE + guest existing, so it no-ops when the qemu path skipped.
 . "$REPO_DIR/test/stages/stage-f-vmstore.sh"
+
+# ============================================================= Stage SB
+# Secure Boot POLICY gate (self-describing: signed chain must boot, unsigned
+# must be refused — both asserted, Microsoft-only firmware db). No ports
+# (serial-only), safe in parallel lanes. Skips loudly without secboot OVMF.
+# shellcheck disable=SC2034  # RUN_SB is consumed by the SOURCED stage-sb.sh
+[ "$RUN_QEMU" = false ] && RUN_SB=false
+. "$REPO_DIR/test/stages/stage-sb.sh"
 
 # ============================================================= summary
 section "summary"

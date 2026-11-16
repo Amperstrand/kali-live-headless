@@ -13,14 +13,14 @@
 #
 # Usage: tools/suite-parallel.sh [--iso PATH] [--jobs N] [--stages a,b,c]
 #   --jobs      concurrent stages (default 3; ceiling: stages count)
-#   --stages    comma list from: bios,override,uefi,forensic,vmstore
-#               (default: bios,override,uefi,forensic)
+#   --stages    comma list from: bios,override,uefi,forensic,vmstore,sb
+#               (default: bios,override,uefi,forensic,vmstore,sb)
 set -u
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd) || exit 1
 cd "$REPO_DIR" || exit 1
 
 JOBS=3
-STAGES="bios,override,uefi,forensic,vmstore"
+STAGES="bios,override,uefi,forensic,vmstore,sb"
 ISO_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
