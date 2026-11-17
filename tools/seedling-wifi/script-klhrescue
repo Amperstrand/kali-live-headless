@@ -29,9 +29,15 @@ klhrescue_mountroot() {
 
 	mkdir -p /run/klhrescue/esp /run/klhrescue/lower /run/klhrescue/rw
 
-	# find the stick's ESP (label BBOOT — same label make-wifi-stick uses)
+	# find the stick's ESP (label BBOOT — same label make-wifi-stick uses).
+	# by-label and busybox blkid BOTH come up empty in this initramfs
+	# (initramfs-tools' early udev does not populate by-label for vfat and
+	# the busybox blkid applet lists nothing — found 2026-11-17 with the
+	# Secure-Boot stick build: the stick sat mounted-and-readable at
+	# /dev/vda1 while this loop panicked 'no BBOOT stick found'), so the
+	# raw partition globs are the actual workhorse.
 	esp=""
-	for d in /dev/disk/by-label/BBOOT $(busybox blkid -o device 2>/dev/null); do
+	for d in /dev/disk/by-label/BBOOT $(busybox blkid -o device 2>/dev/null) /dev/vd*[0-9] /dev/sd*[0-9] /dev/nvme*n[0-9]p[0-9]; do
 		[ -b "$d" ] || continue
 		mount -t vfat -o ro "$d" /run/klhrescue/esp 2>/dev/null || continue
 		if [ -s /run/klhrescue/esp/rescue/rootfs.erofs ]; then

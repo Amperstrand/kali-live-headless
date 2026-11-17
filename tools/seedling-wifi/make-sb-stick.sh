@@ -39,8 +39,8 @@ CONF=${6:?wifi.conf, or '-' to skip (offline rescue carries no secret)}
 IMG=${7:?output image}
 SIZE_MB=${8:-768}
 
-for t in sgdisk mkfs.vfat mmd mcopy; do
-	command -v $t >/dev/null || { echo "need $t (sgdisk + mtools)" >&2; exit 1; }
+for t in sgdisk mkfs.vfat mmd mcopy fsck.vfat; do
+	command -v $t >/dev/null || { echo "need $t (sgdisk + mtools + dosfstools)" >&2; exit 1; }
 done
 for f in "$SHIM" "$GRUB" "$VMLINUZ" "$INITRD" "$CMDLINE"; do
 	[ -s "$f" ] || { echo "missing or empty: $f" >&2; exit 1; }
@@ -91,6 +91,52 @@ while [ $i -lt ${#EXTRA_SRC[@]} ]; do
 	mcopy -i "$IMG.esp" "${EXTRA_SRC[$i]}" "${EXTRA_DST[$i]}"
 	i=$((i+1))
 done
+# mtools never maintains the FAT's FSInfo correctly: it writes its 'rrAa'
+# signature at offset 484 — where the FAT spec AND Linux put free_clusters —
+# and leaves the required trailing signature at 508 ABSENT. Linux then calls
+# the FSInfo corrupt and REFUSES a read-only mount ("Can't mount, would
+# change RO state": it would have to rewrite the sector), which stalled the
+# offline-rescue payload while the chain booted green (found 2026-11-16,
+# after two wrong theories: dirty bit, missing free-count). fsck.vfat cannot
+# repair this — its own layout disagrees. Repair both FSInfo copies (sector
+# 1 and its backup) canonically, with a free-cluster count scanned from the
+# FAT itself. FAT12/16 images have no FSInfo — skipped.
+fsck.vfat -a -f "$IMG.esp" >/dev/null 2>&1 || { echo "fsck.vfat -a -f failed on the ESP" >&2; exit 1; }
+python3 - "$IMG.esp" <<'PYT'
+import struct, sys
+path = sys.argv[1]
+d = bytearray(open(path, "r+b").read())
+bs = d[:512]
+fat32 = int.from_bytes(bs[22:24], "little") == 0 and int.from_bytes(bs[36:40], "little") > 0
+if not fat32:
+    print(f"fsinfo: FAT12/16 — no FSInfo to repair")
+    sys.exit(0)
+reserved = int.from_bytes(bs[14:16], "little")
+fat_sz = int.from_bytes(bs[36:40], "little")
+sec_per_clus = bs[13]
+tot = int.from_bytes(bs[32:36], "little")
+max_cluster = (tot - reserved - 2 * fat_sz) // sec_per_clus
+fat_off = reserved * 512
+free = 0
+next_free = 0xFFFFFFFF
+for n in range(2, max_cluster + 2):
+    e = int.from_bytes(d[fat_off + 4*n : fat_off + 4*n + 4], "little")
+    if e == 0:
+        free += 1
+        if next_free == 0xFFFFFFFF:
+            next_free = n
+for sec in (1, 7):  # primary FSInfo + its backup
+    if sec * 512 >= reserved * 512:
+        break
+    base = sec * 512
+    d[base + 4 : base + 484] = bytes(480)
+    d[base + 484 : base + 488] = struct.pack("<I", free)
+    d[base + 488 : base + 492] = struct.pack("<I", next_free)
+    d[base + 492 : base + 508] = bytes(16)
+    d[base + 508 : base + 512] = b"rrAa"
+open(path, "wb").write(d)
+print(f"fsinfo: repaired both copies (free={free} next={next_free} max={max_cluster})")
+PYT
 dd if="$IMG.esp" of="$IMG" bs=512 seek=2048 conv=notrunc status=none
 rm -f "$IMG.esp" "$IMG.cfg"
 echo "wrote $IMG (${SIZE_MB}MB Secure-Boot stick: shim -> signed grub -> signed kernel)"

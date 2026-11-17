@@ -235,6 +235,55 @@ bash tools/seedling-wifi/sb-proof.sh sb-stick.img logs/
   SB mandates it) or (b) a dbx revocation touching this shim/grew — recheck
   with the proof harness before suspecting the payload.
 
+## The offline rescue, same chain (2026-11-16)
+
+`make-sb-stick.sh --copy out/rootfs.erofs ::/rescue/rootfs.erofs ... -`
+(no wifi.conf — the offline rescue carries no secret) yields the SB rescue:
+shim → signed grub → signed kernel → our initrd mounts the ESP's static
+erofs. Proven by the same three-boot matrix, with the A-boot asserting the
+erofs mount itself (kernel-only would have passed the first build, whose
+payload stalled — see below). The shipped cmdline adds `console=tty0`
+(the black-screen lesson: the lane's rescue cmdline was serial-only,
+invisible on a real laptop's display).
+
+**The dirty-FAT lesson (found by the strengthened A-assert):** mtools sets
+the FAT volume-dirty bit on EVERY write and nothing ever clears it (no
+unmount exists) — and Linux refuses a READ-ONLY mount of a dirty FAT
+(`vda1: Can't mount, would change RO state`). The rescue initramfs mounts
+the ESP read-only, so its payload stalled while the chain (and the wifi
+variant, which mounts differently) booted green. `make-sb-stick.sh` now
+runs `fsck.vfat -a -f` as its LAST ESP step — after every mcopy, because
+the first fix ran it before the extras loop and the rescue erofs re-dirtied
+the volume. Any future stick builder that touches the FAT with mtools
+must end the same way. (Deeper still: mtools also leaves the FAT32 FSInfo
+trailing signature at the wrong offset — dosfstools' own layout disagrees
+with the kernel's — so `make-sb-stick.sh` rewrites both FSInfo copies
+canonically, free-cluster count recomputed from the FAT itself.)
+
+**The discovery lesson:** the rescue script found the ESP only via
+`/dev/disk/by-label` and `busybox blkid` — BOTH come up empty in this
+initramfs (early udev does not populate by-label for vfat; the busybox
+blkid applet lists nothing) while the stick sat mounted-and-readable at
+`/dev/vda1`. The repo's `script-klhrescue` now falls back to raw
+`/dev/vd*[0-9] /dev/sd*[0-9] /dev/nvme*n[0-9]p[0-9]` globs;
+`patch-rescue-initrd.sh` rebuilds an existing initrd with the fixed script
+(extract → swap → repack). Do NOT hand-emit cpio in that repack: an archive
+every userspace tool accepted was refused by the kernel's initramfs
+unpacker with a silently-partial rootfs ("No working init found") — GNU
+cpio (`-H newc -R 0:0`) output boots; the hand-rolled one never did, and
+the main segment stays uncompressed in exchange.
+
+Old-firmware coverage: the chain also boots under a db restricted to the
+**2011-only** Microsoft keys (`virt-fw-vars --microsoft-db uefi11
+--microsoft-kek 2011`) — proven 2026-11-16 — so Windows 8/early-10-era
+dbs verify the dual-signed shim too.
+
+The ISO-level sibling of this proof is `tools/iso-sb-proof.sh` and the
+suite's Stage SB (`test/stages/stage-sb.sh`): the same Microsoft-only
+simulator applied to whole KLH ISOs, policy-read from the ISO's own chain
+(#53: MS-signed shim present, unsigned grub+kernel → correctly REFUSED).
+
+
 
 ## Availability + remote update (proven 2026-11-06)
 

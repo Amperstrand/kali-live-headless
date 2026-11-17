@@ -82,17 +82,27 @@ restore() { # pristine_img member working_img — put the pristine file back
 
 say() { printf '%s\n' "$*"; }
 
-# A — the delivered image must reach the kernel
+# A — the delivered image must reach the kernel AND the payload must complete
+# its rootfs mount (erofs). Kernel-only would have passed the 2026-11-16
+# rescue build whose ESP mount stalled on a dirty FAT — chain green, payload
+# dead; the erofs marker is the non-vacuous completion signal for BOTH stick
+# flavors (wifi mounts nbd erofs, rescue mounts the ESP's erofs).
 LOG_A=$LOGDIR/boot-A-signed.log
 say "sb-proof: A — booting the delivered image (MS-only db)..."
 sb_boot "$IMG" "$VARS_MS" "$LOG_A"
-kern_a=$(grep -c -E 'Command line:|Linux version' "$LOG_A" 2>/dev/null || true)
+kern_a=$(grep -c -aE 'Command line:|Linux version' "$LOG_A" 2>/dev/null || true)
+erofs_a=$(grep -c -a 'erofs: (device' "$LOG_A" 2>/dev/null || true)
 if [ "${kern_a:-0}" -lt 1 ]; then
 	say "sb-proof: FAIL — signed chain never reached the kernel. Serial tail:"
 	tail -8 "$LOG_A" 2>/dev/null | sed 's/^/    /'
 	exit 1
 fi
-say "sb-proof: A PASS — kernel reached under MS-only Secure Boot ($(grep -m1 -oE 'Linux version [^ ]+' "$LOG_A" | head -c 40)...)"
+if [ "${erofs_a:-0}" -lt 1 ]; then
+	say "sb-proof: FAIL — kernel booted but the payload never mounted its erofs rootfs (initramfs stall?). Serial tail:"
+	tail -8 "$LOG_A" 2>/dev/null | tr -d '\0' | sed 's/^/    /'
+	exit 1
+fi
+say "sb-proof: A PASS — kernel + erofs rootfs under MS-only Secure Boot ($(grep -m1 -aoE 'Linux version [^ ]+' "$LOG_A" | head -c 40)...)"
 
 # B — tampered grubx64 must be refused (shim hop): one working copy, restored
 # between the two negative boots (disk-frugal; the restore is asserted by C

@@ -106,9 +106,15 @@ CI lanes and, where physical, by `vm-check`/`hw-check`.
 - **Audit-bundle custody closure** — `tools/lane-audit.sh` renders the
   reviewable bundle; the remaining step is the stage-b assert that the built
   image's tree matches `OVERLAY/` byte-for-byte.
-- **Secure Boot instrument** — the OVMF + enforced-SB suite stage: turns
-  "where does the chain stop" into a reproducible fact per lane
-  (`docs/lanes-and-gating.md` §4).
+- **Secure Boot instrument** — LANDED 2026-11-16 (two layers): `test/stages/stage-sb.sh`
+  asserts the policy self-describingly on every full gate (three-link chain
+  check against public anchor certs in `test/fixtures/sb` + one boot under a
+  Microsoft-only OVMF db: signed chains must boot, unsigned must be refused —
+  banked on #53, 370/0), and `tools/seedling-wifi/{make-sb-stick,sb-proof}.sh`
+  build/prove the zero-enrollment STICK variant (stock Debian shim → signed
+  grub → signed kernel; docs/seedling-wifi-boot.md § "zero-enrollment chain").
+  Remaining: cut a `BASE=debian` release to get the same chain into the full
+  KLH ISO (live-build already enables it — build blocked on disk, 2026-11-16).
 - **toram default defect** —
   [#45](https://github.com/Amperstrand/kali-live-headless/issues/45):
   releases carry `TORAM_DEFAULT=false` until the patched 9990's fall-through
@@ -126,7 +132,7 @@ vm-store (restored + wired), zstd squashfs experiment (measured — see
 - **First real-hardware boot completed**: machine S5004EAA (t7a) birthed, claimed, was reachable at <LAN-HOST>
 - WiFi on real hardware: associated + streamed on first attempt, but **deauth under sustained streaming load** — power_save fix built and flashed, awaiting boot test
 - Suite: unit 62/0, e2e 12/0 (power_save + remote serial + wifi handoff not yet in suite)
-- Secure Boot: proven in QEMU; real-hw enrollment pending
+- Secure Boot: ZERO-ENROLLMENT chain proven (2026-11-16) — the wifi stick boots on stock SB laptops via the stock Debian signed chain (shim → signed grub → signed kernel, our initrd/cfg/PSK unverified like stock Debian live); MS-only-db proof incl. tamper-refusals + a 2011-only-db (old-firmware) boot; see docs/seedling-wifi-boot.md. Same chain applied to rescue-local (offline SB rescue, proven incl. the FAT dirty-bit fix). Real-hw laptop boot: pending stick re-plug (evidence watcher armed on testenv :8443)
 - Remote unlock: full chain proven in QEMU AND on real hw (daemon unlocked 2 sessions autonomously)
 - Key-only SSH: proven in QEMU; real-hw verification pending stable WiFi
 - Upstream: dogfood branch staged (9 tools/fixes), NOT pushed — owner-gated
