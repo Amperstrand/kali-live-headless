@@ -257,6 +257,15 @@ if [ -f "$DF" ] && ! grep -q "debian-cd/kali-rolling" "$DF"; then
   printf '\n# klh: kali-rolling is not in live-build debian-cd data by default\nRUN ln -sf sid /usr/share/live/build/data/debian-cd/kali-rolling\n' >> "$DF"
   klh_info "Dockerfile: baked the kali-rolling debian-cd symlink"
 fi
+# BASE=debian debootstrap needs the DEBIAN archive keyring; rebuilt
+# kali-build/kali-live images carry only the Kali one (2026-11-20: the
+# image on the x280 had lost it and the engine guard refused in seconds —
+# docs/debian-base-spike-results.md's "stock image ships it" no longer
+# holds for fresh builds of the upstream Dockerfile). Bake it in.
+if [ -f "$DF" ] && ! grep -q "debian-archive-keyring" "$DF"; then
+  printf '\n# klh: BASE=debian needs the debian archive keyring for debootstrap\nRUN apt-get update && env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends debian-archive-keyring || true\n' >> "$DF"
+  klh_info "Dockerfile: baked debian-archive-keyring (BASE=debian debootstrap)"
+fi
 
 # apt cache proxy: live-build's chroot phases run INSIDE a chroot where the
 # http_proxy env var does NOT cross the boundary. Upstream's auto-detection is
@@ -394,6 +403,26 @@ if [ -f "$LIVE_CFG" ]; then
 fi
 [ -f "$GRUB_CFG" ] && sed -i "s/^set default=.*/set default=$([ "$BOOT_DEFAULT" = forensic ] && echo 1 || echo 0)/" "$GRUB_CFG"
 klh_info "default boot entry: $BOOT_DEFAULT (auto-boots after 5s)"
+
+# BASE=debian stages the SIGNED grub chain (MS shim -> Debian-signed gcd),
+# and that lockdown grub HALTS on upstream config.cfg's first `insmod` of an
+# unsigned .mod ("error: prohibited by secure boot policy" — found 2026-11-20
+# on #54's Stage SB: no menu, no kernel, one serial line). Ship an SB-safe
+# config.cfg instead: no module loads, no theme, console output. Proven end
+# to end under a Microsoft-only db — menu renders, 5 s countdown, kernel
+# boots, guest reaches SSH (SB-BOOT-EVIDENCE.log in test/scratch/d54sb/).
+if [ "${KLH_BASE:-}" = debian ] && [ -f "$GRUB_CFG" ]; then
+  cat > "$GRUB_CFG" <<EOF
+# Live Image (UEFI boot) — SB-safe: the signed (lockdown) grub refuses
+# insmod of unsigned .mod files and HALTS ("prohibited by secure boot
+# policy"), so this config loads no modules, themes nothing, and outputs
+# on the console. (kali-live-headless; proven 2026-11-20, build #54+)
+set default=$([ "$BOOT_DEFAULT" = forensic ] && echo 1 || echo 0)
+set timeout=5
+terminal_output console
+EOF
+  klh_info "grub config.cfg: SB-safe form (signed-chain build — no unsigned module loads)"
+fi
 
 # zstd squashfs: NOW THE DEFAULT (BIOS-boot-gated 2026-10-25, build #40:
 # 263/0, +3.3% size, ~15min compression vs ~30-55min xz — the full
