@@ -82,6 +82,14 @@ sb_stage() {
 	done
 	virt-fw-vars -i "$OVMF_VARS" -o "$SCRATCH/sb/vars-ms.fd" --enroll-microsoft --sb >/dev/null 2>&1
 	cp "$SCRATCH/sb/vars-ms.fd" "$SCRATCH/sb/vars-active.fd"
+	# hostfwd on a free ephemeral port (same policy as the boot stages — no
+	# fixed ports, parallel lanes must not fight): a SIGNED boot's live
+	# entries carry no console= (kernel output invisible on serial), so the
+	# honest completion evidence for this class is SSH, exactly like bios/
+	# uefi. Found on #54/#55 (Debian base): serial-marker asserts would
+	# false-fail a successful SB boot.
+	SB_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null || echo 2299)
+	echo "sb: hostfwd port $SB_PORT"
 	rm -f "$LOG"
 	timeout 300 qemu-system-x86_64 \
 		-machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on \
@@ -90,11 +98,29 @@ sb_stage() {
 		-drive if=pflash,format=raw,file="$SCRATCH/sb/vars-active.fd" \
 		-drive file="$ISO",format=raw,if=virtio,media=disk,readonly=on \
 		-display none -serial file:"$LOG" \
-		-netdev user,id=n1 -device virtio-net-pci,netdev=n1 \
-		>/dev/null 2>&1 || true
+		-netdev user,id=n1,hostfwd=tcp:127.0.0.1:$SB_PORT-:22 -device virtio-net-pci,netdev=n1 \
+		-daemonize -pidfile "$SCRATCH/sb/qemu.pid" >/dev/null 2>&1 || true
+	# wait for whichever evidence this image class can produce: serial
+	# kernel markers (cmdlines that carry console=) OR a reachable sshd
+	local waited=0 kern=0
+	while [ $waited -lt 240 ]; do
+		kern=$(grep -c -aE 'Command line:|Linux version' "$LOG" 2>/dev/null || true)
+		if [ "${kern:-0}" -ge 1 ]; then break; fi
+		if timeout 5 ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new \
+		     -o UserKnownHostsFile=/dev/null -i "${SSH_KEY_ARG:-$HOME/.ssh/id_ed25519}" \
+		     -p "$SB_PORT" kali@127.0.0.1 true >/dev/null 2>&1; then
+			kern=1
+			echo "sb: guest reached SSH (serial silent — no console= on this image class)"
+			break
+		fi
+		sleep 10; waited=$((waited + 10))
+	done
+	if [ -s "$SCRATCH/sb/qemu.pid" ] && kill -0 "$(cat "$SCRATCH/sb/qemu.pid" 2>/dev/null)" 2>/dev/null; then
+		kill "$(cat "$SCRATCH/sb/qemu.pid")" 2>/dev/null || true
+	fi
 
 	local kernel refusal
-	kernel=$(grep -c -aE 'Command line:|Linux version' "$LOG" 2>/dev/null || true)
+	kernel=$kern
 	refusal=$(grep -m1 -aoiE 'rejected probably by Secure Boot|Security Violation|Access Denied' "$LOG" 2>/dev/null | head -1 || true)
 
 	if [ "$EXPECT" = boot ]; then
