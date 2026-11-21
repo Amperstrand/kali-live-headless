@@ -16,10 +16,16 @@ what each unproven cell needs, and the test strategy per class.
 | 2 | x64 UEFI (SB off) | grub-efi → kernel | **PROVEN** | uefi gate (#55: 405/0) |
 | 3 | x64 UEFI + **Microsoft** SB | shim(MS) → Debian-signed grub → Debian-signed kernel | **PROVEN** | #55 sb 376/0 — the zero-enrollment chain; Stage SB gates it; sticks flashed + proven |
 | 4 | x64 UEFI + **our** SB | firmware(our db) → our-signed kernel/UKI | **kernel PROVEN** (corp-spike: boots, lockdown, our db, no MS) | initrd handoff bug (placement-class) blocks UKI completion; kernel-direct Boot-entry path works; see ~/src/corp-posture-spike/STATE.md |
-| 5 | Pi 4 / Pi 5 (arm64) | native: firmware → kernel+initrd (or EDK2-RPi UEFI → same EFI chain as #2–#4) | **prior art built** | seedling `pi/`: card-pi4.img, arm64-v8 initrd, pi-rootfs.erofs; needs: KLH-stack integration + gates + (for SB) EDK2-RPi + our-keys enrollment |
-| 6 | Pi 3 (arm64/armv8) | same as #5 | **prior art built** | same arm64-v8 class; Pi3 quirks (USB boot, 1G RAM) need their own gate run |
-| 7 | Pi 2 (armv7) | native boot only — no UEFI, no SB possible | **prior art built** | card-pi1-pi2 multi-target card exists; needs gates + feature-floor definition (no KVM, no SB — the minimal-lane subset) |
-| 8 | Pi 1 / Zero (armv6) | native boot only | **prior art built** | card-pi1.img + v6 initrd exist; the most constrained cell: define the feature floor (wifi+ssh only) |
+| 5 | Pi 4 / Pi 5 (arm64) | native: firmware → kernel+initrd (or EDK2-RPi UEFI → same EFI chain as #2–#4) | **VIRTUALIZED GREEN (2026-11-21): QEMU-virt native ✓, UEFI-via-Boot-entry ✓, UEFI+OUR-SB ✓✓** (our-signed arm64 kernel, lockdown, full bboot flow; unsigned refused) | needs: real-Pi runs (EDK2-RPi + our keys), KLH-stack arm rootfs |
+| 6 | Pi 3 (arm64/armv8) | same as #5 | same arm64-v8 class ✓ (virtual) | Pi3 real-hw quirks (USB boot, 1G RAM) |
+| 7 | Pi 2 (armv7) | native boot only — no UEFI, no SB possible | **VIRTUALIZED GREEN (2026-11-21): armhf kernel + full bboot flow on QEMU virt-32** | real-Pi gate + feature floor |
+| 8 | Pi 1 / Zero (armv6) | native boot only | prior art built (card-pi1.img + v6 initrd); armhf-adjacent | v6 QEMU gate + real-Pi smoke |
+
+Note on cell #4 vs #5: the arm64 UEFI path delivered a **162M initrd
+cleanly** through the same `initrd=` Boot-entry mechanism that corrupts
+38M initrds on the x86 OVMF build — the x86 initrd-handoff bug is
+x86-OVMF-specific (one more datum for the upstream report; STATE.md has
+the full characterization).
 
 ## Architecture: two boot families, one product
 
