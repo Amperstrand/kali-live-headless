@@ -9,6 +9,18 @@ on the `research/seedling-comparison` branch — including the discovery
 that Seedling already boots our ISO from Blossom and their
 fresh-identity-per-clone pattern that motivated this document.)
 
+> **Seedling side, updated 2026-11-21**: the sibling proofs now exist in
+> the seedling tree — the Microsoft shim+MOK chain boots the full image
+> under SB in OVMF (`seedling-m1/scripts/sb-shim-proof.sh`,
+> `scripts/sb-e2e.sh`), the opportunistic TPM capabilities are proven in a
+> VM (`seedling-m1/scripts/tpm-opportunistic-proof.sh`, 8 stages incl.
+> AIK-identity quotes, PCR-sealed state with tamper refusal, NV
+> anti-rollback floor, clone refusal, degrade path), and the trust analysis
+> lives in `seedling-m1/docs/MEDIA-TRUST.md` + `TPM-OPPORTUNISTIC.md`.
+> The TPM-backed-if-available clause below is that doc's §Identity ladder:
+> provisioned secret (remote-only) → firmware TPM on x86 (full) → Pi OTP
+> (provenance).
+
 ## The problem
 
 When a machine boots for the first time (or reboots), it needs to:
