@@ -38,3 +38,16 @@ these from a release build (#55-class) instead of spike scratch.
   binaries boot (`EFI stub: UEFI Secure Boot is enabled`).
 - Omniboot: 4/4 chains to `Linux version` (see omniboot-smoke.sh).
 - arm64 column incl. our-SB: 5/5 in the spike's arm-matrix-smoke.sh.
+
+## OVMF signer-matching caveat (from uefi-spike, 2026-11-26)
+
+When testing the "our keys" chain on OVMF/QEMU: **OVMF matches db entries
+by the image's SIGNER cert exactly — it does NOT walk the CA chain.**
+If your kernel is signed by a cert that is ISSUED BY your db cert (a
+chain), `sbverify --cert db.crt` says "OK" but OVMF still refuses the
+boot with "Access Denied — rejected probably by Secure Boot". The fix:
+include the SIGNER cert in the db alongside the CA cert.
+
+This applies to chain 4 (`\EFI\KLH\grubx64.efi`) in the omniboot when
+tested on OVMF/QEMU before hardware day. See
+`docs/uefi-spike-cross-pollination.md` for the full finding.
